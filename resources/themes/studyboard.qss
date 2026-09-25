@@ -99,3 +99,14 @@ QLabel#placeholderTitle {
 QLabel#placeholderSubtitle {
     color: @textMuted@;
 }
+
+/* Developer debug HUD over the canvas (View > Debug HUD). */
+QLabel#canvasHud {
+    background: @surfaceElevated@;
+    color: @textSecondary@;
+    border: 1px solid @border@;
+    border-radius: @radiusSmall@px;
+    padding: 4px 6px;
+    font-family: "Consolas", "Menlo", "DejaVu Sans Mono", monospace;
+    font-size: 9pt;
+}

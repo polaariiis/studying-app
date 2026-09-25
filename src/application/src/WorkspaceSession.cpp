@@ -136,6 +136,9 @@ struct WorkspaceSession::Impl {
         if (patch.empty()) {
             return;
         }
+        if (listener) {
+            listener(patch);
+        }
         pending.push_back(std::move(patch));
         // A failure is recorded in lastError and retried later; the edit itself stands.
         (void)writePending();
@@ -153,6 +156,7 @@ struct WorkspaceSession::Impl {
     document::Editor editor;
     std::deque<document::Patch> pending;
     std::optional<core::Error> lastError;
+    PatchListener listener;
     bool recovered = false;
     bool closed = false;
 };
@@ -313,6 +317,9 @@ bool WorkspaceSession::canUndo() const noexcept {
 }
 bool WorkspaceSession::canRedo() const noexcept {
     return impl_->editor.canRedo();
+}
+void WorkspaceSession::setPatchListener(PatchListener listener) {
+    impl_->listener = std::move(listener);
 }
 std::size_t WorkspaceSession::pendingWriteCount() const noexcept {
     return impl_->pending.size();

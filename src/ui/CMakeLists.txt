@@ -6,16 +6,23 @@ studyapp_add_module(ui
         include/studyapp/ui/CanvasPlaceholder.hpp
         include/studyapp/ui/DesignTokens.hpp
         include/studyapp/ui/MainWindow.hpp
+        include/studyapp/ui/PanBenchmark.hpp
         include/studyapp/ui/ThemeManager.hpp
         src/AppIcon.cpp
+        src/CanvasInputAdapter.cpp
+        src/CanvasInputAdapter.hpp
         src/CanvasPlaceholder.cpp
+        src/CanvasWidget.cpp
+        src/CanvasWidget.hpp
         src/DesignTokens.cpp
         src/MainWindow.cpp
+        src/SessionDocumentPort.hpp
         src/ThemeManager.cpp
     PUBLIC_DEPS
         Qt6::Widgets
         studyapp::core
     PRIVATE_DEPS
+        Qt6::OpenGLWidgets
         studyapp::application
         studyapp::canvas
         studyapp::render_gl

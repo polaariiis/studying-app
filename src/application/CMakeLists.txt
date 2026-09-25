@@ -5,7 +5,9 @@ studyapp_add_module(application
         include/studyapp/application/ComponentVersions.hpp
         include/studyapp/application/WorkspaceLock.hpp
         include/studyapp/application/WorkspaceSession.hpp
+        include/studyapp/application/StartPage.hpp
         src/ComponentVersions.cpp
+        src/StartPage.cpp
         src/WorkspaceSession.cpp
     PUBLIC_DEPS
         studyapp::document

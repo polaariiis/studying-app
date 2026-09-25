@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -89,6 +90,12 @@ public:
     [[nodiscard]] core::Result<void> redo();
     [[nodiscard]] bool canUndo() const noexcept;
     [[nodiscard]] bool canRedo() const noexcept;
+
+    /// Called with every patch applied to the workspace — by execute(), undo() (the inverse
+    /// patch) and redo() — right after the in-memory change and before it is written, so
+    /// views (the canvas) stay in step with the document. One listener; empty to remove.
+    using PatchListener = std::function<void(const document::Patch&)>;
+    void setPatchListener(PatchListener listener);
 
     /// Writes all pending patches ("Save"). Returns the first write error, if any.
     [[nodiscard]] core::Result<void> flush();
