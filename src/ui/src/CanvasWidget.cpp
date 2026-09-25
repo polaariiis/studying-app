@@ -77,7 +77,7 @@ QString megabytes(std::uint64_t bytes) {
 } // namespace
 
 CanvasWidget::CanvasWidget(canvas::CanvasController& controller, QWidget* parent)
-    : QOpenGLWidget(parent), controller_(&controller) {
+    : QOpenGLWidget(parent), controller_(&controller), presents_(kStatsWindow, kIdleGapMs) {
     setObjectName(QStringLiteral("canvasWidget"));
     // OpenGL 3.3 core with 4× MSAA (docs/RENDERING.md §6.1). Vsync stays on (default).
     QSurfaceFormat format = QSurfaceFormat::defaultFormat();
