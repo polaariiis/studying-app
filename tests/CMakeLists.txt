@@ -7,6 +7,8 @@
 add_subdirectory(support)
 add_subdirectory(core)
 add_subdirectory(document)
+add_subdirectory(render)
+add_subdirectory(canvas)
 add_subdirectory(persistence)
 add_subdirectory(application)
 add_subdirectory(architecture)

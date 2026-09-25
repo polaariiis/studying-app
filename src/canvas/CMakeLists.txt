@@ -1,7 +1,28 @@
+# Interactive canvas engine (docs/CANVAS.md): camera, input events, tools, scene, hit
+# testing, selection, render cache. Plain C++: no Qt, no OpenGL, no SQLite.
 studyapp_add_module(canvas
     SOURCES
-        include/studyapp/canvas/Module.hpp
-        src/Module.cpp
+        include/studyapp/canvas/Camera.hpp
+        include/studyapp/canvas/CanvasController.hpp
+        include/studyapp/canvas/CanvasScene.hpp
+        include/studyapp/canvas/DocumentPort.hpp
+        include/studyapp/canvas/ElementGeometry.hpp
+        include/studyapp/canvas/Input.hpp
+        include/studyapp/canvas/RenderBatches.hpp
+        include/studyapp/canvas/RenderCache.hpp
+        include/studyapp/canvas/Selection.hpp
+        include/studyapp/canvas/SpatialGrid.hpp
+        include/studyapp/canvas/StrokeBuilder.hpp
+        src/Camera.cpp
+        src/CanvasController.cpp
+        src/CanvasScene.cpp
+        src/ElementGeometry.cpp
+        src/RenderBatches.cpp
+        src/RenderCache.cpp
+        src/SpatialGrid.cpp
+        src/StrokeBuilder.cpp
+        src/Tools.cpp
+        src/Tools.hpp
     PUBLIC_DEPS
         studyapp::document
         studyapp::render
