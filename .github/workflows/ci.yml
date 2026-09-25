@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: "6.8.3"
+  CLANG_FORMAT_VERSION: "19.1.1"
+
+jobs:
+  # ---------------------------------------------------------------- formatting + boundaries
+  format:
+    name: Format & module boundaries
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install clang-format (pinned)
+        run: pip install "clang-format==${CLANG_FORMAT_VERSION}"
+
+      - name: Check formatting
+        run: git ls-files '*.cpp' '*.hpp' '*.h' | xargs clang-format --dry-run --Werror
+
+      - name: Check module include boundaries
+        run: python tools/check_boundaries.py
+
+  # ---------------------------------------------------------------- Qt-free core
+  core:
+    name: Core (no Qt) / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Set up MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure, build and test (ci-core preset)
+        run: cmake --workflow --preset ci-core
+
+  # ---------------------------------------------------------------- sanitizers
+  sanitizers:
+    name: Sanitizers (ASan + UBSan, Clang)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Configure, build and test (asan preset)
+        run: cmake --workflow --preset asan
+
+  # ---------------------------------------------------------------- full build with Qt
+  full:
+    name: Full (Qt ${{ matrix.qt_arch }}) / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            qt_arch: win64_msvc2022_64
+          - os: ubuntu-24.04
+            qt_arch: linux_gcc_64
+          - os: macos-14
+            qt_arch: clang_64
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Set up MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Linux system packages for Qt
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev libegl1 libxkbcommon-dev libxkbcommon-x11-0 \
+            libfontconfig1 libdbus-1-3 libxcb-cursor0
+
+      # Qt is installed from the official Qt binaries via aqtinstall. The action exports
+      # QT_ROOT_DIR, which the CMake presets pass as CMAKE_PREFIX_PATH.
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+
+      - name: Configure, build and test (ci-full preset)
+        run: cmake --workflow --preset ci-full
+
+      - name: Install (runs Qt deployment tooling)
+        run: cmake --install build/ci-full --prefix "${{ runner.temp }}/studyboard-install"
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-${{ matrix.os }}
+          path: build/ci-full/Testing/Temporary/
+          if-no-files-found: ignore
