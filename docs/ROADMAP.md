@@ -151,7 +151,7 @@ Delivered:
   is one command written in one transaction; no save dialogs.
 * Tests: `canvas_tests`, `render_tests`, new core/document/application tests and the
   real-OpenGL `ui.CanvasWidgetTest` (skips without a 3.3 context); `bench/` with Google
-  Benchmark (D32). 330 CTest tests in the full build (243 after Phase 3).
+  Benchmark (D32). 339 CTest tests in the full build (243 after Phase 3).
 
 Measurements (reference laptop: AMD integrated Radeon graphics, 12 × 4.3 GHz, Windows,
 Release build, 144 Hz display, 10 000 hand-writing-like strokes of 30–90 points):
@@ -176,35 +176,77 @@ catalog/page split (D25) is still not needed (loading the whole workspace takes 
 Candidates when profiling demands: tessellate the visible strokes first, persist or
 cache meshes.
 
-Stabilization after manual testing (pointer preview and frame scheduling), measured with
-real OS input (`SendInput`) on the same laptop, Release build, per-frame tracing:
+Stabilization after manual testing (pointer preview, frame pacing, resize), measured with
+real OS input (`SendInput`/`SetWindowPos` from a driver process) and per-frame tracing
+(input, paint, present) on the same laptop, Release build, 144 Hz display:
 
-* The HUD's "≈ 18 fps" was a metric error: it averaged paint intervals including idle
-  gaps. Rendering is on demand and, during input, presents once per input event at up to
-  the display rate (paint CPU 0.05–0.2 ms, GPU ≈ 0.5 ms on an empty page); nothing is
-  drawn when idle. The HUD now averages consecutive frames only and shows the
-  request-to-presented latency (≈ 9 ms during drawing, panning and zooming).
-* The eraser ring was drawn by the renderer: it trailed the cursor by ≈ 8 ms at 1 000 Hz
-  and ≈ 20 ms (≈ 40 px at 2 000 px/s) at 125 Hz mouse reports — the latency of presenting
-  through the compositor, not slow frames — stayed at its last position when the pointer
-  left the canvas (no leave handling), and repainted on every hover move. It is now the
-  platform cursor (no lag, hidden by the window system outside the canvas), and hover
-  moves request no frame.
+* The HUD's "≈ 18 fps" averaged paint intervals including idle gaps. It now reports the
+  cadence of presented canvas frames (`core::FrameTimings`: average, median, p95, p99,
+  max, jitter; gaps > 100 ms are idle and start a new burst), the display's refresh rate
+  and swap interval, request-to-presented latency and CPU/GPU cost distributions.
+* The HUD itself halved the frame rate it measured: its label was changed inside
+  `paintGL`, so Qt composed and presented the window a second time for every frame
+  (median 9.7 ms ≈ 103 fps with the HUD shown, 6.97 ms = 144 fps without). It is now
+  refreshed at most every 250 ms, outside the frame; with it shown, the cadence is the same
+  as without (10 000-stroke pan: 111 vs 113 fps). The first stabilization pass was measured
+  with the HUD shown; those figures were superseded by the table below.
+* The eraser ring was drawn by the renderer: it trailed the cursor by ≈ 8–20 ms (the
+  compositor's presentation latency), stayed at its last position when the pointer left the
+  canvas and cost a frame per hover move. It is the platform cursor now; hover moves request
+  no frame.
+* Resizing painted twice per resize event (QOpenGLWidget paints right after `resizeGL`,
+  and the viewport change requested another frame): 240 paints for 120 resizes, 30.5 ms per
+  resize. Now one paint: 23 ms per resize, jitter 11 → 4 ms. A resize rebuilds nothing
+  (0 meshes built); the remaining time is Qt resizing its FBO and window surface and
+  presenting the window; MSAA makes no measurable difference.
+* `render::appendMesh` reserved the exact size on every call, which made appending k
+  meshes O(k²): the selection overlay of 10 000 selected strokes took 130–200 ms per frame.
+  Now 7.5–8 ms (bench `BM_BuildFramePanningAllSelected`).
+* Zooming in with a whole 10 000-stroke page in view re-tessellated every stroke in one
+  frame (130 ms). The render cache now refines at most 256 meshes per frame and draws the
+  coarser mesh meanwhile (same geometry, less round joins); refining frames take ≈ 6 ms
+  median, 10.5 ms worst (bench `BM_BuildFrameZoomingWholePage`), and the canvas keeps
+  asking for frames only until refinement is done.
+* Dragging a selection that covers whole batch runs (Select All) drew every stroke
+  separately (8 000 draw calls, 135 ms frames, 23 fps on 10 000 strokes); such runs are now
+  one draw moved by the preview offset: 41 draw calls, 47 fps, jitter 1.2 ms.
 
-| Scenario (interaction-driven, input every 4 ms) | Frames | Interval avg | Request → presented | CPU avg / max | GPU |
-|---|---|---|---|---|---|
-| Idle, hover (pen or eraser, 250 moves) | 0 | – | – | – | – |
-| Drawing, empty page | 1 per move | 9.8 ms | 9.0 ms | 0.07 / 0.2 ms | 0.43 ms |
-| Pan, 1 000 strokes (36 visible) | 1 per move | 9.8 ms | 9.1 ms | 0.10 / 0.25 ms | 0.50 ms |
-| Pan, 10 000 strokes (≈ 360 visible) | 1 per move | 11.3 ms | 10.5 ms | 0.55 / 1.6 ms | 1.0 ms |
-| Pan, 10 000 strokes, all visible (batched) | 1 per move | 15.2 ms | 14.6 ms | 2.9 / 4.2 ms | 4.0 ms |
-| Wheel zoom in, 10 000 strokes all visible | 11 | 46 ms | 40 ms | 26 / 130 ms | 3.8 ms |
+Interaction matrix (mouse input at 125 Hz, HUD hidden; frame = presented canvas frame; a
+p95 of ≈ 14 ms is one refresh without new input, since 125 Hz input is slower than the
+144 Hz display; p99 spikes of 20–24 ms coincide with pauses in the synthetic input):
 
-Remaining bottleneck: zooming in with every stroke of a 10 000-stroke page visible
-re-tessellates the visible strokes each time a finer LOD bucket is needed (≈ 10 000 meshes,
-up to 130 ms per step, a visible hitch; first zoom-out to the whole page: 200 ms). Not
-addressed yet; candidates: tessellate incrementally over frames or keep the coarse mesh
-until the finer one is ready.
+| Scenario | Median | p95 | p99 | Jitter | CPU avg / max | GPU avg | Visible |
+|---|---|---|---|---|---|---|---|
+| Idle, hover (slow and fast), any tool | no frames | – | – | – | – | – | – |
+| Drawing, empty page | 6.97 ms | 14.7 | 23.7 | 3.6 | 0.07 / 0.4 ms | 0.42 ms | – |
+| Drawing, 10 000 strokes | 7.12 ms | 15.0 | 23.2 | 3.4 | 0.46 / 1.0 ms | 0.84 ms | 353 |
+| Selection drag, 10 000 strokes | 6.96 ms | 14.3 | 15.6 | 2.6 | 0.41 / 1.1 ms | 0.86 ms | 354 |
+| Erasing, 10 000 strokes | 6.99 ms | 14.6 | 15.9 | 2.6 | 0.40 / 2.1 ms | 0.82 ms | 353 |
+| Pan, 1 000 strokes | 6.98 ms | 14.1 | 14.8 | 2.7 | 0.07 / 0.3 ms | 0.42 ms | 24 |
+| Pan, 10 000 strokes | 6.95 ms | 14.3 | 19.4 | 2.9 | 0.27 / 0.9 ms | 0.68 ms | 244 |
+| Pan, whole 1 000-stroke page | 7.05 ms | 14.5 | 15.1 | 2.8 | 0.76 / 3.3 ms | 0.78 ms | 949 |
+| Pan, whole 10 000-stroke page (batched) | 8.62 ms | 11.2 | 13.1 | 1.1 | 2.25 / 4.5 ms | 3.26 ms | 9 580 |
+| Drag all 10 000 selected strokes | 21.1 ms | 23.9 | 24.9 | 1.2 | 12.8 / 65 ms | 6.9 ms | 9 963 |
+| Window resize (1100×700 ↔ 1700×1000) | 23.1 ms | 29.3 | 33.7 | 3.9 | 0.37 / 0.9 ms | 0.65 ms | 228 |
+
+Wheel zooming follows the wheel events (the driver delivers them every ≈ 17 ms); zooming
+in at the whole 10 000-stroke page peaks at 13 ms CPU (was 130 ms). Continuous pan
+benchmark (`--bench-pan 600`, a frame every refresh, 10 000 strokes):
+
+| View | Median | p95 | p99 | Worst | Jitter | CPU avg | GPU avg |
+|---|---|---|---|---|---|---|---|
+| Zoom 1 (≈ 340 visible) | 6.96 ms | 7.91 | 9.28 | 9.95 | 0.71 | 0.56 ms | 0.84 ms |
+| Zoom 0.3 | 6.94 ms | 8.24 | 9.34 | 10.2 | 0.73 | 0.85 ms | 2.11 ms |
+| Whole page (all 10 000 visible) | 7.59 ms | 9.86 | 12.1 | 16.5 | 1.05 | 2.48 ms | 3.35 ms |
+
+Remaining costs, deferred to the final optimization pass (Phase 9): the first frame that
+shows the whole 10 000-stroke page tessellates every stroke once (160–250 ms); selection
+outlines are rebuilt every frame (≈ 7.5 ms at 10 000 selected); a move preview of a
+selection that covers only parts of batch runs draws those runs per element; committing a
+move of 10 000 elements and its autosave take ≈ 110 ms. Windows delivers only the latest
+mouse position when the GUI thread reads input (move coalescing), so a mouse gives the
+stroke pipeline about one sample per frame (not measured with a physical mouse; pen input
+arrives through tablet events).
 
 Deviations: no per-page camera memory, lasso, partial eraser or highlighter (Phases 5/6);
 pen hardware was not available for testing (pressure is exercised by synthetic events and
@@ -214,6 +256,12 @@ mouse input only; the tablet path is implemented through Qt tablet events).
   `ui.CanvasWidgetTest`); the 10 000-stroke page pans at ≥ 60 fps on the reference
   integrated-GPU laptop with every stroke visible; no GL calls outside `render_gl`
   (boundary check).
+* **Frame pacing (quality requirement, added in stabilization):** idle draws nothing;
+  during interaction the canvas presents at the display's refresh cadence when the workload
+  allows it (60 Hz ≈ 16.7 ms, 120 Hz ≈ 8.3 ms, 144 Hz ≈ 6.9 ms; the refresh rate is not
+  hard-coded, vsync paces presentation), and otherwise at a stable lower cadence rather
+  than an oscillating one; no scheduler-caused spikes. Met on the reference laptop (144 Hz)
+  for the matrix above; measured only at 144 Hz (no other display available).
 
 Original plan:
 

@@ -361,10 +361,14 @@ What exists (`src/canvas`), and where it differs from the sketches above.
   change only when a payload changes (moves keep the mesh).
 * **Render cache** (§3.3): CPU meshes per element keyed by content version and a
   power-of-two zoom bucket; rebuilt only for new content or when drawn at a finer bucket.
-  GPU handles of removed or rebuilt meshes are destroyed at the next frame.
+  GPU handles of removed or rebuilt meshes are destroyed at the next frame. Refinement for
+  a finer bucket is spread over frames (at most 256 meshes per frame; the coarser mesh,
+  which has the same world geometry, is drawn meanwhile and the controller requests
+  frames until it is done); new or changed content is always built at once.
 * **Batching** (D31): above 1 024 visible elements, `RenderBatches` draws runs of up to
   256 consecutive same-layer elements as one mesh; runs touched by a move/erase preview
-  are drawn per element.
+  are drawn per element, except runs that move as a whole (every member selected), which
+  stay one draw moved by the preview offset.
 * **Hit testing** (§6): strokes by distance to the transformed polyline (per-point
   radius + tolerance); shapes, text boxes and images by their local boxes; connectors by
   segment distance. Locked layers are not hit-testable; hidden layers are skipped.

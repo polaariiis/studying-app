@@ -302,15 +302,29 @@ backend target — nothing in `canvas`, `document` or `persistence`.
   batching was brought forward from Phase 9 after measurement (D31).
 * **GPU timing** (§10): three round-robin `GL_TIME_ELAPSED` queries, read without
   stalling; shown in the HUD and the pan benchmark.
-* **Debug HUD** (View ▸ Debug HUD, F3; off by default, remembered in settings): frame
-  rate while active, repaint-request-to-presented latency, CPU time and profiler
-  sections, zoom and centre, view/framebuffer size and DPR, scene/visible/drawn/selected
-  counts, draw calls, triangles, GPU meshes and time, render-cache statistics, tool, live
-  points, GL version. Rendering is on demand, so the frame rate is averaged only over
-  consecutive frames: gaps over 100 ms are idle time and start a new average (a plain
-  average of paint intervals mixed idle time in and read as ≈ 18 fps).
+* **Debug HUD** (View ▸ Debug HUD, F3; off by default, remembered in settings): cadence
+  of presented canvas frames (fps, average, median, p95, p99, max, jitter;
+  `core::FrameTimings`), the screen's refresh rate (`QScreen::refreshRate`) and the
+  presenting window's swap interval, request-to-presented latency, CPU and GPU cost
+  (average, p95), profiler sections, zoom and centre, view/framebuffer size and DPR,
+  scene/visible/drawn/selected counts, batching, draw calls, triangles, GPU meshes,
+  render-cache statistics, tool, live points, GL version. Rendering is on demand: gaps over
+  100 ms between frames are idle time, not frames, and start a new burst (a plain average
+  of paint intervals read as ≈ 18 fps). The label is refreshed at most every 250 ms and
+  never inside `paintGL`: changing it during a frame made Qt present the window twice per
+  frame and halved the frame rate it was measuring.
 * **Scheduling**: a frame is requested only when something visible changed (a gesture
-  step, wheel/pinch, a patch, a view or tool change); hover moves request nothing. Qt
-  coalesces requests into one paint of the latest state, and the swap waits for vsync, so
-  during input the canvas presents at up to the display rate and draws nothing when idle.
-  No render loop or timer is involved.
+  step, wheel/pinch, a patch, a view or tool change, pending level-of-detail refinement);
+  hover moves request nothing. Qt coalesces requests into one paint of the latest state.
+  No render loop or timer drives frames.
+* **Presentation**: `QOpenGLWidget` renders into an FBO that the top-level window composes
+  and presents; the window's surface keeps Qt's default swap interval 1 (vsync), which is
+  what paces frames to the display (measured: median = one refresh period during
+  interaction at 144 Hz). Swap interval 0 and MSAA off were measured and changed neither
+  the cadence nor the latency materially (the compositor presents at the refresh rate
+  anyway), so they stay at their defaults. The refresh rate is read from Qt for the HUD
+  only; nothing assumes 60 Hz.
+* **Resize**: a resize changes the viewport only (camera centre and zoom kept, no
+  re-tessellation, no GL resources recreated besides the FBO Qt resizes). `QOpenGLWidget`
+  paints right after `resizeGL`, so the widget does not schedule a second frame for the
+  viewport change (it used to paint twice per resize).
