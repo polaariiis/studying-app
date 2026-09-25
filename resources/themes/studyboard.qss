@@ -1,0 +1,101 @@
+/*
+ * StudyBoard stylesheet template (light and dark).
+ *
+ * Placeholders (a token name between at-signs) are replaced by ThemeManager with
+ * values from DesignTokens.
+ * Keep it restrained: borders and tonal contrast instead of shadows, small radii,
+ * no gradients, no decorative colour.
+ */
+
+QMainWindow, QDialog {
+    background: @background@;
+}
+
+QMenuBar {
+    background: @background@;
+    border-bottom: 1px solid @border@;
+    padding: 2px 4px;
+}
+QMenuBar::item {
+    background: transparent;
+    padding: 4px 8px;
+    border-radius: @radiusSmall@px;
+}
+QMenuBar::item:selected {
+    background: @hover@;
+}
+
+QMenu {
+    background: @surfaceElevated@;
+    border: 1px solid @borderStrong@;
+    border-radius: @radiusMedium@px;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 5px 24px 5px 12px;
+    border-radius: @radiusSmall@px;
+    color: @textPrimary@;
+}
+QMenu::item:selected {
+    background: @hover@;
+}
+QMenu::item:disabled {
+    color: @textDisabled@;
+}
+QMenu::separator {
+    height: 1px;
+    background: @border@;
+    margin: 4px 6px;
+}
+
+QToolBar {
+    background: @background@;
+    border: none;
+    border-bottom: 1px solid @border@;
+    padding: 3px 6px;
+    spacing: 2px;
+}
+QToolButton {
+    background: transparent;
+    color: @textPrimary@;
+    border: 1px solid transparent;
+    border-radius: @radiusSmall@px;
+    padding: 4px 8px;
+}
+QToolButton:hover {
+    background: @hover@;
+}
+QToolButton:pressed,
+QToolButton:checked {
+    background: @selected@;
+    color: @selectedText@;
+    border-color: @borderStrong@;
+}
+QToolButton:disabled {
+    color: @textDisabled@;
+}
+
+QStatusBar {
+    background: @background@;
+    border-top: 1px solid @border@;
+    color: @textSecondary@;
+}
+QStatusBar QLabel {
+    color: @textSecondary@;
+}
+
+QToolTip {
+    background: @surfaceElevated@;
+    color: @textPrimary@;
+    border: 1px solid @borderStrong@;
+    padding: 4px 6px;
+}
+
+QLabel#placeholderTitle {
+    color: @textPrimary@;
+    font-size: 15pt;
+    font-weight: 600;
+}
+QLabel#placeholderSubtitle {
+    color: @textMuted@;
+}

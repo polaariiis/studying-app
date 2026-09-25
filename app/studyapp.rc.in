@@ -1,0 +1,3 @@
+// Windows resources for the studyapp executable (configured by app/CMakeLists.txt).
+// The executable icon shown by Explorer, shortcuts and the taskbar before Qt starts.
+IDI_APP_ICON ICON "@STUDYAPP_WINDOWS_ICON@"

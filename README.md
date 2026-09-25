@@ -4,10 +4,13 @@ StudyBoard is a local-first, native desktop application for studying. It is plan
 combine handwritten and typed notes on an infinite canvas, drawing, PDF annotation,
 notebooks, and course/project/task planning, all usable without an internet connection.
 
-> **Status: early development — Phase 1 (foundation & build skeleton) is complete.**
-> The application currently opens an empty main window with menus, a toolbar and
-> light/dark theme switching. Notes, drawing, the canvas, notebooks, planning, search and
-> PDF support are **not implemented yet**; see the [roadmap](docs/ROADMAP.md).
+> **Status: early development — Phase 2 is complete.**
+> The headless document engine exists: the Workspace → Notebook → Section → Page → Layer →
+> Element model with stable ids, patch-based editing, commands and undo/redo, all covered
+> by tests. The application itself still opens a placeholder window (menus, toolbar,
+> neutral light/dark themes, StudyBoard icon); notebooks UI, drawing, the canvas,
+> planning, search and PDF support are **not implemented yet**; see the
+> [roadmap](docs/ROADMAP.md).
 
 ## Technology
 
@@ -39,15 +42,15 @@ app (studyapp executable)
 
 | Module | Responsibility | Phase 1 state |
 |---|---|---|
-| `core` | Geometry, UUIDv7 ids, colours, `Result`, clock, logging | Implemented |
-| `document` | Notebooks, sections, pages, layers, elements, patches, undo | Skeleton (Phase 2) |
+| `core` | Geometry, UUIDv7 ids, ordering keys, colours, `Result`, clock, logging | Implemented |
+| `document` | Notebooks, sections, pages, layers, elements, patches, commands, undo/redo | Implemented (headless) |
 | `study` | Courses, projects, tasks, planning | Skeleton (Phase 7) |
 | `render` / `render_gl` | Renderer API / OpenGL 3.3 backend | Skeleton (Phase 4) |
 | `canvas` | Camera, tools, hit testing, selection | Skeleton (Phase 4) |
 | `persistence` | SQLite schema, stores, assets, workspace locking | SQLite wired in (Phase 3) |
 | `application` | Sessions and use cases | Component versions only |
 | `platform` | Qt-backed adapters, OS-specific code | Qt log sink |
-| `ui` | Main window, themes | Shell with theme switching |
+| `ui` | Main window, design tokens, themes, app icon | Shell with neutral light/dark themes |
 
 Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), plus the
 [data model](docs/DATA_MODEL.md), [database schema](docs/DATABASE_SCHEMA.md),
@@ -100,9 +103,8 @@ cmake --workflow --preset debug
 
 ## Run the application
 
-* Windows: add `<Qt>\bin` to `PATH` and run `build\debug\app\studyapp.exe`. Alternatively,
-  run `cmake --install build/debug` and start `install\debug\bin\studyapp.exe`, which has
-  Qt deployed next to it.
+* Windows: run `build\debug\app\studyapp.exe`. The build copies the Qt runtime next to
+  the executable (`windeployqt` post-build step), so Qt does not need to be on `PATH`.
 * macOS: `open build/debug/app/studyapp.app`
 * Linux: `./build/debug/app/studyapp`
 
@@ -112,8 +114,8 @@ cmake --workflow --preset debug
 |---|---|---|
 | 0 | Architecture | ✅ |
 | 1 | Foundation & build skeleton | ✅ |
-| 2 | Document model, commands, undo/redo (headless) | Next |
-| 3 | SQLite persistence, assets, workspace locking | Planned |
+| 2 | Document model, commands, undo/redo (headless); app icon; design foundation | ✅ |
+| 3 | SQLite persistence, assets, workspace locking | Next |
 | 4 | Canvas engine + OpenGL renderer (first drawing) | Planned |
 | 5 | Navigation: notebooks, sections, pages | Planned |
 | 6 | Text, shapes, images, connectors, layers | Planned |

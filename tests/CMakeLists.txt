@@ -4,7 +4,9 @@
 #   architecture  module-boundary checks
 #   gui           Qt Widgets tests (run with QT_QPA_PLATFORM=offscreen)
 
+add_subdirectory(support)
 add_subdirectory(core)
+add_subdirectory(document)
 add_subdirectory(persistence)
 add_subdirectory(application)
 add_subdirectory(architecture)

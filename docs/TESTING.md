@@ -1,18 +1,24 @@
 # Testing Architecture
 
-> Status: **Final baseline.** Phase 1 implements the foundation described in §0; the rest
-> of this document is the plan that later phases follow.
+> Status: **Final baseline.** §0 lists what exists after Phase 2; the rest of this
+> document is the plan that later phases follow.
 
-## 0. Current state (Phase 1)
+## 0. Current state (Phase 2)
 
 | Test target | Label | Framework | Covers |
 |---|---|---|---|
-| `core_tests` | `unit` | GoogleTest | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid`, `Id<T>`, `UuidV7Generator`, `SystemClock`, `Result`/`Error`, logging facade |
+| `core_tests` | `unit` | GoogleTest | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid`, `Id<T>`, `UuidV7Generator`, `SystemClock`, `Result`/`Error`, logging facade, `FractionalIndex` (incl. randomised insertion and key-growth tests) |
+| `document_tests` | `unit` | GoogleTest | Workspace hierarchy, lookup, ordering, uniqueness, invariants; patches (apply, inverse, conflicts, atomic rollback); commands (success, failure, determinism, cascades); undo/redo (empty history, multiple steps, redo-branch clearing, failed commands, capacity, exact state restoration, nested 10-step scenario) |
 | `persistence_tests` | `integration` | GoogleTest | Linked SQLite meets the version/feature requirements (FTS5, thread safety) |
 | `application_tests` | `unit` | GoogleTest | `componentVersions()` |
 | `architecture_tests` | `architecture` | GoogleTest | All Qt-free modules link into one plain C++ executable |
 | `architecture.include_boundaries` | `architecture` | Python script | `tools/check_boundaries.py`: forbidden includes / GL calls per module |
-| `ui.MainWindowTest` | `gui` | Qt Test (offscreen) | Main window structure, theme switching, theme actions, settings persistence |
+| `ui.MainWindowTest` | `gui` | Qt Test (offscreen) | Main window structure, theme switching, theme actions, settings persistence, application icon resources, neutral palette (zero-saturation tokens), stylesheet template fully resolved |
+
+Document tests use the header-only `studyapp_test_support` target (`tests/support`):
+`testing::ManualClock` and `testing::SequentialIds` make every timestamp and id
+deterministic. They link only `studyapp_document` and `studyapp_core` — no Qt, GPU,
+SQLite, filesystem, network or wall clock.
 
 GoogleTest tests are registered with `gtest_discover_tests(... DISCOVERY_MODE PRE_TEST)`,
 so each test case is its own CTest test. Qt Widgets tests use Qt Test because they need
@@ -52,11 +58,11 @@ ctest --preset debug -L unit        # by label
 
 ```
 tests/
-├── support/        # (Phase 2+) studyapp_test_support: builders, FixedClock, SequentialIds,
-│                   #   ImmediateExecutor, TempWorkspace, RecordingRenderer, FakeTextLayout
+├── support/        # studyapp_test_support: ManualClock, SequentialIds (Phase 2); later
+│                   #   builders, ImmediateExecutor, TempWorkspace, RecordingRenderer, FakeTextLayout
 ├── architecture/   → architecture_tests + include-boundary check (Phase 1)
 ├── core/           → core_tests
-├── document/       → document_tests
+├── document/       → document_tests          (Phase 2)
 ├── study/          → study_tests
 ├── render/         → render_tests          (tessellation only; no GL)
 ├── canvas/         → canvas_tests

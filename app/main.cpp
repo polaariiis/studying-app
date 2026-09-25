@@ -4,6 +4,7 @@
 #include <studyapp/core/BuildInfo.hpp>
 #include <studyapp/core/Log.hpp>
 #include <studyapp/platform/QtLogSink.hpp>
+#include <studyapp/ui/AppIcon.hpp>
 #include <studyapp/ui/MainWindow.hpp>
 #include <studyapp/ui/ThemeManager.hpp>
 
@@ -26,6 +27,7 @@ int main(int argc, char* argv[]) {
     QApplication::setOrganizationName(toQString(studyapp::core::build::kProductName));
     QApplication::setApplicationName(toQString(studyapp::core::build::kProductName));
     QApplication::setApplicationVersion(toQString(studyapp::core::build::kVersion));
+    QApplication::setWindowIcon(studyapp::ui::applicationIcon());
 
     studyapp::platform::installQtLogSink();
 

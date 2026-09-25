@@ -5,7 +5,7 @@
 #include <studyapp/application/ComponentVersions.hpp>
 #include <studyapp/canvas/Module.hpp>
 #include <studyapp/core/BuildInfo.hpp>
-#include <studyapp/document/Module.hpp>
+#include <studyapp/document/Workspace.hpp>
 #include <studyapp/persistence/SqliteLibrary.hpp>
 #include <studyapp/render/Module.hpp>
 #include <studyapp/study/Module.hpp>
@@ -16,7 +16,8 @@ namespace studyapp {
 namespace {
 
 TEST(ModuleLinkTest, QtFreeModulesLinkWithoutQt) {
-    EXPECT_EQ(document::moduleName(), "document");
+    const document::Workspace workspace(document::WorkspaceInfo{.name = "link test"});
+    EXPECT_EQ(workspace.notebookCount(), 0U);
     EXPECT_EQ(study::moduleName(), "study");
     EXPECT_EQ(render::moduleName(), "render");
     EXPECT_EQ(canvas::moduleName(), "canvas");

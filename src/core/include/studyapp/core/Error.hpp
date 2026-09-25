@@ -15,6 +15,7 @@ enum class ErrorCode {
     ParseError,
     NotFound,
     AlreadyExists,
+    Conflict, ///< state differs from what the operation expected (e.g. a stale patch)
     IoError,
     Unsupported,
     Internal,

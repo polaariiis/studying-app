@@ -12,6 +12,8 @@ std::string_view toString(ErrorCode code) noexcept {
         return "not found";
     case ErrorCode::AlreadyExists:
         return "already exists";
+    case ErrorCode::Conflict:
+        return "conflict";
     case ErrorCode::IoError:
         return "I/O error";
     case ErrorCode::Unsupported:

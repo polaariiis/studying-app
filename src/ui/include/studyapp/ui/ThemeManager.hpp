@@ -1,5 +1,8 @@
 #pragma once
 
+#include <studyapp/ui/DesignTokens.hpp>
+
+#include <QColor>
 #include <QObject>
 #include <QPalette>
 #include <QString>
@@ -17,12 +20,18 @@ enum class ThemeMode {
 /// Inverse of toSettingsValue(); unknown values map to ThemeMode::System.
 [[nodiscard]] ThemeMode themeModeFromSettingsValue(const QString& value);
 
-[[nodiscard]] QPalette lightPalette();
-[[nodiscard]] QPalette darkPalette();
+[[nodiscard]] QColor toQColor(const core::Color& color);
 
-/// Applies the application-wide light or dark theme: Fusion style, a QPalette and a small
-/// stylesheet from `:/themes`. In System mode it follows QStyleHints::colorScheme() and
-/// reacts to changes of the OS setting.
+/// QPalette derived from design tokens (neutral: no coloured highlight or links).
+[[nodiscard]] QPalette makePalette(const ColorTokens& tokens);
+
+/// Application stylesheet: the `:/themes/studyboard.qss` template with @token@
+/// placeholders replaced from `tokens` and metricTokens().
+[[nodiscard]] QString makeStyleSheet(const ColorTokens& tokens);
+
+/// Applies the application-wide light or dark theme: Fusion style, a token-derived
+/// QPalette and the token-derived stylesheet. In System mode it follows
+/// QStyleHints::colorScheme() and reacts to changes of the OS setting.
 ///
 /// Requires a QApplication. Owned by the composition root (app/main.cpp).
 class ThemeManager final : public QObject {
@@ -34,6 +43,8 @@ public:
     [[nodiscard]] ThemeMode mode() const noexcept { return mode_; }
     /// The effective appearance after resolving System mode.
     [[nodiscard]] bool isDark() const noexcept { return dark_; }
+    /// Colour tokens of the effective appearance.
+    [[nodiscard]] const ColorTokens& tokens() const noexcept;
 
     void setMode(ThemeMode mode);
     /// Switches to an explicit Light or Dark mode, opposite to the current appearance.

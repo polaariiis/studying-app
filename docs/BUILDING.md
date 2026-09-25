@@ -102,8 +102,13 @@ git-ignored. In-source builds are rejected.
 
 **Running the application**
 
-* Windows: the build-tree executable `build/debug/app/studyapp.exe` needs the Qt DLLs;
-  either add `<qt-dir>\bin` to `PATH` or install (below), which deploys them next to it.
+* Windows: run `build/debug/app/studyapp.exe` directly. Windows only finds DLLs next to
+  the executable or on `PATH`, so a post-build step runs `windeployqt` (the
+  `Qt6::windeployqt` target from the Qt package) on the executable **in the build tree**,
+  copying the matching debug/release Qt DLLs and plugins into `build/<preset>/app/`
+  (build output, git-ignored; translations and the MSVC runtime are skipped). Controlled
+  by `STUDYAPP_DEPLOY_QT_TO_BUILD_TREE` (default `ON` on Windows, unused elsewhere:
+  Linux/macOS executables find Qt through RPATH).
 * macOS: `open build/debug/app/studyapp.app`
 * Linux: `build/debug/app/studyapp`
 
@@ -112,7 +117,8 @@ git-ignored. In-source builds are rejected.
 
 ```sh
 cmake --install build/release                    # → install/release
-cmake --install build/release --prefix <dir>     # custom location
+cmake --install build/release --prefix <dir>     # custom location; must be an absolute
+                                                 # path (Qt's deploy step rejects relative)
 ```
 
 On Windows the deployed tree includes `opengl32sw.dll`, Qt's software OpenGL fallback.
@@ -183,6 +189,7 @@ Enforcement:
 | `STUDYAPP_BUILD_TESTS` | `ON` when top-level | Tests |
 | `STUDYAPP_WARNINGS_AS_ERRORS` | `OFF` (CI presets: `ON`) | `/WX` / `-Werror` for first-party targets |
 | `STUDYAPP_SANITIZERS` | empty | e.g. `address;undefined` or `thread` (GCC/Clang) |
+| `STUDYAPP_DEPLOY_QT_TO_BUILD_TREE` | `ON` on Windows | Run `windeployqt` after each build so the build-tree executable starts without Qt on `PATH` |
 | `STUDYAPP_USE_SYSTEM_SQLITE` | `OFF` | `find_package(SQLite3 3.43)` instead of the amalgamation; must include FTS5 (verified by `persistence_tests`) |
 
 ### 5.4 Compiler settings
@@ -204,9 +211,18 @@ Enforcement:
 
 ### 5.5 Resources
 
-Theme stylesheets (`resources/themes/*.qss`) are compiled into `studyapp_ui` with
-`qt_add_resources`. SQL migrations (Phase 3) will be embedded by a CMake script so that
-`persistence` stays Qt-free; see `src/persistence/migrations/README.md`.
+* `resources/themes/studyboard.qss` — stylesheet template (placeholders filled from design
+  tokens at runtime), compiled into `studyapp_ui` with `qt_add_resources` under `:/themes`.
+* `resources/icons/app/studyboard-{16..256}.png` — application icon, compiled into
+  `studyapp_ui` under `:/icons/app`.
+* `resources/icons/app/studyboard.ico` — Windows only: `app/studyapp.rc.in` is configured
+  with its absolute path and added to the `studyapp` executable when `WIN32`.
+* Icon assets are generated from `resources/icons/app/studyboard-master.png` by
+  `python tools/generate_app_icons.py` (requires Pillow; developers only — the build uses
+  the committed files). To replace the artwork:
+  `python tools/generate_app_icons.py --import-source <image>`.
+* SQL migrations (Phase 3) will be embedded by a CMake script so that `persistence` stays
+  Qt-free; see `src/persistence/migrations/README.md`.
 
 ## 6. Code quality tooling
 

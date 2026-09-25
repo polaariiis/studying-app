@@ -22,6 +22,9 @@ option(STUDYAPP_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(STUDYAPP_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(STUDYAPP_USE_SYSTEM_SQLITE
     "Use the system SQLite (find_package) instead of the pinned amalgamation" OFF)
+option(STUDYAPP_DEPLOY_QT_TO_BUILD_TREE
+    "Windows: copy the Qt runtime next to the executable after each build so it runs directly"
+    ${WIN32})
 set(STUDYAPP_SANITIZERS "" CACHE STRING
     "Sanitizers for GCC/Clang builds, e.g. \"address;undefined\" or \"thread\"")
 

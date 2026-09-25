@@ -1,7 +1,9 @@
 # StudyBoard — Architecture
 
-> Status: **Final baseline.** Phase 1 (foundation & build skeleton) is implemented; everything
-> else describes the target design and is built phase by phase (see [ROADMAP.md](ROADMAP.md)).
+> Status: **Final baseline.** Phase 1 (foundation & build skeleton) and Phase 2 (document
+> model, patches, commands, undo/redo, app icon, design-token foundation) are implemented;
+> §3.2 lists exactly what exists. Everything else describes the target design and is built
+> phase by phase (see [ROADMAP.md](ROADMAP.md)).
 > This document is the entry point. Details live in the companion documents:
 >
 > | Document | Covers |
@@ -162,7 +164,7 @@ How the boundaries are enforced (implemented in Phase 1):
 
 ### `core` — foundation (no domain knowledge)
 * Geometry: `Vec2`/`DVec2`, `Rect`/`DRect` *(Phase 1)*; `Affine2`, polyline utilities,
-  intersection and distance functions *(added with their first consumer, Phase 2/4)*.
+  intersection and distance functions *(added with their first consumer, Phase 4)*.
 * Strongly typed identifiers: `Uuid` + UUIDv7 generator, `Id<Tag>` → `PageId`,
   `ElementId`, … *(Phase 1)*. All entity id types are declared here so modules can
   *reference* each other's entities without depending on each other (e.g. `study::Task`
@@ -170,18 +172,22 @@ How the boundaries are enforced (implemented in Phase 1):
 * `Color` (straight RGBA8, conversions), `Result<T>` = `tl::expected<T, Error>`, `Clock`
   interface, `IdGenerator` interface, logging facade whose sink is installed once by `app`
   *(Phase 1)*.
-* `FractionalIndex` (ordering keys) and a tiny `Signal<Args...>` observer utility are
-  added in Phase 2, when the document model first needs them.
+* `FractionalIndex` ordering keys *(Phase 2)*. A `Signal<Args...>` observer utility is
+  added with its first consumer (change notification to canvas/UI, Phase 4/5).
 
-### `document` — the notes domain
-* `WorkspaceCatalog`: notebooks, sections, pages *metadata*, tags. Always fully loaded
-  (it is small).
-* `PageDocument`: the content of one page — layers and elements. Loaded on demand.
-* Element model: `Element` = common header + `std::variant<Stroke, TextBox, Shape, Image, Connector>`.
-* `Patch` / `CatalogPatch`: value descriptions of changes; `Editor` applies them and
-  records `UndoStack` entries.
-* Edit operations ("commands") as free functions producing patches.
-* Invariant validation. No I/O, no Qt, no threads.
+### `document` — the notes domain *(implemented in Phase 2)*
+* `Workspace`: the single owner of all records of the hierarchy
+  Workspace → Notebook → Section → Page → Layer → Element, stored in id-keyed tables with
+  derived, ordered child indexes. Read-only queries; mutation only via `apply(Patch)`.
+* Element model: `Element` = common header + `std::variant<Stroke, TextBox, Shape, Image, Connector>`
+  (data only in Phase 2).
+* `Patch` (ordered before/after record changes), applied atomically with invariant
+  checks; `Patch::inverted()` for undo.
+* Commands as free functions producing `Command { label, Patch }`; `Editor` executes them
+  and keeps an `UndoStack`.
+* No I/O, no Qt, no threads. Details: [DATA_MODEL.md](DATA_MODEL.md) §3–§7.
+* Later: per-page loading (`PageDocument`) with persistence (Phase 3), change
+  notification for the canvas (Phase 4).
 
 ### `study` — study & planning domain
 * `Course`, `Project`, `Task`, `StudySession`, planning value types.
@@ -240,7 +246,9 @@ How the boundaries are enforced (implemented in Phase 1):
 
 ### `ui` — Qt Widgets presentation
 * `MainWindow`, docks, toolbars, notebook tree (`QAbstractItemModel` adapters over the
-  catalog), planner views, dialogs, theme manager (`QPalette` + QSS in `resources/themes`).
+  catalog), planner views, dialogs.
+* Design system foundation: `DesignTokens` (neutral colour and metric tokens, §3.3),
+  `ThemeManager` (palette + stylesheet generated from tokens), application icon (§3.4).
 * `CanvasWidget : QOpenGLWidget` — receives Qt events, passes them through the input
   adapter into `canvas` events, owns the `OpenGLRenderer`, asks the canvas for a frame,
   submits it.
@@ -288,17 +296,68 @@ Ownership rules:
   Wintab pressure, macOS tablet proximity, Wayland tablet protocol), called by the adapter.
 * `canvas` defines the event value types and consumes them; tests construct them directly.
 
-### 3.2 Implementation status (end of Phase 1)
+### 3.2 Implementation status (end of Phase 2)
 
-| Module | Phase 1 content |
+| Module | Content |
 |---|---|
-| `core` | Implemented foundation: `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid` + `UuidV7Generator`, `Id<Tag>` + entity id aliases, `Error`/`Result`, `Clock`/`SystemClock`, `IdGenerator`, logging facade |
-| `document`, `study`, `render`, `canvas`, `render_gl` | **Module anchor only** (`moduleName()`), so the target exists, compiles, links with its final dependencies, and is covered by the boundary checks. `render_gl` already links Qt6::OpenGL but contains no GL calls yet |
-| `persistence` | SQLite dependency wiring (vendored amalgamation or system SQLite) and `sqliteVersion()`; no schema, no stores |
-| `application` | `componentVersions()` — reports build/library versions for the About dialog, proving the `ui → application → persistence → SQLite` chain without exposing persistence to `ui` |
-| `platform` | Qt adapter for the core logging facade (`installQtLogSink()`) |
-| `ui` | `MainWindow` (menus, toolbar, placeholder central area, status bar), `ThemeManager` (System/Light/Dark), About dialog |
-| `app` | `main.cpp` composition root |
+| `core` | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid` + `UuidV7Generator`, `Id<Tag>` + entity id aliases, `Error`/`Result` (incl. `Conflict`), `Clock`/`SystemClock`, `IdGenerator`, logging facade *(Phase 1)*; `FractionalIndex` *(Phase 2)* |
+| `document` | `Workspace` (hierarchy, invariants, atomic `apply`), records, `Element` + payloads, `Patch`/`Change`, commands, `UndoStack`, `Editor` *(Phase 2)* |
+| `study`, `render`, `canvas`, `render_gl` | **Module anchor only** (`moduleName()`): the target exists, compiles, links with its final dependencies and is covered by the boundary checks. `render_gl` links Qt6::OpenGL but contains no GL calls yet |
+| `persistence` | SQLite dependency wiring and `sqliteLibraryInfo()`; no schema, no stores |
+| `application` | `componentVersions()` for the About dialog |
+| `platform` | Qt adapter for the core logging facade |
+| `ui` | `MainWindow` (menus, toolbar, status bar, About), `ThemeManager` + `DesignTokens` (neutral light/dark), `CanvasPlaceholder` (neutral dotted surface; not the canvas), `applicationIcon()` |
+| `app` | `main.cpp` composition root; Windows `.rc` with the executable icon |
+
+### 3.3 Design system foundation *(Phase 2)*
+
+StudyBoard's UI is deliberately **neutral, restrained and canvas-first**: black, white
+and grays; the chrome recedes so notes, drawings and study material are the focus.
+
+* **Tokens** (`ui/DesignTokens.hpp`) are the single source of visual values:
+  surfaces (`background`, `surface`, `surfaceElevated`, `canvas`, `canvasGrid`), borders
+  (`border`, `borderStrong`), text (`textPrimary`, `textSecondary`, `textMuted`,
+  `textDisabled`), states (`hover`, `selected`, `selectedText`, `control`,
+  `controlText`), status (`error`, `warning`, `success`) and metrics (radii 3/4 px,
+  4 px spacing unit, 24 px canvas grid). Values are `core::Color`, so the Qt-free canvas and
+  renderer can adopt them later.
+* **Light**: canvas `#FAFAFA`, surfaces `#FFFFFF`/`#F5F5F5`, hover `#EEEEEE`, borders
+  `#E5E5E5`/`#D4D4D4`, text `#171717`/`#525252`/`#737373`, disabled `#A3A3A3`.
+  **Dark**: `#171717`/`#1F1F1F`/`#262626`/`#303030` surfaces, text
+  `#F5F5F5`/`#D4D4D4`/`#A3A3A3`.
+* **Rules**: no brand accent colour, no purple/blue default, no gradients, glow,
+  translucency or heavy shadows. Selection and active states use tonal contrast and
+  borders. Colour appears only with meaning (error/warning/success, later: selection
+  handles on the canvas). Small radii; separation by borders and spacing, not shadows.
+  A UI test asserts that all non-status tokens and the palette's highlight/link colours
+  have zero saturation.
+* **Mechanics**: `ThemeManager` builds the `QPalette` from tokens (`makePalette`) and the
+  stylesheet from the `resources/themes/studyboard.qss` template, whose placeholders are
+  filled from tokens (`makeStyleSheet`). One template serves both themes.
+* **Branding vs. UI**: the application icon is branding only; its colours are not used in
+  the UI.
+
+### 3.4 Application resources and icon *(Phase 2)*
+
+```
+resources/icons/app/
+├── studyboard-master.png      square master (lossless), the source of truth
+├── studyboard-{16,32,48,64,128,256}.png   compiled into the app (Qt resources)
+└── studyboard.ico             Windows executable icon (16, 24, 32, 48, 64, 256)
+```
+
+* The artwork is imported once with `tools/generate_app_icons.py --import-source <image>`
+  (non-square artwork is padded with its own corner colour, never cropped or redrawn),
+  and all sizes are regenerated from the committed master (Lanczos downsampling, never
+  upscaled). The build does not depend on Pillow or on any path outside the repository.
+* Qt: the PNGs are compiled into `studyapp_ui` under `:/icons/app/`; `ui::applicationIcon()`
+  returns a multi-size `QIcon`, set on the `QApplication` (`app/main.cpp`) and on
+  `MainWindow`.
+* Windows: `app/studyapp.rc.in` is configured with the `.ico` path and added to the
+  executable only when `WIN32`, so Explorer, shortcuts and the taskbar show the icon.
+* macOS `.icns` and Linux `.desktop` icons are packaging concerns (Phase 9); until then
+  both platforms get the icon at runtime from Qt resources.
+* Icon assets are UI/app concerns only; no domain module depends on them.
 
 ---
 
@@ -331,17 +390,17 @@ studying-app/
 │   │   └── os/{windows,macos,linux}/
 │   └── ui/
 ├── resources/
-│   ├── themes/                 # light.qss, dark.qss (Phase 1)
+│   ├── themes/                 # studyboard.qss template, filled from design tokens
+│   ├── icons/app/              # application icon: master PNG, PNG sizes, .ico
 │   ├── shaders/                # GLSL 330 core (Phase 4)
-│   ├── icons/                  # (Phase 5)
 │   └── templates/              # page background templates (Phase 5)
 ├── tests/
 │   ├── core/  document/  study/  render/  canvas/
 │   ├── persistence/  application/  ui/
 │   ├── architecture/           # module link smoke test
 │   ├── fixtures/               # sample workspaces, PDFs, images, golden images (later)
-│   └── support/                # shared test helpers (from Phase 2)
-├── tools/                      # check_boundaries.py; dev tools later
+│   └── support/                # header-only helpers: ManualClock, SequentialIds
+├── tools/                      # check_boundaries.py, generate_app_icons.py
 ├── bench/                      # Google Benchmark micro-benchmarks (from Phase 4)
 ├── docs/
 └── .github/workflows/
@@ -436,8 +495,9 @@ Command → Patch ─┬─ Document (apply)
                  └─ future synchronisation (op log)
 ```
 
-One undo stack per open page plus one
-workspace-level stack for structure (notebooks/sections/pages) and study edits. Full
+Phase 2 has one `UndoStack` (owned by `document::Editor`) for the whole in-memory
+workspace; per-page undo scoping returns when pages are loaded on demand (Phase 3,
+decision D20). Full
 details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
 
 ---
@@ -693,6 +753,11 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D17 | Qt input is normalised in `ui` into plain `canvas` event values | Canvas consumes Qt events | Canvas stays Qt-free and headless-testable |
 | D18 | Workspace lock = OS advisory lock + owner metadata, stale detection, read-only fallback | Existence of `.lock` file as the lock | A leftover file after a crash must not block or mislead; network drives need explicit recovery |
 | D19 | Modules without Phase 1 content contain only a *module anchor* (`moduleName()`) | INTERFACE targets; fake feature stubs | Every target compiles and links now, boundaries are enforced from day one, and no speculative feature code exists |
+| D20 | Phase 2: one in-memory `Workspace` owns the whole hierarchy; one `Patch` type for all record kinds | Baseline: `WorkspaceCatalog` + per-page `PageDocument`, `CatalogPatch` + page `Patch`, per-page undo stacks | Nothing is loaded from disk yet, and cross-level commands (delete notebook) need one atomic patch. The catalog/page split and undo scoping return with persistence (Phase 3), reusing the same `Patch` |
+| D21 | `FractionalIndex` with variable-length integer part + fraction | Pure base-62 fractions (initial implementation) | Pure fractions grew ~1 character per 6 appends (200 chars after 1000 appends) — measured by tests; the integer part keeps append-heavy lists at 2–4 characters |
+| D22 | Deletes are hard deletes in Phase 2 (undoable); Trash later | Soft delete (`trashed`) now | Trash is a UI feature (Phase 5); the record fields are added with it |
+| D23 | Neutral design tokens (black/white/grays, functional status colours only) as `core::Color`, stylesheet generated from one template | Hand-written light/dark QSS with a blue accent (Phase 1) | Product direction: calm, canvas-first UI; one source of truth; reusable by the Qt-free canvas later |
+| D24 | App icon assets generated from a committed master by a dev-only script; Windows `.rc` only on WIN32 | Loading the source image at runtime; generating icons at build time | No build dependency on Pillow or on paths outside the repo; exact artwork preserved |
 
 New significant decisions should be appended here (or moved to `docs/adr/` once the list
 grows) with context, alternatives and consequences.

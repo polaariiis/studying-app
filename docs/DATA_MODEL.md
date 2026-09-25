@@ -1,8 +1,10 @@
 # Data Model
 
-> Status: **Final baseline.** Only the `core` foundation types of §2 exist (Phase 1);
-> everything else is implemented from Phase 2 on. Code below is illustrative C++20, not
-> final API.
+> Status: **Phase 2 implemented.** §2 (core types), §3 (workspace hierarchy), §4.1–4.2
+> (elements, layers), §4.4 (invariants) and §6 (patches, commands, undo/redo) describe the
+> code in `src/core` and `src/document`. §4.3 (rich text), §5 (study model) and the
+> persistence/canvas parts of §6.4 and §7 are target design for later phases and are
+> marked as such.
 
 This document describes the in-memory domain model (`core`, `document`, `study`), who owns
 what, the invariants, and how edits, commands and undo/redo work. The on-disk
@@ -86,7 +88,7 @@ struct DRect { DVec2 min, max; };
 
 struct Color { std::uint8_t r, g, b, a; };  // straight (non-premultiplied) sRGB
 
-class FractionalIndex;        // Phase 2: ordered string key: between(a, b), before(a), after(b)
+class FractionalIndex;        // ordered string key: first(), between(a, b), before(a), after(b)
 
 using Timestamp = std::chrono::sys_time<std::chrono::milliseconds>; // UTC
 struct CalendarDate { std::int32_t year; std::uint8_t month, day; }; // floating date
@@ -100,209 +102,103 @@ a `TagId`, without `study` and `document` depending on each other.
 
 ---
 
-## 3. Workspace catalog (`document`)
+## 3. Workspace and hierarchy (`document`) — implemented in Phase 2
 
-The catalog holds **metadata only** and is always fully loaded (tens of thousands of rows
-at most — a few MB).
-
-```cpp
-namespace studyapp::document {
-
-struct NotebookInfo {
-    NotebookId id; std::string title; std::optional<core::Color> color;
-    std::string icon; std::optional<CourseId> course;
-    core::FractionalIndex order;
-    core::Timestamp created, updated; std::optional<core::Timestamp> trashed;
-};
-
-struct SectionInfo {
-    SectionId id; NotebookId notebook; std::optional<SectionId> parent;
-    std::string title; std::optional<core::Color> color;
-    core::FractionalIndex order; /* timestamps, trashed */
-};
-
-enum class PageExtent { Infinite, Bounded };
-enum class BackgroundPattern { None, Ruled, Grid, Dots };
-
-struct PageBackground {
-    core::Color color{255, 255, 255, 255};
-    BackgroundPattern pattern = BackgroundPattern::None;
-    float spacing = 32.f;                                  // world units
-    std::optional<DocumentPageRef> document;               // {AssetId, pageIndex}
-};
-
-struct PageInfo {
-    PageId id; SectionId section; std::string title;
-    PageExtent extent; core::DVec2 size;                   // size used when Bounded
-    PageBackground background;
-    std::vector<TagId> tags;
-    core::FractionalIndex order;
-    std::uint64_t contentVersion;                          // bumps on content change
-    /* timestamps, trashed */
-};
-
-struct Tag { TagId id; std::string name; std::optional<core::Color> color; };
-
-class WorkspaceCatalog {
-public:
-    // Queries: notebooks(), sectionsOf(NotebookId), pagesOf(SectionId), page(PageId), tags()…
-    void apply(const CatalogPatch&);                // the only mutation entry point
-    core::Signal<const CatalogPatch&> changed;
-private:
-    // flat maps by id + ordered child lists; no pointers between entries
-};
-}
+```
+Workspace (WorkspaceInfo: id, name, created)
+└── Notebook      NotebookInfo { id, title, order, created, modified }
+    └── Section   SectionInfo  { id, notebook, title, order, created, modified }
+        └── Page  PageInfo     { id, section, title, order, extent, size, background,
+                                 created, modified }
+            └── Layer          { id, page, name, order, visible, locked, opacity }
+                └── Element    { id, layer, z, transform, locked, payload }
 ```
 
-Trash: notebooks, sections and pages are soft-deleted (`trashed` timestamp) so that
-deleting a page with 5 000 strokes is a one-field change — trivially undoable and
-recoverable from the Trash view. Purging is a maintenance operation.
+**One owner.** `document::Workspace` is the single owner of every record. It stores each
+record type in an id-keyed table (`std::unordered_map<Id, Record>`); records point to their
+parent **by id**, never by pointer. Ordered child lists (`notebooks()`, `sectionsOf()`,
+`pagesOf()`, `layersOf()`, `elementsOf()`) are derived indexes the workspace maintains.
 
----
+**Identity.** Every record has a typed id (`core::Id<Tag>`: `NotebookId`, `PageId`, ...)
+holding a UUIDv7 from the injected `core::IdGenerator`. Identity never depends on memory
+addresses, container positions or (later) database row order. Ids are unique per record
+type (UUIDv7 makes them globally unique in practice). Globally unique ids make future
+import/merge *tractable*; they do not make it conflict-free: conflict detection, id
+remapping and a merge policy are still required.
+
+**Ordering.** Siblings are sorted by `core::FractionalIndex` (`order`, or `z` for
+elements), ties broken by id, so ordering is total and deterministic. Keys have a
+variable-length integer part plus an optional fraction ("fractional indexing"): appends
+keep keys at 2–4 characters; inserting between neighbours changes only the new record.
+
+**Controlled mutation.** Queries return `const` pointers/spans (valid until the next
+mutation). The only mutation entry point is `Workspace::apply(const Patch&)` (§6). There
+are no setters and no mutable access to internal containers.
+
+**Metadata.** `created`/`modified` timestamps (UTC, ms) on notebooks, sections and pages
+come from the injected `core::Clock`; renames update `modified`.
+
+Deferred (target design, not implemented yet):
+
+* **Page content loading.** Phase 2 keeps every page's content in the one `Workspace`.
+  The split into an always-loaded catalog and per-page `PageDocument`s loaded on demand
+  (with per-page undo scoping) is introduced with persistence in Phase 3, when there is
+  something to load from.
+* **Trash / soft delete** (`trashed` timestamps) — Phase 5 (navigation UI). Phase 2
+  deletes are hard deletes, fully restorable by undo.
+* **Nested sections, tags, notebook colours/icons, course links** — with the features that
+  use them (Phases 5 and 7).
 
 ## 4. Page content (`document`)
 
-### 4.1 Element
+### 4.1 Element — implemented in Phase 2
+
+`Element` = common header + `std::variant` payload
+(`src/document/include/studyapp/document/Element.hpp`):
 
 ```cpp
-namespace studyapp::document {
-
-struct Transform {                 // no skew, by design
-    core::DVec2 position;          // world units; element origin
-    float rotation = 0.f;          // radians, about origin
-    core::Vec2 scale{1.f, 1.f};
-};
-
-// ---- payloads ---------------------------------------------------------------
-
-struct StrokePoint { float x, y; float pressure; };      // element-local coordinates
-struct StrokePoints {                                     // immutable once built
-    std::vector<StrokePoint> points;
-    core::Rect localBounds;                               // precomputed
-};
-
-enum class Brush : std::uint8_t { Pen, Pencil, Highlighter, Marker };
-
-struct Stroke {
-    Brush brush = Brush::Pen;
-    core::Color color;
-    float baseWidth = 2.f;                                // world units at pressure 1
-    std::shared_ptr<const StrokePoints> points;           // shared, never mutated
-};
-
-struct RichText;                                          // see §4.3
-enum class TextSizing : std::uint8_t { AutoWidth, FixedWidth, Fixed };
-
-struct TextBox {
-    core::Vec2 size;                                      // authoritative box size
-    TextSizing sizing = TextSizing::FixedWidth;
-    std::shared_ptr<const RichText> content;              // shared, never mutated
-    std::optional<core::Color> background;
-    float padding = 4.f;
-};
-
-enum class ShapeKind : std::uint8_t { Rectangle, Ellipse, Line, Triangle, Polygon, Polyline };
-
-struct ShapeStyle {
-    std::optional<core::Color> stroke; float strokeWidth = 2.f;
-    DashPattern dash = DashPattern::Solid;
-    std::optional<core::Color> fill; float cornerRadius = 0.f;
-};
-
-struct Shape {
-    ShapeKind kind; core::Vec2 size; ShapeStyle style;
-    std::shared_ptr<const std::vector<core::Vec2>> vertices; // Polygon/Polyline only
-};
-
-struct Image {
-    AssetId asset; core::Vec2 size;                       // displayed size, local units
-    core::Rect crop{{0, 0}, {1, 1}};                      // normalised in source image
-    float opacity = 1.f;
-};
-
-struct ConnectorEnd {
-    core::DVec2 position;                                 // world; used when free, cached when attached
-    std::optional<ElementId> attachedTo;
-    core::Vec2 anchor{0.5f, 0.5f};                        // normalised in target's local bounds
-    ArrowCap cap = ArrowCap::None;
-};
-
-struct Connector {
-    ConnectorEnd start, end;
-    Routing routing = Routing::Straight;                  // Straight, Orthogonal, Curved
-    ShapeStyle style; std::string label;
-};
-
-using ElementPayload = std::variant<Stroke, TextBox, Shape, Image, Connector>;
-
-// ---- element ----------------------------------------------------------------
+struct Transform { core::DVec2 position; float rotation = 0; core::Vec2 scale{1, 1}; };
 
 struct Element {
-    ElementId id;
-    LayerId layer;
-    core::FractionalIndex z;         // order within the layer
+    core::ElementId id;
+    core::LayerId layer;        // parent
+    core::FractionalIndex z;    // painter's order within the layer
     Transform transform;
     bool locked = false;
-    ElementPayload payload;
+    ElementPayload payload;     // std::variant<Stroke, TextBox, Shape, Image, Connector>
 };
-
-core::Rect  localBounds(const Element&);   // from payload (+ stroke width)
-core::DRect worldBounds(const Element&);   // localBounds transformed; used by index & DB
-}
 ```
+
+| Kind (stable id) | Phase 2 data | Added later |
+|---|---|---|
+| `Stroke` (1) | brush, colour, base width, points `{x, y, pressure}` in element-local space | smoothing, LOD (Phase 4) |
+| `TextBox` (2) | box size, **plain** UTF-8 text | rich-text model (§4.3, Phase 6) |
+| `Shape` (3) | kind (rectangle, ellipse, line), size, stroke colour/width, fill | polygons, dashes, corner radius (Phase 6) |
+| `Image` (4) | `AssetId`, displayed size | crop, asset store (Phases 3/6) |
+| `Connector` (5) | two ends (world position + optional attached element), colour, width | routing, arrow caps, labels (Phase 6) |
 
 Design notes:
 
-* **Local coordinates + transform.** Stroke points are stored relative to the element
-  origin. Moving/rotating/scaling a stroke changes 5 numbers, not thousands of points —
-  cheap in memory, cheap in the undo stack, and cheap in the database (no blob rewrite).
-* **Floats locally, doubles globally.** Positions on an infinite canvas are doubles
-  (precision far from the origin); per-element local data is float (compact, GPU-ready).
-  A stroke drawn far from the origin keeps full precision because its points are small
-  local offsets.
-* **Immutable shared payloads.** `StrokePoints`, `RichText` and polygon vertices are
-  `shared_ptr<const T>`. Copying an `Element` is cheap (~100–150 bytes + refcount) and
-  never duplicates point data. Edits create new payload objects.
-* **Text box size is authoritative in the domain**; text layout (Qt) runs in `platform`.
-  When auto-sized text changes, the UI layer measures and commits the new size as part of
-  the same edit. The domain therefore never needs a text layout engine to compute bounds.
-* **`std::variant` payload.** The element set is closed and every subsystem (bounds, hit
-  testing, tessellation, codecs, schema) must handle every kind; `std::visit` with an
-  overload set makes forgetting one a compile error.
-* **Connectors** keep a cached world position for each end so they render correctly even
-  if the target is on a hidden layer; the canvas re-resolves attached ends when targets
-  move (the move command updates attached connectors in the same patch).
+* **Closed set, `std::variant`.** Every subsystem must handle every kind; `std::visit`
+  makes a missing case a compile error (`kindOf` uses an exhaustive `if constexpr` chain).
+  No inheritance hierarchy.
+* **Local coordinates + transform.** Stroke points are relative to the element origin, so
+  moving/rotating/scaling changes the transform only — cheap to store, undo and persist.
+  Positions are `double` (infinite canvas); local data is `float`.
+* **Shared immutable points.** `StrokePoints` is
+  `std::shared_ptr<const std::vector<StrokePoint>>` — the only shared ownership in the
+  model, used so that copying an `Element` (for undo snapshots) never copies point data.
+  Points are never mutated in place; an edit creates a new array. `Stroke::operator==`
+  compares point *values*.
+* **Kind ids are stable** (they will be stored in `element.kind`).
 
-### 4.2 Layer and PageDocument
+### 4.2 Layer — implemented in Phase 2
 
-```cpp
-struct Layer {
-    LayerId id; std::string name; core::FractionalIndex order;
-    bool visible = true; bool locked = false; float opacity = 1.f;
-};
+`Layer { id, page, name, order, visible, locked, opacity }`. Layers contain no renderer
+state. Every page has at least one layer: `createPage` creates the page together with its
+first layer in one patch, and removing a page's last layer is rejected.
 
-class PageDocument {
-public:
-    PageId page() const;
-    std::span<const Layer> layers() const;                 // sorted by order
-    const Element* find(ElementId) const;
-    std::span<const ElementId> elementsInLayer(LayerId) const; // sorted by z
-    std::size_t elementCount() const;
-
-    void apply(const Patch&);        // the ONLY mutation entry point (called by Editor)
-    core::Signal<const Patch&> changed;
-
-private:
-    std::vector<Layer> layers_;
-    std::unordered_map<ElementId, Element> elements_;       // owner of all elements
-    std::unordered_map<LayerId, std::vector<ElementId>> order_; // z-sorted ids per layer
-};
-```
-
-`PageDocument` is a plain container with invariants; it has no spatial index (that is a
-canvas concern — see CANVAS.md) and no persistence knowledge.
-
-### 4.3 Rich text
+### 4.3 Rich text (target design, Phase 6)
 
 The domain owns a small structured rich-text model — **not** Qt HTML and not Markdown —
 so it stays Qt-free, versionable and searchable:
@@ -319,17 +215,29 @@ Serialised as versioned JSON (`{"v":1,"p":[…]}`); plain text is derived and st
 separately for search. Phase 6 ships plain paragraphs with per-run style; tables, inline
 math and embedded objects are future extensions of this model.
 
-### 4.4 Invariants (validated in debug builds and by tests)
+### 4.4 Invariants — enforced in Phase 2
 
-* Every element's `layer` exists in the same page; every page has ≥ 1 layer.
-* `z` keys are unique within a layer; layer `order` keys are unique within a page.
-* Stroke has ≥ 1 point; sizes are finite and ≥ 0; colours valid; transform finite, scale ≠ 0.
-* Connector `attachedTo` refers to an element on the same page or is empty.
-* Image `asset` is non-null (existence checked by persistence, not the domain).
+`Workspace::apply` rejects any patch that would violate these, and `Workspace::validate()`
+re-checks all of them (tests call it after every step):
 
----
+* Ids are non-null and unique per record type; `before`/`after` of a change carry the
+  same id.
+* Every record's parent exists (section → notebook, page → section, layer → page,
+  element → layer); a record cannot be removed while it still has children.
+* Every page has at least one layer (checked at the end of each patch, so a patch may
+  remove a page together with all its layers).
+* Notebook, section and layer names are not blank (page titles may be empty).
+* Numbers are finite and in range: bounded pages have a positive size, background
+  spacing > 0, layer opacity in [0, 1], transform scale ≠ 0, stroke width > 0, pressure in
+  [0, 1], sizes ≥ 0.
+* A stroke has ≥ 1 point; an image references a non-null asset id (asset existence is a
+  persistence concern, Phase 3).
+* Connector ends attach only to existing, non-connector elements on the same page, never
+  to themselves; an element cannot be removed (or moved to another page) while a
+  connector is attached to it.
+* Sibling order is by (order key, id); derived indexes always match the record tables.
 
-## 5. Study model (`study`)
+## 5. Study model (`study`) (target design, Phase 7)
 
 ```cpp
 namespace studyapp::study {
@@ -383,152 +291,135 @@ sessions/time tracking come after the core planner (see ROADMAP).
 
 ---
 
-## 6. Editing, commands and undo/redo
-
-### 6.1 Patches — the unit of change
-
-The patch is the **single architectural source of truth for an edit**. There are no
-separate database commands, canvas commands or undo commands — each of those consumers
-receives the same logical patch:
+## 6. Editing, commands and undo/redo — implemented in Phase 2
 
 ```
-Command → Patch ─┬─ Document        (PageDocument::apply)
-                 ├─ Undo/Redo       (stored; inverted on undo)
-                 ├─ Persistence     (written to SQLite)
-                 ├─ Canvas          (scene index / render cache invalidation)
-                 └─ future sync     (op log)
+Command (label + Patch) ──► Editor.execute ──► Workspace.apply(patch)   (atomic)
+                                 │
+                                 └─ on success ──► UndoStack (undo side; redo cleared)
+undo:  Workspace.apply(entry.patch.inverted()) ──► entry moves to the redo side
+redo:  Workspace.apply(entry.patch)            ──► entry moves back to the undo side
+```
+
+### 6.1 Patches — the single description of an edit
+
+The patch is the **single architectural source of truth for an edit**. There are no
+separate database, canvas or undo commands; every consumer receives the same patch:
+
+```
+Command → Patch ─┬─ Document     (Workspace::apply)                  Phase 2
+                 ├─ Undo/Redo    (stored; inverted on undo)          Phase 2
+                 ├─ Persistence  (written to SQLite)                 Phase 3
+                 ├─ Canvas       (scene / render cache invalidation) Phase 4
+                 └─ future sync  (op log)                            later
 ```
 
 ```cpp
-namespace studyapp::document {
-
-struct ElementChange {
-    ElementId id;
-    std::optional<Element> before;   // nullopt ⇒ element was created
-    std::optional<Element> after;    // nullopt ⇒ element was deleted
+template <class Record> struct Change {        // full record state, not a delta
+    std::optional<Record> before;               // absent -> create
+    std::optional<Record> after;                // absent -> remove
+    Change inverted() const;                    // swap before/after
 };
-
-struct LayerChange { LayerId id; std::optional<Layer> before, after; };
-
-struct Patch {
-    PageId page;
-    std::vector<LayerChange>   layers;
-    std::vector<ElementChange> elements;
-    Patch inverted() const;           // swap before/after, reverse order
-    bool empty() const;
+using AnyChange = std::variant<Change<NotebookInfo>, Change<SectionInfo>, Change<PageInfo>,
+                               Change<Layer>, Change<Element>>;
+class Patch {                                   // ordered list of changes
+    std::vector<AnyChange> changes_;
+public:
+    Patch inverted() const;                     // reverse order + invert each change
 };
-}
 ```
 
-`CatalogPatch` has the same shape for notebooks, sections, pages and tags;
-`study::StudyPatch` for courses/projects/tasks.
+Properties:
 
-`PageDocument::apply(patch)` checks (in debug builds) that each `before` equals the
-current state — catching stale or mis-ordered patches early — and then installs `after`.
+* **Data only** — no callbacks, no pointers into the document — so patches are
+  deterministic, comparable (`operator==`), and can be serialised by persistence in
+  Phase 3.
+* **Self-validating** — each change's `before` must equal the current record, otherwise
+  `apply` fails with `ErrorCode::Conflict`. A stale or mis-ordered patch can never
+  silently overwrite newer state.
+* **Atomic** — `Workspace::apply` applies changes in order; if any change or the
+  end-of-patch invariant check fails, the already-applied changes are reverted (by
+  applying their inverses, which cannot fail) and the error names the failing change.
+  The workspace is then logically identical to its previous state.
+* **One patch type for the whole hierarchy.** *Change from the original design:* the
+  baseline had a `CatalogPatch` (notebooks/sections/pages) and a per-page `Patch`
+  (layers/elements). With everything in one in-memory `Workspace` (Phase 2), two types
+  would only duplicate code, and a command such as "delete notebook" naturally spans both
+  levels. Consequence: per-page undo stacks are not introduced yet; when pages are loaded
+  on demand (Phase 3), undo scoping will be decided by which records a patch touches,
+  still using this single patch type (ARCHITECTURE.md decision D20).
 
 ### 6.2 Commands — named operations that produce patches
 
-The command pattern is used in its **diff/memento form**: a command is a function that
-inspects the current document and returns the patch expressing the user's intent.
-Commands are free functions (no class hierarchy):
+Commands are **free functions** in `studyapp::document::commands` — no class hierarchy.
+Each reads the workspace (by `const&`), validates its input and returns a
+`Command { std::string label; Patch patch; }`; it never mutates anything. Creating
+commands return `Created<Id> { Id id; Command command; }`. Ids come from the injected
+`IdGenerator`, timestamps from the injected `Clock`, so commands are deterministic.
 
-```cpp
-namespace studyapp::document::commands {
-Patch createElements(const PageDocument&, std::vector<Element> newElements);
-Patch deleteElements(const PageDocument&, std::span<const ElementId>); // also detaches connectors
-Patch moveElements  (const PageDocument&, std::span<const ElementId>, core::DVec2 delta);
-Patch transformElements(const PageDocument&, std::span<const ElementId>, const core::Affine2&);
-Patch setStyle      (const PageDocument&, std::span<const ElementId>, const StylePatch&);
-Patch editText      (const PageDocument&, ElementId, std::shared_ptr<const RichText>, core::Vec2 newSize);
-Patch reorder       (const PageDocument&, std::span<const ElementId>, ZMove);  // front/back/forward/backward
-Patch eraseStrokeSegments(const PageDocument&, const EraseResult&, core::IdGenerator&); // split strokes
-Patch addLayer / removeLayer / updateLayer …
-}
-namespace studyapp::document::catalog_commands {
-CatalogPatch createPage(const WorkspaceCatalog&, SectionId, PageInit, core::IdGenerator&);
-CatalogPatch trashPage (const WorkspaceCatalog&, PageId);   // soft delete
-CatalogPatch movePage  (const WorkspaceCatalog&, PageId, SectionId, Position);
-CatalogPatch renameNotebook …
-}
-```
+| Command | Patch |
+|---|---|
+| `createNotebook` / `renameNotebook` / `deleteNotebook` | create / update / remove the notebook; delete removes the whole subtree deepest-first |
+| `createSection` / `renameSection` / `deleteSection` | same, one level down |
+| `createPage` / `renamePage` / `deletePage` | create page **and its first layer**; update; remove subtree |
+| `createLayer` / `renameLayer` / `deleteLayer` | create / update / remove the layer and its elements (last layer: rejected) |
+| `createElement` / `deleteElement` | create (appended in z-order) / remove; connectors attached to removed elements are **detached** in the same patch |
 
-Because every command is `document state in → patch out`, commands are trivially
-unit-testable without an editor, a stack, a database or a UI.
+Errors: `NotFound` (unknown id), `InvalidArgument` (blank name, last layer). Anything a
+command cannot know in advance is caught by `Workspace::apply`.
 
 ### 6.3 Editor and undo stack
 
-```cpp
-class UndoStack {
-public:
-    struct Entry { std::string label; Patch patch; std::optional<MergeKey> merge;
-                   core::Timestamp at; std::size_t approxBytes; };
-    void push(Entry);                 // clears redo
-    std::optional<Patch> takeUndo();  // returns inverse-ready patch; moves entry to redo
-    std::optional<Patch> takeRedo();
-    bool canUndo() const; bool canRedo() const;
-    std::string_view undoLabel() const; std::string_view redoLabel() const;
-    void setBudget(std::size_t maxEntries, std::size_t maxBytes); // evicts oldest
-    void markClean(); bool isClean() const;
-};
+* `UndoStack` stores executed `Command`s (label + patch) on an undo side and a redo side,
+  with a capacity (default 500 entries; oldest dropped). Recording a new command clears
+  the redo side.
+* `Editor` (non-owning reference to the `Workspace`) implements `execute`, `undo`, `redo`:
+  * failed commands are **not recorded** and change nothing (apply is atomic);
+  * commands with an empty patch succeed without being recorded;
+  * undo/redo on an empty side return `NotFound` and change nothing;
+  * undo restores the exact previous logical state, redo the exact post-command state —
+    with the same ids (tested with `Workspace::operator==` after every step).
+* History entries share stroke points (`shared_ptr<const>`), so undo does not copy point
+  data.
 
-class Editor {                                   // one per open page
-public:
-    Editor(PageDocument&, UndoStack&);
-    void commit(std::string label, Patch, std::optional<MergeKey> = {});
-    void undo();                                   // applies entry.patch.inverted()
-    void redo();                                   // applies entry.patch
-    core::Signal<const Patch&> committed;          // every applied patch, incl. undo/redo
-};
-```
+Deferred: merging consecutive edits (typing, nudging) and byte-based history budgets
+arrive with the canvas tools that need them (Phase 4/6). Live previews stay out of the
+history by design (only the final patch of a gesture is executed).
 
-* **Transactions/grouping.** One user gesture = one patch (moving 300 elements is one
-  patch with 300 changes). Multi-step operations build one patch before committing.
-* **Merging.** Consecutive commits with the same `MergeKey` within a short window
-  (typing in one text box, arrow-key nudges) are composed: the merged patch keeps the
-  first `before` and the last `after` per element.
-* **Live previews are not commits.** While dragging, drawing or resizing, the canvas
-  renders a transient preview; a single patch is committed on release. The document and
-  the undo stack never see intermediate states.
-* **Scope.** One `UndoStack` per open page (content edits). One workspace stack for
-  catalog and study edits. The UI routes Ctrl+Z to the stack of the focused context
-  (canvas vs. sidebar/planner) — equivalent to Qt's `QUndoGroup`, without Qt.
-* **Lifetime.** Undo history is in-memory, per session. Page stacks survive the page
-  being evicted from memory (patches reference ids, and the reloaded document matches the
-  pre-eviction state). Budget: default 500 entries / 64 MB per stack, evicting oldest.
-* **Memory cost.** Snapshots copy element *headers* only; payloads are shared. A
-  "delete 1 000 strokes" entry holds 1 000 headers and references to the existing point
-  arrays — no point data is copied.
-
-### 6.4 One patch, many consumers
+### 6.4 One patch, many consumers (target, Phase 3+)
 
 ```mermaid
 flowchart LR
     tool["canvas tool / UI action"] -->|command fn| patch((Patch))
-    patch --> editor["Editor.commit"]
-    editor --> doc["PageDocument.apply"]
-    editor --> undo["UndoStack.push"]
-    doc -->|changed| scene["CanvasScene: update index & render cache"]
-    editor -->|committed| session["PageSession"]
-    session -->|PersistOp| writer["persistence writer thread"]
-    writer --> db[(workspace.db)]
+    patch --> editor["Editor.execute"]
+    editor --> ws["Workspace.apply"]
+    editor --> undo["UndoStack.record"]
+    ws -->|patch| scene["CanvasScene: index & render cache (Phase 4)"]
+    editor -->|patch| session["application session (Phase 3)"]
+    session --> db[(workspace.db)]
 ```
 
-Undo and redo produce patches too and flow through the same path, so the database, the
-canvas caches and the search index stay consistent without per-command code.
+Undo and redo produce patches too and will flow through the same path, so the database,
+canvas caches and search index stay consistent without per-command code.
 
 ---
 
 ## 7. Ownership summary
 
+Implemented (Phase 2):
+
 | Object | Owner | Lifetime |
 |---|---|---|
-| `WorkspaceSession` | `ui::MainWindow` (via `app`) | Workspace open → close |
-| `WorkspaceCatalog`, workspace `UndoStack`, stores, persistence worker | `WorkspaceSession` | Same |
-| `PageSession` (`PageDocument`, `Editor`, page `UndoStack`) | `WorkspaceSession` (LRU of open pages, default 4) | Page open → evicted; undo stack kept for session |
-| `CanvasScene`, `Camera`, active tool, selection | `canvas::CanvasController` owned by `ui::CanvasWidget` | While a page is displayed |
-| GPU resources | `render_gl::OpenGLRenderer` owned by `ui::CanvasWidget` | GL context lifetime; re-creatable from CPU caches |
-| Stroke/text payloads | Shared (`shared_ptr<const>`) by document, undo entries, render cache | Until last reference drops |
-| Assets on disk | `persistence::AssetStore` | Until GC finds them unreferenced past the grace period |
+| All records (notebooks ... elements) | `document::Workspace` (id-keyed tables) | Until removed by a patch |
+| Derived child indexes, connector attachment counts | `document::Workspace` | Updated incrementally on each change |
+| Undo/redo entries (`Command`s) | `document::UndoStack`, owned by `document::Editor` | Until evicted by capacity or cleared by a new command |
+| The `Workspace` an `Editor` edits | The caller; it must outlive the `Editor` | — |
+| Stroke point arrays | Shared, immutable (`shared_ptr<const>`) by records and undo entries | Until the last reference drops |
+
+Target (later phases): `application` sessions own the workspace, editor and persistence
+connection (Phase 3); `canvas::CanvasController` owns the scene, camera, tool and
+selection, and `ui::CanvasWidget` owns the OpenGL renderer (Phase 4);
+`persistence::AssetStore` owns asset files (Phase 3).
 
 Cross-object references are **by id**, not by pointer, everywhere except short-lived
 borrowed references within a function call.

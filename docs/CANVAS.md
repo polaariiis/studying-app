@@ -44,6 +44,14 @@ Qt event → ui::CanvasWidget → ui::CanvasInputAdapter (normalisation)
 * The same rule applies in the other direction: the canvas asks for a cursor via a plain
   `CursorShape` enum and requests repaints via a callback; `ui` maps these to Qt.
 
+## 0.1 Canvas look
+
+The canvas follows the design tokens of ARCHITECTURE.md §3.3: neutral paper-like
+background (`canvas`), a subtle dot or line grid (`canvasGrid`), high-contrast content and
+minimal chrome — no coloured backgrounds, gradients or glowing grids. The Phase 2
+`ui::CanvasPlaceholder` already paints this background; the canvas engine will take the
+same token values (they are `core::Color`, usable without Qt).
+
 ## 1. Coordinate systems
 
 | Space | Type | Unit | Used for |

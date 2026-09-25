@@ -8,6 +8,7 @@ studyapp_add_module(core
         include/studyapp/core/Clock.hpp
         include/studyapp/core/Color.hpp
         include/studyapp/core/Error.hpp
+        include/studyapp/core/FractionalIndex.hpp
         include/studyapp/core/Id.hpp
         include/studyapp/core/IdGenerator.hpp
         include/studyapp/core/Ids.hpp
@@ -19,6 +20,7 @@ studyapp_add_module(core
         src/Clock.cpp
         src/Color.cpp
         src/Error.cpp
+        src/FractionalIndex.cpp
         src/IdGenerator.cpp
         src/Log.cpp
         src/Uuid.cpp

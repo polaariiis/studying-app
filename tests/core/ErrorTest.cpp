@@ -36,6 +36,7 @@ TEST(ErrorTest, CodesHaveReadableNames) {
     EXPECT_EQ(toString(ErrorCode::ParseError), "parse error");
     EXPECT_EQ(toString(ErrorCode::NotFound), "not found");
     EXPECT_EQ(toString(ErrorCode::IoError), "I/O error");
+    EXPECT_EQ(toString(ErrorCode::Conflict), "conflict");
 }
 
 } // namespace

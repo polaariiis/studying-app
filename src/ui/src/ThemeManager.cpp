@@ -3,70 +3,28 @@
 #include <studyapp/core/Log.hpp>
 
 #include <QApplication>
-#include <QColor>
 #include <QFile>
 #include <QGuiApplication>
 #include <QStyleHints>
+
+#include <initializer_list>
+#include <utility>
 
 namespace studyapp::ui {
 
 namespace {
 
-struct PaletteColors {
-    QColor window;
-    QColor windowText;
-    QColor base;
-    QColor alternateBase;
-    QColor button;
-    QColor buttonText;
-    QColor text;
-    QColor placeholderText;
-    QColor highlight;
-    QColor highlightedText;
-    QColor link;
-    QColor light;
-    QColor midlight;
-    QColor mid;
-    QColor dark;
-    QColor shadow;
-    QColor disabledText;
-};
-
-QPalette makePalette(const PaletteColors& c) {
-    QPalette palette;
-    palette.setColor(QPalette::Window, c.window);
-    palette.setColor(QPalette::WindowText, c.windowText);
-    palette.setColor(QPalette::Base, c.base);
-    palette.setColor(QPalette::AlternateBase, c.alternateBase);
-    palette.setColor(QPalette::ToolTipBase, c.base);
-    palette.setColor(QPalette::ToolTipText, c.text);
-    palette.setColor(QPalette::Button, c.button);
-    palette.setColor(QPalette::ButtonText, c.buttonText);
-    palette.setColor(QPalette::Text, c.text);
-    palette.setColor(QPalette::BrightText, QColor(0xE5, 0x48, 0x4D));
-    palette.setColor(QPalette::PlaceholderText, c.placeholderText);
-    palette.setColor(QPalette::Highlight, c.highlight);
-    palette.setColor(QPalette::HighlightedText, c.highlightedText);
-    palette.setColor(QPalette::Link, c.link);
-    palette.setColor(QPalette::LinkVisited, c.link);
-    palette.setColor(QPalette::Light, c.light);
-    palette.setColor(QPalette::Midlight, c.midlight);
-    palette.setColor(QPalette::Mid, c.mid);
-    palette.setColor(QPalette::Dark, c.dark);
-    palette.setColor(QPalette::Shadow, c.shadow);
-    for (const auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) {
-        palette.setColor(QPalette::Disabled, role, c.disabledText);
-    }
-    return palette;
-}
-
-QString loadStyleSheet(bool dark) {
-    QFile file(dark ? QStringLiteral(":/themes/dark.qss") : QStringLiteral(":/themes/light.qss"));
+QString loadTemplate() {
+    QFile file(QStringLiteral(":/themes/studyboard.qss"));
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         core::logWarning("ui", "theme stylesheet resource is missing");
         return {};
     }
     return QString::fromUtf8(file.readAll());
+}
+
+QString cssColor(const core::Color& color) {
+    return toQColor(color).name(QColor::HexRgb);
 }
 
 } // namespace
@@ -93,57 +51,79 @@ ThemeMode themeModeFromSettingsValue(const QString& value) {
     return ThemeMode::System;
 }
 
-QPalette lightPalette() {
-    return makePalette({
-        .window = QColor(0xF5, 0xF6, 0xF7),
-        .windowText = QColor(0x1F, 0x23, 0x28),
-        .base = QColor(0xFF, 0xFF, 0xFF),
-        .alternateBase = QColor(0xF0, 0xF1, 0xF3),
-        .button = QColor(0xEC, 0xEE, 0xF0),
-        .buttonText = QColor(0x1F, 0x23, 0x28),
-        .text = QColor(0x1F, 0x23, 0x28),
-        .placeholderText = QColor(0x6E, 0x77, 0x81),
-        .highlight = QColor(0x2F, 0x65, 0xCA),
-        .highlightedText = QColor(0xFF, 0xFF, 0xFF),
-        .link = QColor(0x1A, 0x5F, 0xB4),
-        .light = QColor(0xFF, 0xFF, 0xFF),
-        .midlight = QColor(0xD0, 0xD7, 0xDE),
-        .mid = QColor(0x8C, 0x95, 0x9F),
-        .dark = QColor(0x9A, 0xA0, 0xA6),
-        .shadow = QColor(0x7A, 0x7F, 0x85),
-        .disabledText = QColor(0x8C, 0x95, 0x9F),
-    });
+QColor toQColor(const core::Color& color) {
+    return QColor(color.r, color.g, color.b, color.a);
 }
 
-QPalette darkPalette() {
-    return makePalette({
-        .window = QColor(0x1E, 0x1F, 0x22),
-        .windowText = QColor(0xDF, 0xE1, 0xE5),
-        .base = QColor(0x2B, 0x2D, 0x30),
-        .alternateBase = QColor(0x31, 0x33, 0x38),
-        .button = QColor(0x2B, 0x2D, 0x30),
-        .buttonText = QColor(0xDF, 0xE1, 0xE5),
-        .text = QColor(0xDF, 0xE1, 0xE5),
-        .placeholderText = QColor(0x8C, 0x8F, 0x94),
-        .highlight = QColor(0x2F, 0x65, 0xCA),
-        .highlightedText = QColor(0xFF, 0xFF, 0xFF),
-        .link = QColor(0x58, 0x9D, 0xF6),
-        .light = QColor(0x43, 0x45, 0x4A),
-        .midlight = QColor(0x3C, 0x3F, 0x44),
-        .mid = QColor(0x8C, 0x8F, 0x94),
-        .dark = QColor(0x15, 0x16, 0x18),
-        .shadow = QColor(0x00, 0x00, 0x00),
-        .disabledText = QColor(0x6F, 0x73, 0x7A),
-    });
+QPalette makePalette(const ColorTokens& t) {
+    QPalette palette;
+    const auto set = [&](QPalette::ColorRole role, const core::Color& color) {
+        palette.setColor(role, toQColor(color));
+    };
+    set(QPalette::Window, t.background);
+    set(QPalette::WindowText, t.textPrimary);
+    set(QPalette::Base, t.surface);
+    set(QPalette::AlternateBase, t.background);
+    set(QPalette::ToolTipBase, t.surfaceElevated);
+    set(QPalette::ToolTipText, t.textPrimary);
+    set(QPalette::PlaceholderText, t.textMuted);
+    set(QPalette::Text, t.textPrimary);
+    set(QPalette::Button, t.surface);
+    set(QPalette::ButtonText, t.textPrimary);
+    set(QPalette::BrightText, t.error);
+    // Selection is tonal, not coloured.
+    set(QPalette::Highlight, t.borderStrong);
+    set(QPalette::HighlightedText, t.selectedText);
+    // Links use the text colour (rich text underlines them), not a brand blue.
+    set(QPalette::Link, t.textPrimary);
+    set(QPalette::LinkVisited, t.textSecondary);
+    set(QPalette::Light, t.surface);
+    set(QPalette::Midlight, t.border);
+    set(QPalette::Mid, t.textMuted);
+    set(QPalette::Dark, t.borderStrong);
+    set(QPalette::Shadow, t.borderStrong);
+    set(QPalette::Accent, t.control);
+    for (const auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) {
+        palette.setColor(QPalette::Disabled, role, toQColor(t.textDisabled));
+    }
+    return palette;
+}
+
+QString makeStyleSheet(const ColorTokens& t) {
+    QString sheet = loadTemplate();
+    const MetricTokens& m = metricTokens();
+    const std::initializer_list<std::pair<const char*, QString>> values = {
+        {"background", cssColor(t.background)},
+        {"surfaceElevated", cssColor(t.surfaceElevated)},
+        {"surface", cssColor(t.surface)},
+        {"borderStrong", cssColor(t.borderStrong)},
+        {"border", cssColor(t.border)},
+        {"textPrimary", cssColor(t.textPrimary)},
+        {"textSecondary", cssColor(t.textSecondary)},
+        {"textMuted", cssColor(t.textMuted)},
+        {"textDisabled", cssColor(t.textDisabled)},
+        {"hover", cssColor(t.hover)},
+        {"selectedText", cssColor(t.selectedText)},
+        {"selected", cssColor(t.selected)},
+        {"radiusSmall", QString::number(m.radiusSmall)},
+        {"radiusMedium", QString::number(m.radiusMedium)},
+    };
+    for (const auto& [name, value] : values) {
+        sheet.replace(QLatin1Char('@') + QLatin1String(name) + QLatin1Char('@'), value);
+    }
+    return sheet;
 }
 
 ThemeManager::ThemeManager(QObject* parent) : QObject(parent) {
-    // Fusion renders palettes consistently on every platform, so both themes look the same
-    // on Windows, macOS and Linux.
+    // Fusion renders palettes consistently on every platform.
     QApplication::setStyle(QStringLiteral("Fusion"));
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this,
             &ThemeManager::onSystemColorSchemeChanged);
     apply();
+}
+
+const ColorTokens& ThemeManager::tokens() const noexcept {
+    return dark_ ? darkColorTokens() : lightColorTokens();
 }
 
 void ThemeManager::setMode(ThemeMode mode) {
@@ -184,8 +164,9 @@ void ThemeManager::apply() {
     dark_ = mode_ == ThemeMode::Dark ||
             (mode_ == ThemeMode::System && hints->colorScheme() == Qt::ColorScheme::Dark);
 
-    QApplication::setPalette(dark_ ? darkPalette() : lightPalette());
-    qApp->setStyleSheet(loadStyleSheet(dark_));
+    const ColorTokens& t = tokens();
+    QApplication::setPalette(makePalette(t));
+    qApp->setStyleSheet(makeStyleSheet(t));
     applying_ = false;
 
     Q_EMIT themeChanged();

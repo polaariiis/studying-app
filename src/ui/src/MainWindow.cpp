@@ -2,6 +2,8 @@
 
 #include <studyapp/application/ComponentVersions.hpp>
 #include <studyapp/core/BuildInfo.hpp>
+#include <studyapp/ui/AppIcon.hpp>
+#include <studyapp/ui/CanvasPlaceholder.hpp>
 #include <studyapp/ui/ThemeManager.hpp>
 
 #include <QAction>
@@ -15,7 +17,6 @@
 #include <QSettings>
 #include <QStatusBar>
 #include <QToolBar>
-#include <QVBoxLayout>
 
 #include <string_view>
 
@@ -37,6 +38,7 @@ MainWindow::MainWindow(ThemeManager& themes, QSettings& settings, QWidget* paren
     : QMainWindow(parent), themes_(&themes), settings_(&settings) {
     setObjectName(QStringLiteral("mainWindow"));
     setWindowTitle(toQString(core::build::kProductName));
+    setWindowIcon(applicationIcon());
     resize(1100, 720);
 
     createActions();
@@ -120,27 +122,7 @@ void MainWindow::createToolBar() {
 }
 
 void MainWindow::createCentralPlaceholder() {
-    auto* placeholder = new QWidget(this);
-    placeholder->setObjectName(QStringLiteral("placeholder"));
-
-    auto* title = new QLabel(toQString(core::build::kProductName), placeholder);
-    title->setObjectName(QStringLiteral("placeholderTitle"));
-    title->setAlignment(Qt::AlignCenter);
-
-    auto* subtitle = new QLabel(
-        tr("Foundation build. Notebooks, the canvas and the planner are not implemented yet."),
-        placeholder);
-    subtitle->setObjectName(QStringLiteral("placeholderSubtitle"));
-    subtitle->setAlignment(Qt::AlignCenter);
-    subtitle->setWordWrap(true);
-
-    auto* layout = new QVBoxLayout(placeholder);
-    layout->addStretch();
-    layout->addWidget(title);
-    layout->addWidget(subtitle);
-    layout->addStretch();
-
-    setCentralWidget(placeholder);
+    setCentralWidget(new CanvasPlaceholder(*themes_, this));
 }
 
 void MainWindow::createStatusBar() {

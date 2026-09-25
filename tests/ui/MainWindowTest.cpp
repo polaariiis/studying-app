@@ -1,5 +1,7 @@
 #include <studyapp/ui/MainWindow.hpp>
 
+#include <studyapp/ui/AppIcon.hpp>
+#include <studyapp/ui/DesignTokens.hpp>
 #include <studyapp/ui/ThemeManager.hpp>
 
 #include <QAction>
@@ -12,6 +14,7 @@
 #include <QTest>
 #include <QToolBar>
 
+#include <array>
 #include <memory>
 
 using studyapp::ui::MainWindow;
@@ -107,6 +110,60 @@ private Q_SLOTS:
             const MainWindow window(themes, *settings);
             QCOMPARE(themes.mode(), ThemeMode::Dark);
         }
+    }
+
+    void applicationIconIsCompiledIn() {
+        const QIcon icon = studyapp::ui::applicationIcon();
+        QVERIFY(!icon.isNull());
+        const auto sizes = icon.availableSizes();
+        for (const int size : {16, 32, 48, 64, 128, 256}) {
+            QVERIFY2(sizes.contains(QSize(size, size)), qPrintable(QString::number(size)));
+        }
+        // Rendered pixels are real artwork, not an empty image.
+        const QImage image = icon.pixmap(QSize(64, 64)).toImage();
+        QCOMPARE(image.size(), QSize(64, 64));
+
+        ThemeManager themes;
+        auto settings = makeSettings();
+        const MainWindow window(themes, *settings);
+        QVERIFY(!window.windowIcon().isNull());
+    }
+
+    void paletteIsNeutral() {
+        // Chrome colours must be grays: no brand hue (e.g. purple or blue) in either theme.
+        for (const auto* tokens :
+             {&studyapp::ui::lightColorTokens(), &studyapp::ui::darkColorTokens()}) {
+            const std::array neutral{
+                tokens->background,   tokens->surface,      tokens->surfaceElevated,
+                tokens->canvas,       tokens->canvasGrid,   tokens->border,
+                tokens->borderStrong, tokens->textPrimary,  tokens->textSecondary,
+                tokens->textMuted,    tokens->textDisabled, tokens->hover,
+                tokens->selected,     tokens->selectedText, tokens->control,
+                tokens->controlText};
+            for (const auto& c : neutral) {
+                QCOMPARE(studyapp::ui::toQColor(c).hsvSaturation(), 0);
+            }
+            const QPalette palette = studyapp::ui::makePalette(*tokens);
+            QCOMPARE(palette.color(QPalette::Highlight).hsvSaturation(), 0);
+            QCOMPARE(palette.color(QPalette::Link).hsvSaturation(), 0);
+        }
+    }
+
+    void styleSheetHasNoUnresolvedTokens() {
+        for (const auto* tokens :
+             {&studyapp::ui::lightColorTokens(), &studyapp::ui::darkColorTokens()}) {
+            const QString sheet = studyapp::ui::makeStyleSheet(*tokens);
+            QVERIFY(!sheet.isEmpty());
+            QVERIFY2(!sheet.contains(QLatin1Char('@')), qPrintable(sheet));
+        }
+    }
+
+    void themeTokensFollowMode() {
+        ThemeManager themes;
+        themes.setMode(ThemeMode::Dark);
+        QCOMPARE(&themes.tokens(), &studyapp::ui::darkColorTokens());
+        themes.setMode(ThemeMode::Light);
+        QCOMPARE(&themes.tokens(), &studyapp::ui::lightColorTokens());
     }
 
     void settingsValuesRoundTrip() {
