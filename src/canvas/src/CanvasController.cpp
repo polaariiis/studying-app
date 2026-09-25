@@ -171,7 +171,11 @@ void CanvasController::dispatch(detail::Tool& tool, const PointerEvent& event) {
 }
 
 void CanvasController::onPointer(const PointerEvent& event) {
-    hoverView_ = event.viewPos;
+    if (gestureTool_ == nullptr && event.phase != PointerPhase::Down) {
+        // Hovering (or a stray release/cancel): nothing on the canvas follows the pointer
+        // (the eraser ring is the platform cursor), so there is nothing to redraw.
+        return;
+    }
     if (event.phase == PointerPhase::Down && gestureTool_ == nullptr) {
         if (event.button == PointerButton::Middle || spaceHeld_) {
             gestureTool_ = &toolFor(ToolKind::Pan);
@@ -190,8 +194,6 @@ void CanvasController::onPointer(const PointerEvent& event) {
             !gestureTool_->isActive()) {
             gestureTool_ = nullptr;
         }
-    } else if (toolKind_ == ToolKind::Eraser && event.phase == PointerPhase::Move) {
-        dispatch(toolFor(ToolKind::Eraser), event); // hover: moves the eraser cursor only
     }
     clampCamera();
     requestRedraw();
@@ -258,7 +260,6 @@ void CanvasController::setTool(ToolKind tool) {
         return;
     }
     cancelGesture();
-    preview_->eraserCenter.reset();
     toolKind_ = tool;
     requestRedraw();
 }
@@ -410,7 +411,6 @@ void CanvasController::onGraphicsReset() noexcept {
     liveMesh_ = {};
     selectionMesh_ = {};
     marqueeMesh_ = {};
-    eraserMesh_ = {};
 }
 
 render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
@@ -577,23 +577,6 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
             overlay_.push_back({.mesh = marqueeMesh_, .transform = {}, .color = colors_.marquee});
         }
     }
-    if (toolKind_ == ToolKind::Eraser && hoverView_) {
-        const auto radius = static_cast<float>(detail::EraserTool::kRadiusViewPx);
-        const core::Vec2 c = toFloat(*hoverView_);
-        const auto circle = render::ellipsePolygon(
-            core::Rect{c - core::Vec2{radius, radius}, c + core::Vec2{radius, radius}});
-        std::vector<render::WidthPoint> ring;
-        for (const core::Vec2& p : circle) {
-            ring.push_back({p, kOverlayHalfWidthPx});
-        }
-        if (!circle.empty()) {
-            ring.push_back({circle.front(), kOverlayHalfWidthPx});
-        }
-        if (uploadScratch(renderer, eraserMesh_, render::tessellatePolyline(ring))) {
-            overlay_.push_back({.mesh = eraserMesh_, .transform = {}, .color = colors_.eraser});
-        }
-    }
-
     lastDrawItems_ = content_.size();
     frame.content = content_;
     frame.overlay = overlay_;

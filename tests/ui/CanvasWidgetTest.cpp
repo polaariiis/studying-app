@@ -17,10 +17,12 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCursor>
 #include <QDir>
 #include <QImage>
 #include <QLabel>
 #include <QOpenGLWidget>
+#include <QPixmap>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
@@ -292,6 +294,53 @@ private Q_SLOTS:
         }
         hudAction->setChecked(false);
         QVERIFY(!hud->isVisible());
+    }
+
+    // The eraser's reach is shown as the platform cursor (no OpenGL needed): it follows the
+    // pointer without render latency and the window system removes it when the pointer
+    // leaves the canvas. Choosing the tool applies it at once, without a pointer move.
+    void eraserRingIsThePlatformCursor() {
+        QTemporaryDir dir;
+        const auto root = toPath(dir.filePath(QStringLiteral("ws")));
+        testing::ManualClock clock;
+        testing::SequentialIds ids;
+        platform::QtWorkspaceLocker locker;
+        auto created = application::WorkspaceSession::create(root, "Cursor", {clock, ids, locker});
+        QVERIFY(created.has_value());
+        auto& session = **created;
+        auto page = application::ensureStartPage(session, clock, ids);
+        QVERIFY(page.has_value());
+        QSettings settings(dir.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+        ui::ThemeManager themes;
+        ui::MainWindow window(
+            themes, settings,
+            ui::WorkspaceContext{.session = session, .ids = ids, .clock = clock, .page = *page});
+        auto* canvas = window.findChild<QOpenGLWidget*>(QStringLiteral("canvasWidget"));
+        auto* eraser = window.findChild<QAction*>(QStringLiteral("actionToolEraser"));
+        auto* pen = window.findChild<QAction*>(QStringLiteral("actionToolPen"));
+        QVERIFY(canvas != nullptr && eraser != nullptr && pen != nullptr);
+
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor); // the pen
+        eraser->trigger();
+        const QCursor ring = canvas->cursor();
+        QCOMPARE(ring.shape(), Qt::BitmapCursor);
+        const QPixmap pixmap = ring.pixmap();
+        QVERIFY(!pixmap.isNull());
+        const QSizeF logical = pixmap.deviceIndependentSize();
+        QCOMPARE(logical.width(), logical.height());
+        // The hot spot (the pointer position) is the ring's centre; the ring (radius 8 px)
+        // is drawn around it and the centre is transparent, so the ink stays visible.
+        QCOMPARE(ring.hotSpot(), QPoint(static_cast<int>(logical.width()) / 2,
+                                        static_cast<int>(logical.height()) / 2));
+        const QImage image = pixmap.toImage();
+        const qreal dpr = pixmap.devicePixelRatio();
+        const QPointF centre(logical.width() / 2.0, logical.height() / 2.0);
+        QCOMPARE(image.pixelColor((centre * dpr).toPoint()).alpha(), 0);
+        QVERIFY(image.pixelColor(((centre + QPointF(8.0, 0.0)) * dpr).toPoint()).alpha() > 0);
+
+        pen->trigger();
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
     }
 };
 

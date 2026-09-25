@@ -251,8 +251,6 @@ void EraserTool::eraseAlong(const core::DVec2& a, const core::DVec2& b,
 
 void EraserTool::onPointer(const PointerEvent& event, ToolContext& context) {
     const core::DVec2 world = context.camera.viewToWorld(event.viewPos);
-    context.preview.eraserCenter = world;
-    context.preview.eraserRadiusWorld = context.camera.viewToWorldLength(kRadiusViewPx);
     switch (event.phase) {
     case PointerPhase::Down:
         if ((!isPrimary(event) && event.device != PointerDevice::Eraser) ||

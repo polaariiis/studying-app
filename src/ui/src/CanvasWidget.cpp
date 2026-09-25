@@ -11,6 +11,9 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
+#include <QPainter>
+#include <QPen>
+#include <QPixmap>
 #include <QSurfaceFormat>
 #include <QTabletEvent>
 #include <QTimer>
@@ -25,6 +28,9 @@ namespace studyapp::ui {
 namespace {
 
 constexpr std::size_t kFpsWindow = 60;
+/// Frames further apart than this are separated by idle time (nothing asked for a
+/// repaint), not by slow rendering; such gaps are left out of the HUD's frame averages.
+constexpr double kIdleGapMs = 100.0;
 constexpr int kBenchmarkWarmUpFrames = 10;
 
 Qt::CursorShape toQtCursor(canvas::CursorShape shape) noexcept {
@@ -88,9 +94,33 @@ CanvasWidget::CanvasWidget(canvas::CanvasController& controller, QWidget* parent
     hud_->move(8, 8);
     hud_->hide();
 
+    clock_.start();
     // Render on demand: the controller asks for a frame when something changed; Qt
-    // coalesces repeated requests into one paint.
-    controller_->setRedrawCallback([this] { update(); });
+    // coalesces repeated requests into one paint, which uses the latest state. While input
+    // keeps arriving this runs at the display rate (the swap waits for vsync); when it
+    // stops, nothing is drawn.
+    controller_->setRedrawCallback([this] { onRedrawRequested(); });
+    connect(this, &QOpenGLWidget::frameSwapped, this, &CanvasWidget::onFrameSwapped);
+    refreshCursor();
+}
+
+void CanvasWidget::onRedrawRequested() {
+    if (!requestPending_) {
+        requestPending_ = true;
+        requestedAtMs_ = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
+    }
+    update();
+}
+
+void CanvasWidget::onFrameSwapped() {
+    if (paintedRequestAtMs_) {
+        const double now = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
+        recentLatenciesMs_.push_back(now - *paintedRequestAtMs_);
+        if (recentLatenciesMs_.size() > kFpsWindow) {
+            recentLatenciesMs_.erase(recentLatenciesMs_.begin());
+        }
+        paintedRequestAtMs_.reset();
+    }
 }
 
 CanvasWidget::~CanvasWidget() {
@@ -134,7 +164,6 @@ void CanvasWidget::initializeGL() {
         return;
     }
     graphicsError_.clear();
-    frameClock_.start();
 }
 
 void CanvasWidget::resizeGL(int /*width*/, int /*height*/) {
@@ -154,13 +183,21 @@ void CanvasWidget::paintGL() {
     if (!renderer_ || !renderer_->isInitialized()) {
         return;
     }
-    const double intervalMs = static_cast<double>(frameClock_.nsecsElapsed()) / 1e6;
-    frameClock_.restart();
+    const double nowMs = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
+    const double intervalMs = lastPaintMs_ >= 0.0 ? nowMs - lastPaintMs_ : 0.0;
+    lastPaintMs_ = nowMs;
     lastIntervalMs_ = intervalMs;
-    recentIntervalsMs_.push_back(intervalMs);
-    if (recentIntervalsMs_.size() > kFpsWindow) {
-        recentIntervalsMs_.erase(recentIntervalsMs_.begin());
+    if (intervalMs > kIdleGapMs) {
+        activeIntervalsMs_.clear(); // the canvas was idle: a new burst of activity starts
+    } else if (intervalMs > 0.0) {
+        activeIntervalsMs_.push_back(intervalMs);
+        if (activeIntervalsMs_.size() > kFpsWindow) {
+            activeIntervalsMs_.erase(activeIntervalsMs_.begin());
+        }
     }
+    // Paints Qt makes on its own (expose, resize) count from the paint itself.
+    paintedRequestAtMs_ = requestPending_ ? requestedAtMs_ : nowMs;
+    requestPending_ = false;
 
     if (benchmark_) {
         // Oscillate by ±30 px so everything that was in view stays in view: the
@@ -246,18 +283,43 @@ void CanvasWidget::updateHud(double cpuMs) {
     const canvas::CanvasStats stats = controller_->stats();
     const render::RenderStats gpu = renderer_->lastFrameStats();
     const canvas::Camera& camera = controller_->camera();
-    const double average =
-        recentIntervalsMs_.empty()
-            ? 0.0
-            : std::accumulate(recentIntervalsMs_.begin(), recentIntervalsMs_.end(), 0.0) /
-                  static_cast<double>(recentIntervalsMs_.size());
+    const auto mean = [](const std::vector<double>& values) {
+        return values.empty() ? 0.0
+                              : std::accumulate(values.begin(), values.end(), 0.0) /
+                                    static_cast<double>(values.size());
+    };
+    // Frame rate only over consecutive frames: with rendering on demand, the time between
+    // two frames separated by idleness says nothing about how fast frames are made.
+    QString frameLine;
+    if (activeIntervalsMs_.empty()) {
+        frameLine = QStringLiteral("frame  first after %1 ms idle (renders on demand)")
+                        .arg(QString::number(lastIntervalMs_, 'f', 0));
+    } else {
+        const double average = mean(activeIntervalsMs_);
+        frameLine =
+            QStringLiteral("frame  %1 fps while active (avg %2 ms, last %3 ms, %4 frames; "
+                           "gaps > %5 ms are idle, renders on demand)")
+                .arg(QString::number(1000.0 / average, 'f', 0), QString::number(average, 'f', 1),
+                     QString::number(lastIntervalMs_, 'f', 1))
+                .arg(static_cast<qulonglong>(activeIntervalsMs_.size()))
+                .arg(QString::number(kIdleGapMs, 'f', 0));
+    }
+    const QString latencyLine =
+        QStringLiteral("input  repaint request to presented: avg %1 ms, worst %2 ms (%3 frames)")
+            .arg(QString::number(mean(recentLatenciesMs_), 'f', 1),
+                 QString::number(
+                     recentLatenciesMs_.empty()
+                         ? 0.0
+                         : *std::max_element(recentLatenciesMs_.begin(), recentLatenciesMs_.end()),
+                     'f', 1))
+            .arg(static_cast<qulonglong>(recentLatenciesMs_.size()));
     const auto section = [this](const char* name) {
         const core::Profiler::Section* s = controller_->profiler().find(name);
         return s != nullptr ? QString::number(s->lastMs(), 'f', 2) : QStringLiteral("-");
     };
     const QString text =
-        QStringLiteral("frame  %1 ms since the last (avg %2 ms = %3 fps; renders on demand)\n"
-                       "cpu    %4 ms  build %5  query %6  prepare %7\n"
+        frameLine + QLatin1Char('\n') + latencyLine + QLatin1Char('\n') +
+        QStringLiteral("cpu    %4 ms  build %5  query %6  prepare %7\n"
                        "camera zoom %8  centre (%9, %10)\n"
                        "view   %11x%12 px  dpr %13  framebuffer %14x%15\n"
                        "scene  %16 elements  visible %17  drawn %18  selected %19\n"
@@ -265,9 +327,7 @@ void CanvasWidget::updateHud(double cpuMs) {
                        "cache  %24 entries  %25  built %26  uploaded %27\n"
                        "tool   %28  live points %29\n"
                        "%30")
-            .arg(QString::number(lastIntervalMs_, 'f', 1), QString::number(average, 'f', 1),
-                 QString::number(average > 0.0 ? 1000.0 / average : 0.0, 'f', 0),
-                 QString::number(cpuMs, 'f', 2), section("build frame"), section("scene query"),
+            .arg(QString::number(cpuMs, 'f', 2), section("build frame"), section("scene query"),
                  section("prepare content"))
             .arg(QString::number(camera.zoom(), 'f', 3), QString::number(camera.center().x, 'f', 1),
                  QString::number(camera.center().y, 'f', 1))
@@ -299,8 +359,48 @@ void CanvasWidget::updateHud(double cpuMs) {
 
 // ---------------------------------------------------------------------------- input
 
-void CanvasWidget::updateCursor() {
-    setCursor(toQtCursor(controller_->cursor()));
+void CanvasWidget::refreshCursor() {
+    const canvas::CursorShape shape = controller_->cursor();
+    if (shape == canvas::CursorShape::EraserRing) {
+        setCursor(eraserCursor());
+    } else {
+        setCursor(toQtCursor(shape));
+    }
+}
+
+const QCursor& CanvasWidget::eraserCursor() {
+    const double dpr = devicePixelRatioF();
+    const core::Color color = controller_->colors().eraser;
+    const QRgb rgb = qRgba(color.r, color.g, color.b, color.a);
+    if (eraserCursorDpr_ == dpr && eraserCursorColor_ == rgb) {
+        return eraserCursor_;
+    }
+    // The ring as a cursor image, drawn at the screen's pixel density. A thin contrasting
+    // halo keeps it visible on ink and on both paper themes.
+    const double radius = canvas::kEraserRadiusViewPx;
+    const int size = 2 * static_cast<int>(std::ceil(radius + 2.0)) + 1; // odd: exact centre
+    QPixmap pixmap(
+        QSize(static_cast<int>(std::ceil(size * dpr)), static_cast<int>(std::ceil(size * dpr))));
+    pixmap.setDevicePixelRatio(dpr);
+    pixmap.fill(Qt::transparent);
+    {
+        const QColor ring(rgb);
+        const QColor halo =
+            ring.lightnessF() < 0.5 ? QColor(255, 255, 255, 170) : QColor(0, 0, 0, 170);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setBrush(Qt::NoBrush);
+        const QPointF centre(size / 2.0, size / 2.0);
+        painter.setPen(QPen(halo, 3.0));
+        painter.drawEllipse(centre, radius, radius);
+        painter.setPen(QPen(ring, 1.25));
+        painter.drawEllipse(centre, radius, radius);
+    }
+    // Hot spot in device-independent pixels: the ring's centre is the eraser's centre.
+    eraserCursor_ = QCursor(pixmap, size / 2, size / 2);
+    eraserCursorDpr_ = dpr;
+    eraserCursorColor_ = rgb;
+    return eraserCursor_;
 }
 
 void CanvasWidget::mousePressEvent(QMouseEvent* event) {
@@ -310,7 +410,7 @@ void CanvasWidget::mousePressEvent(QMouseEvent* event) {
         controller_->onPointer(*pointer);
         event->accept();
     }
-    updateCursor();
+    refreshCursor();
 }
 
 void CanvasWidget::mouseDoubleClickEvent(QMouseEvent* event) {
@@ -322,7 +422,7 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* event) {
         controller_->onPointer(*pointer);
         event->accept();
     }
-    updateCursor();
+    refreshCursor();
 }
 
 void CanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
@@ -331,7 +431,7 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
         controller_->onPointer(*pointer);
         event->accept();
     }
-    updateCursor();
+    refreshCursor();
 }
 
 void CanvasWidget::tabletEvent(QTabletEvent* event) {
@@ -344,7 +444,7 @@ void CanvasWidget::tabletEvent(QTabletEvent* event) {
         }
         controller_->onPointer(*pointer);
         event->accept(); // no synthesised mouse events for handled pen input
-        updateCursor();
+        refreshCursor();
         return;
     }
     event->ignore();
@@ -359,7 +459,7 @@ void CanvasWidget::keyPressEvent(QKeyEvent* event) {
     if (const auto key = toKeyEvent(*event, true)) {
         controller_->onKey(*key);
         event->accept();
-        updateCursor();
+        refreshCursor();
         return;
     }
     QOpenGLWidget::keyPressEvent(event);
@@ -369,7 +469,7 @@ void CanvasWidget::keyReleaseEvent(QKeyEvent* event) {
     if (const auto key = toKeyEvent(*event, false)) {
         controller_->onKey(*key);
         event->accept();
-        updateCursor();
+        refreshCursor();
         return;
     }
     QOpenGLWidget::keyReleaseEvent(event);

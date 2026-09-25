@@ -344,7 +344,11 @@ What exists (`src/canvas`), and where it differs from the sketches above.
   point, which becomes the element position). Width = `baseWidth` × (0.3 + 0.7 ×
   pressure); mice report pressure 1. Strokes start only inside a bounded page.
 * **Eraser** (§5.2): the stroke eraser only (8 view px radius, whole strokes, one patch
-  on release). The partial eraser is Phase 6.
+  on release). The partial eraser is Phase 6. Its reach is shown by
+  `CursorShape::EraserRing`, which the UI turns into a platform cursor image: a ring drawn
+  by the renderer trailed the pointer by the one to two frames every composited window
+  presents late (≈ 15–45 px at 2 000 px/s, measured), stayed behind when the pointer left
+  the canvas, and cost a frame per hover move. Hover moves therefore request no repaint.
 * **Selection** (§7): click (4 view px tolerance, topmost, Shift toggles), rectangle
   (intersection with the ink by default, Alt = bounds fully contained, Shift adds), move
   by dragging a selected element (3 px threshold; preview offset, one `moveElements`

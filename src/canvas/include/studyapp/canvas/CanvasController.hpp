@@ -46,7 +46,7 @@ struct CanvasColors {
     core::Color pattern = core::Color::fromRgba(0xD4, 0xD4, 0xD4); ///< lines and dots
     core::Color selection = core::Color::fromRgba(0x52, 0x52, 0x52);
     core::Color marquee = core::Color::fromRgba(0x73, 0x73, 0x73);
-    core::Color eraser = core::Color::fromRgba(0x73, 0x73, 0x73);
+    core::Color eraser = core::Color::fromRgba(0x73, 0x73, 0x73); ///< CursorShape::EraserRing
     render::ColorTransform contentTransform = render::ColorTransform::None;
 };
 
@@ -131,7 +131,9 @@ public:
     }
 
     void setColors(const CanvasColors& colors) { colors_ = colors; }
-    /// Called whenever the canvas needs repainting (input changed something).
+    [[nodiscard]] const CanvasColors& colors() const noexcept { return colors_; }
+    /// Called whenever the canvas needs repainting (input changed something). Hover moves
+    /// without a gesture change nothing on the canvas and do not request a repaint.
     void setRedrawCallback(std::function<void()> callback) { redraw_ = std::move(callback); }
 
     // ---- rendering -----------------------------------------------------------------------
@@ -169,7 +171,6 @@ private:
     bool spaceHeld_ = false;
     bool viewportKnown_ = false;
     bool needsInitialView_ = true;
-    std::optional<core::DVec2> hoverView_;
     PenStyle pen_;
     StrokeOptions strokeOptions_;
     CanvasColors colors_;
@@ -185,7 +186,6 @@ private:
     render::MeshHandle liveMesh_;
     render::MeshHandle selectionMesh_;
     render::MeshHandle marqueeMesh_;
-    render::MeshHandle eraserMesh_;
 };
 
 } // namespace studyapp::canvas

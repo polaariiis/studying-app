@@ -303,6 +303,14 @@ backend target — nothing in `canvas`, `document` or `persistence`.
 * **GPU timing** (§10): three round-robin `GL_TIME_ELAPSED` queries, read without
   stalling; shown in the HUD and the pan benchmark.
 * **Debug HUD** (View ▸ Debug HUD, F3; off by default, remembered in settings): frame
-  interval, CPU time and profiler sections, zoom and centre, view/framebuffer size and
-  DPR, scene/visible/drawn/selected counts, draw calls, triangles, GPU meshes and time,
-  render-cache statistics, tool, live points, GL version.
+  rate while active, repaint-request-to-presented latency, CPU time and profiler
+  sections, zoom and centre, view/framebuffer size and DPR, scene/visible/drawn/selected
+  counts, draw calls, triangles, GPU meshes and time, render-cache statistics, tool, live
+  points, GL version. Rendering is on demand, so the frame rate is averaged only over
+  consecutive frames: gaps over 100 ms are idle time and start a new average (a plain
+  average of paint intervals mixed idle time in and read as ≈ 18 fps).
+* **Scheduling**: a frame is requested only when something visible changed (a gesture
+  step, wheel/pinch, a patch, a view or tool change); hover moves request nothing. Qt
+  coalesces requests into one paint of the latest state, and the swap waits for vsync, so
+  during input the canvas presents at up to the display rate and draws nothing when idle.
+  No render loop or timer is involved.

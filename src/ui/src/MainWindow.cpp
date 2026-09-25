@@ -177,6 +177,9 @@ void MainWindow::createCanvasActions() {
                                static_cast<int>(canvas::ToolKind::Select));
         }
         controller_->selectAll();
+        if (canvasWidget_ != nullptr) {
+            canvasWidget_->refreshCursor();
+        }
     });
 
     toolGroup_ = new QActionGroup(this);
@@ -187,7 +190,12 @@ void MainWindow::createCanvasActions() {
         action->setCheckable(true);
         action->setData(static_cast<int>(tool));
         action->setActionGroup(toolGroup_);
-        connect(action, &QAction::triggered, this, [this, tool] { controller_->setTool(tool); });
+        connect(action, &QAction::triggered, this, [this, tool] {
+            controller_->setTool(tool);
+            if (canvasWidget_ != nullptr) {
+                canvasWidget_->refreshCursor(); // e.g. the eraser ring, without a mouse move
+            }
+        });
         return action;
     };
     makeTool(tr("&Pen"), QStringLiteral("actionToolPen"), Qt::Key_P, canvas::ToolKind::Pen)
@@ -409,6 +417,7 @@ void MainWindow::applyCanvasTheme() {
         themes_->isDark() ? render::ColorTransform::InvertLightness : render::ColorTransform::None;
     controller_->setColors(colors);
     if (canvasWidget_ != nullptr) {
+        canvasWidget_->refreshCursor(); // the eraser ring takes the new colour
         canvasWidget_->update();
     }
 }

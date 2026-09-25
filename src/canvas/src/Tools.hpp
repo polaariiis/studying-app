@@ -26,8 +26,6 @@ struct Preview {
     bool moving = false;
     core::DVec2 moveOffset{}; ///< world, applied to selected elements while moving
     std::unordered_set<core::ElementId> erased; ///< hidden until the eraser gesture commits
-    std::optional<core::DVec2> eraserCenter;    ///< world
-    double eraserRadiusWorld = 0.0;
 
     void clear() {
         stroke.reset();
@@ -35,7 +33,6 @@ struct Preview {
         moving = false;
         moveOffset = {};
         erased.clear();
-        eraserCenter.reset();
     }
 };
 
@@ -108,9 +105,9 @@ public:
     void onPointer(const PointerEvent& event, ToolContext& context) override;
     void cancel(ToolContext& context) override;
     [[nodiscard]] bool isActive() const noexcept override { return active_; }
-    [[nodiscard]] CursorShape cursor() const noexcept override { return CursorShape::Crosshair; }
+    [[nodiscard]] CursorShape cursor() const noexcept override { return CursorShape::EraserRing; }
 
-    static constexpr double kRadiusViewPx = 8.0;
+    static constexpr double kRadiusViewPx = kEraserRadiusViewPx;
 
 private:
     void eraseAlong(const core::DVec2& a, const core::DVec2& b, ToolContext& context) const;

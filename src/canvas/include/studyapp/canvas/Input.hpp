@@ -88,6 +88,14 @@ enum class CursorShape : std::uint8_t {
     ClosedHand,
     SizeAll,
     ZoomIn,
+    /// A ring of kEraserRadiusViewPx around the hot spot: the stroke eraser's reach. Shown
+    /// as the platform cursor, not drawn by the renderer, so it moves with the pointer
+    /// without the one to two frames of latency of anything presented through the
+    /// compositor, and it disappears when the pointer leaves the canvas.
+    EraserRing,
 };
+
+/// Radius of the stroke eraser, in view pixels (the size of CursorShape::EraserRing).
+inline constexpr double kEraserRadiusViewPx = 8.0;
 
 } // namespace studyapp::canvas

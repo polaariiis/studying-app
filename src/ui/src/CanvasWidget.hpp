@@ -2,6 +2,8 @@
 
 #include <studyapp/ui/PanBenchmark.hpp>
 
+#include <QColor>
+#include <QCursor>
 #include <QElapsedTimer>
 #include <QOpenGLWidget>
 #include <QString>
@@ -9,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class QLabel;
@@ -30,7 +33,8 @@ namespace studyapp::ui {
 ///   * translate Qt input into canvas events (CanvasInputAdapter) and forward them;
 ///   * report the logical size and device pixel ratio to the controller and the
 ///     framebuffer size (logical × DPR) to the renderer on every paint;
-///   * render on demand (update() when the controller asks) and show the debug HUD.
+///   * render on demand (update() when the controller asks) and show the debug HUD;
+///   * map canvas cursor shapes to platform cursors (the eraser ring is a cursor image).
 /// Camera math, tools, document edits and GL calls all live elsewhere.
 class CanvasWidget final : public QOpenGLWidget {
     Q_OBJECT
@@ -45,6 +49,10 @@ public:
 
     void setHudVisible(bool visible);
     [[nodiscard]] bool isHudVisible() const noexcept;
+
+    /// Applies the controller's cursor now (after a tool or colour change made elsewhere,
+    /// e.g. a keyboard shortcut, without waiting for the next pointer event).
+    void refreshCursor();
 
     /// Pans continuously for `frames` frames (back and forth), then reports frame timings.
     void runPanBenchmark(int frames, std::function<void(const PanBenchmarkResult&)> done);
@@ -70,18 +78,32 @@ protected:
 
 private:
     void syncViewport();
-    void updateCursor();
     void updateHud(double cpuMs);
     void releaseGraphics();
+    void onRedrawRequested();
+    void onFrameSwapped();
+    [[nodiscard]] const QCursor& eraserCursor();
 
     canvas::CanvasController* controller_;
     std::unique_ptr<render_gl::OpenGLRenderer> renderer_;
     QLabel* hud_ = nullptr;
     QString graphicsError_;
-    QElapsedTimer frameClock_;
-    std::vector<double> recentIntervalsMs_;
-    double lastIntervalMs_ = 0.0;
     bool pointerDown_ = false;
+
+    // Frame timing for the HUD (on-demand rendering: gaps between frames are idle time,
+    // not frame time, and are kept out of the averages).
+    QElapsedTimer clock_;                      ///< monotonic, started at construction
+    double lastPaintMs_ = -1.0;                ///< clock_ time of the previous paint
+    double lastIntervalMs_ = 0.0;              ///< since the previous paint, idle gaps included
+    std::vector<double> activeIntervalsMs_;    ///< consecutive frames of the current activity
+    bool requestPending_ = false;              ///< a repaint was requested and not yet painted
+    double requestedAtMs_ = 0.0;               ///< when the pending request was made
+    std::optional<double> paintedRequestAtMs_; ///< request time of the frame being presented
+    std::vector<double> recentLatenciesMs_;    ///< request → frame presented
+
+    QCursor eraserCursor_;
+    double eraserCursorDpr_ = 0.0;
+    QRgb eraserCursorColor_ = 0;
 
     struct Benchmark {
         int remaining = 0;

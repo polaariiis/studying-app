@@ -263,6 +263,63 @@ TEST(CanvasControllerTest, PenEraserEndErasesWithAnyTool) {
     EXPECT_EQ(f.elements().size(), 2U);
 }
 
+TEST(CanvasControllerTest, EraserRingIsTheCursorNotRenderedContent) {
+    CanvasFixture f;
+    f.controller.setTool(ToolKind::Eraser);
+    EXPECT_EQ(f.controller.cursor(), CursorShape::EraserRing);
+    // Hovering draws nothing: the ring is the platform cursor, so no overlay can be left
+    // behind at a stale position when the pointer leaves the canvas.
+    for (int x = 100; x <= 700; x += 100) {
+        f.pointer(PointerPhase::Move, {static_cast<double>(x), 300}, PointerButton::None);
+    }
+    (void)f.frame();
+    EXPECT_TRUE(f.renderer.lastOverlay.empty());
+    // Also while erasing, and for a pen's eraser end with another tool.
+    f.pointer(PointerPhase::Down, {100, 100});
+    EXPECT_EQ(f.controller.cursor(), CursorShape::EraserRing);
+    f.pointer(PointerPhase::Up, {120, 100});
+    f.controller.setTool(ToolKind::Pen);
+    EXPECT_EQ(f.controller.cursor(), CursorShape::Crosshair);
+    f.pointer(PointerPhase::Down, {100, 100}, PointerButton::Primary, {}, 1.0F,
+              PointerDevice::Eraser);
+    EXPECT_EQ(f.controller.cursor(), CursorShape::EraserRing);
+    f.pointer(PointerPhase::Up, {120, 100}, PointerButton::Primary, {}, 1.0F,
+              PointerDevice::Eraser);
+    EXPECT_EQ(f.controller.cursor(), CursorShape::Crosshair);
+}
+
+TEST(CanvasControllerTest, HoverRequestsNoRepaint) {
+    // Rendering is on demand: moving the pointer without a gesture changes nothing on the
+    // canvas, so it must not cost a frame (it used to repaint on every mouse move).
+    CanvasFixture f;
+    int redraws = 0;
+    f.controller.setRedrawCallback([&redraws] { ++redraws; });
+    for (const ToolKind tool :
+         {ToolKind::Pen, ToolKind::Select, ToolKind::Eraser, ToolKind::Pan, ToolKind::Zoom}) {
+        f.controller.setTool(tool);
+        redraws = 0;
+        for (int x = 100; x <= 700; x += 50) {
+            f.pointer(PointerPhase::Move, {static_cast<double>(x), 250}, PointerButton::None);
+        }
+        // A release or cancel without a gesture (e.g. focus loss while hovering) neither.
+        f.pointer(PointerPhase::Up, {0, 0});
+        f.controller.onPointer({.phase = PointerPhase::Cancel});
+        EXPECT_EQ(redraws, 0) << toString(tool);
+    }
+    // A gesture repaints on every step, so the frame follows the pointer.
+    f.controller.setTool(ToolKind::Pen);
+    f.pointer(PointerPhase::Down, {100, 100});
+    const int afterDown = redraws;
+    EXPECT_GE(afterDown, 1);
+    f.pointer(PointerPhase::Move, {150, 120});
+    f.pointer(PointerPhase::Move, {200, 140});
+    EXPECT_EQ(redraws, afterDown + 2);
+    f.pointer(PointerPhase::Up, {200, 140});
+    EXPECT_GE(redraws, afterDown + 3); // plus the committed stroke's patch
+    EXPECT_EQ(f.elements().size(), 1U);
+    f.controller.setRedrawCallback({});
+}
+
 // ---------------------------------------------------------------------------- navigation
 
 TEST(CanvasControllerTest, SpacePanAndWheelZoomAroundTheCursor) {

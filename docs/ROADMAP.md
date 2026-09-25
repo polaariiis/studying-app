@@ -151,7 +151,7 @@ Delivered:
   is one command written in one transaction; no save dialogs.
 * Tests: `canvas_tests`, `render_tests`, new core/document/application tests and the
   real-OpenGL `ui.CanvasWidgetTest` (skips without a 3.3 context); `bench/` with Google
-  Benchmark (D32). 328 CTest tests in the full build (243 after Phase 3).
+  Benchmark (D32). 330 CTest tests in the full build (243 after Phase 3).
 
 Measurements (reference laptop: AMD integrated Radeon graphics, 12 × 4.3 GHz, Windows,
 Release build, 144 Hz display, 10 000 hand-writing-like strokes of 30–90 points):
@@ -175,6 +175,36 @@ fixed by batching (D31); the MSAA sample count made no measurable difference. Op
 catalog/page split (D25) is still not needed (loading the whole workspace takes ≈ 0.1 s).
 Candidates when profiling demands: tessellate the visible strokes first, persist or
 cache meshes.
+
+Stabilization after manual testing (pointer preview and frame scheduling), measured with
+real OS input (`SendInput`) on the same laptop, Release build, per-frame tracing:
+
+* The HUD's "≈ 18 fps" was a metric error: it averaged paint intervals including idle
+  gaps. Rendering is on demand and, during input, presents once per input event at up to
+  the display rate (paint CPU 0.05–0.2 ms, GPU ≈ 0.5 ms on an empty page); nothing is
+  drawn when idle. The HUD now averages consecutive frames only and shows the
+  request-to-presented latency (≈ 9 ms during drawing, panning and zooming).
+* The eraser ring was drawn by the renderer: it trailed the cursor by ≈ 8 ms at 1 000 Hz
+  and ≈ 20 ms (≈ 40 px at 2 000 px/s) at 125 Hz mouse reports — the latency of presenting
+  through the compositor, not slow frames — stayed at its last position when the pointer
+  left the canvas (no leave handling), and repainted on every hover move. It is now the
+  platform cursor (no lag, hidden by the window system outside the canvas), and hover
+  moves request no frame.
+
+| Scenario (interaction-driven, input every 4 ms) | Frames | Interval avg | Request → presented | CPU avg / max | GPU |
+|---|---|---|---|---|---|
+| Idle, hover (pen or eraser, 250 moves) | 0 | – | – | – | – |
+| Drawing, empty page | 1 per move | 9.8 ms | 9.0 ms | 0.07 / 0.2 ms | 0.43 ms |
+| Pan, 1 000 strokes (36 visible) | 1 per move | 9.8 ms | 9.1 ms | 0.10 / 0.25 ms | 0.50 ms |
+| Pan, 10 000 strokes (≈ 360 visible) | 1 per move | 11.3 ms | 10.5 ms | 0.55 / 1.6 ms | 1.0 ms |
+| Pan, 10 000 strokes, all visible (batched) | 1 per move | 15.2 ms | 14.6 ms | 2.9 / 4.2 ms | 4.0 ms |
+| Wheel zoom in, 10 000 strokes all visible | 11 | 46 ms | 40 ms | 26 / 130 ms | 3.8 ms |
+
+Remaining bottleneck: zooming in with every stroke of a 10 000-stroke page visible
+re-tessellates the visible strokes each time a finer LOD bucket is needed (≈ 10 000 meshes,
+up to 130 ms per step, a visible hitch; first zoom-out to the whole page: 200 ms). Not
+addressed yet; candidates: tessellate incrementally over frames or keep the coarse mesh
+until the finer one is ready.
 
 Deviations: no per-page camera memory, lasso, partial eraser or highlighter (Phases 5/6);
 pen hardware was not available for testing (pressure is exercised by synthetic events and
