@@ -1,0 +1,16 @@
+/* StudyBoard dark theme. Colours come from the QPalette set by ThemeManager;
+   this stylesheet only adds the few rules a palette cannot express. */
+
+QLabel#placeholderTitle {
+    font-size: 22pt;
+    font-weight: 600;
+}
+
+QLabel#placeholderSubtitle {
+    color: palette(mid);
+}
+
+QToolBar {
+    border: none;
+    border-bottom: 1px solid palette(dark);
+}
