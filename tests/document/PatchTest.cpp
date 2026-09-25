@@ -2,7 +2,7 @@
 
 #include <studyapp/document/Patch.hpp>
 
-#include "TestWorkspace.hpp"
+#include <studyapp/testing/TestWorkspace.hpp>
 
 #include <gtest/gtest.h>
 

@@ -3,7 +3,7 @@
 
 #include <studyapp/document/Workspace.hpp>
 
-#include "TestWorkspace.hpp"
+#include <studyapp/testing/TestWorkspace.hpp>
 
 #include <gtest/gtest.h>
 

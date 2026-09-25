@@ -2,7 +2,7 @@
 
 #include <studyapp/document/Commands.hpp>
 
-#include "TestWorkspace.hpp"
+#include <studyapp/testing/TestWorkspace.hpp>
 
 #include <gtest/gtest.h>
 

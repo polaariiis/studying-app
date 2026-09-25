@@ -1,24 +1,28 @@
 # Testing Architecture
 
-> Status: **Final baseline.** §0 lists what exists after Phase 2; the rest of this
+> Status: **Final baseline.** §0 lists what exists after Phase 3; the rest of this
 > document is the plan that later phases follow.
 
-## 0. Current state (Phase 2)
+## 0. Current state (Phase 3)
 
 | Test target | Label | Framework | Covers |
 |---|---|---|---|
 | `core_tests` | `unit` | GoogleTest | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid`, `Id<T>`, `UuidV7Generator`, `SystemClock`, `Result`/`Error`, logging facade, `FractionalIndex` (incl. randomised insertion and key-growth tests) |
-| `document_tests` | `unit` | GoogleTest | Workspace hierarchy, lookup, ordering, uniqueness, invariants; patches (apply, inverse, conflicts, atomic rollback); commands (success, failure, determinism, cascades); undo/redo (empty history, multiple steps, redo-branch clearing, failed commands, capacity, exact state restoration, nested 10-step scenario) |
-| `persistence_tests` | `integration` | GoogleTest | Linked SQLite meets the version/feature requirements (FTS5, thread safety) |
-| `application_tests` | `unit` | GoogleTest | `componentVersions()` |
+| `document_tests` | `unit` | GoogleTest | Workspace hierarchy, lookup, ordering, uniqueness, invariants; patches (apply, inverse, conflicts, atomic rollback); commands (success, failure, determinism, cascades); undo/redo (empty history, multiple steps, redo-branch clearing, failed commands, capacity, exact state restoration, nested 10-step scenario); element local/world bounds |
+| `persistence_tests` | `integration` | GoogleTest | Real SQLite in temp directories (Unicode paths). Linked SQLite requirements; `Database`/`Statement`/`Transaction` (pragmas, storage classes, error mapping, commit/rollback, failed commit); migrations (new schema = documented tables, WAL, application_id, integrity/FK check clean; no-op re-run; upgrade harness with backup; failed migration rolls back; newer schema refused read-write; foreign databases refused); stroke codec (bit-exact round trip, malformed blobs) and SHA-256 vectors; `WorkspaceFile` (layout, create/open/reopen, read-only, backup, integrity check, temp cleanup, moved directory); `WorkspaceStore` (every record and element kind round-trips field by field, UUID/parent/order preservation, renames, updates, kind change, layer move, deletes + cascades, undo/redo patches, move does not rewrite stroke blobs, content_version, failed patch leaves the database unchanged, repeated cycles, 20 corrupt-data cases); `AssetStore` (content addressing, dedupe, crash ordering → orphan file only, GC grace period and references, ON DELETE RESTRICT, verify) |
+| `application_tests` | `integration` | GoogleTest | `componentVersions()`; `WorkspaceSession`: create → commands → close → reopen equality for a complex workspace (all element kinds, attached connectors, assets, renames, deletes, undo/redo), repeated edit/reopen cycles, rejected commands change nothing, write failure keeps edits queued and retries (fault injection via a second connection), locking (active → read-only only, stale → explicit recovery with integrity check and temp cleanup) |
+| `platform.QtWorkspaceLockerTest` | `integration` | Qt Test | `QLockFile` adapter: free/active/exclusive, release, stale lock of a dead process, other host never stale, unreadable lock file |
 | `architecture_tests` | `architecture` | GoogleTest | All Qt-free modules link into one plain C++ executable |
 | `architecture.include_boundaries` | `architecture` | Python script | `tools/check_boundaries.py`: forbidden includes / GL calls per module |
 | `ui.MainWindowTest` | `gui` | Qt Test (offscreen) | Main window structure, theme switching, theme actions, settings persistence, application icon resources, neutral palette (zero-saturation tokens), stylesheet template fully resolved |
 
-Document tests use the header-only `studyapp_test_support` target (`tests/support`):
-`testing::ManualClock` and `testing::SequentialIds` make every timestamp and id
-deterministic. They link only `studyapp_document` and `studyapp_core` — no Qt, GPU,
-SQLite, filesystem, network or wall clock.
+Tests use the header-only targets in `tests/support`: `studyapp_test_support`
+(`testing::ManualClock` and `testing::SequentialIds` make every timestamp and id
+deterministic; `EXPECT_OK`/`ASSERT_OK`; `testing::TempDirectory`, a self-deleting
+directory with a non-ASCII name) and `studyapp_document_test_support` (adds the
+`TestWorkspace` fixture, shared by document, persistence and application tests). Document
+tests link only `studyapp_document` and `studyapp_core` — no Qt, GPU, SQLite, filesystem,
+network or wall clock. Persistence and application tests use real SQLite and never mock it.
 
 GoogleTest tests are registered with `gtest_discover_tests(... DISCOVERY_MODE PRE_TEST)`,
 so each test case is its own CTest test. Qt Widgets tests use Qt Test because they need

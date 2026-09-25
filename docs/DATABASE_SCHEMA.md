@@ -1,8 +1,11 @@
 # Database Schema & Persistence
 
-> Status: **Final baseline — not yet implemented.** This is the intended schema v1. It will
-> be created by migration `0001_initial.sql` in Phase 3. Phase 1 only wires the SQLite
-> dependency into `studyapp_persistence` (vendored amalgamation by default).
+> Status: **Schema v1 implemented (Phase 3).** Migration
+> `src/persistence/migrations/0001_initial.sql` creates exactly the DDL of §5. §2–§4, §7.1–§7.3,
+> §8 and the locking/temporary-file parts of §9 are implemented as described, with the
+> Phase 3 specifics listed in [§11](#11-phase-3-implementation-notes). Search index
+> maintenance (§6), automatic backup rotation, trash purge and the reader-connection pool
+> are later phases.
 
 ---
 
@@ -43,7 +46,10 @@ PRAGMA cache_size    = -32768;        -- 32 MB page cache per connection
 
 Connections: **one read-write connection** owned by the persistence writer thread, and a
 small pool of **read-only connections** (`SQLITE_OPEN_READONLY`) for page loading and
-search. WAL lets readers proceed while the writer commits.
+search. WAL lets readers proceed while the writer commits. *Phase 3:* one connection per
+open workspace, used synchronously on the GUI thread (read-write, or `SQLITE_OPEN_READONLY`
+for a read-only session); the writer thread and reader pool are added when measurements
+require them (ARCHITECTURE.md §10).
 
 SQLite build options (vendored amalgamation): `SQLITE_ENABLE_FTS5`,
 `SQLITE_ENABLE_RTREE`, `SQLITE_DQS=0`, `SQLITE_DEFAULT_FOREIGN_KEYS=1`,
@@ -414,6 +420,10 @@ notebook title). This is done in C++ rather than SQL triggers because:
 
 A `rebuildSearchIndex()` maintenance routine regenerates everything from source tables.
 
+*Phase 3:* the `search_doc` / `search_index` tables are created by schema v1 but stay
+empty; index maintenance is implemented with search in Phase 8, whose first step runs
+`rebuildSearchIndex()` over existing workspaces (decision D28).
+
 ## 7. Persistence strategy
 
 ### 7.1 Write path
@@ -433,6 +443,18 @@ A `rebuildSearchIndex()` maintenance routine regenerates everything from source 
    never discarded on a write error.
 
 "Save" (Ctrl+S) = flush the queue and wait. Closing a page or the app flushes first.
+
+*Phase 3 (synchronous):* `application::WorkspaceSession` performs steps 2–4 inline. After
+`document::Editor` has applied a command, an undo or a redo, the session appends the patch
+that was applied (the command's patch, or its inverse for undo) to an in-memory FIFO and
+writes it at once with `persistence::WorkspaceStore::write` — one `BEGIN IMMEDIATE …
+COMMIT` per patch, with `PRAGMA defer_foreign_keys = ON` so foreign keys are checked at
+commit, like the document's per-patch invariants. On failure the transaction rolls back,
+the in-memory edit stands, the patch stays queued, the error is logged and exposed
+(`lastWriteError()`, `pendingWriteCount()`), and the next write, `flush()` or `close()`
+retries; `close()` refuses to finish while writes are pending. There is no `PersistOp`
+queue or writer thread yet; the FIFO carries the same `Patch` values, so adding them later
+does not change the domain.
 
 ### 7.2 Read path
 
@@ -460,6 +482,22 @@ class WorkspaceFile { public: static Result<WorkspaceFile> open(path); static Re
 
 Stores are concrete classes. Tests run them against a real SQLite database (`:memory:` or
 a temp directory) — faster and more faithful than mocks.
+
+Implemented in Phase 3 (`src/persistence/include/studyapp/persistence/`):
+
+| Class | Responsibility |
+|---|---|
+| `Database`, `Statement`, `CachedStatement` | RAII connection with the per-connection pragmas of §2 and a prepared-statement cache; bind/step/column access; SQLite errors mapped to `core::Error` |
+| `Transaction` | `BEGIN IMMEDIATE`/`DEFERRED`; `COMMIT` on `commit()`, `ROLLBACK` on destruction or a failed commit |
+| `migrate()`, `builtinMigrations()` | §8: versioning, pre-upgrade backup, refusing newer or foreign databases |
+| `CatalogStore` | `workspace_meta`, `notebook`, `section`, `page`: load + apply record changes |
+| `PageStore` | `layer`, `element` and the kind tables: `load(PageId)` + apply record changes |
+| `WorkspaceStore` | Whole-workspace load through `Workspace::apply` (§11) and `write(Patch)` in one transaction |
+| `AssetStore`, `Sha256` | §3: import (hash → fsync → rename → row), dedupe, `pathOf`, GC, `verify` |
+| `WorkspaceFile`, `WorkspaceLayout` | Workspace directory: create/open (read-write or read-only), backup, integrity check, temporary cleanup |
+| `encodeStrokePoints` / `decodeStrokePoints` | Stroke codec v1 (DATA_MODEL.md §8) |
+
+`StudyStore`, `SettingsStore` and `SearchIndex` arrive with their phases (7, 5, 8).
 
 ## 8. Migrations & versioning
 
@@ -504,3 +542,62 @@ a temp directory) — faster and more faithful than mocks.
 * **Stroke codec v2**: quantised delta + varint, migrated lazily (rows re-encoded when
   rewritten) or eagerly by a C++ migration step.
 * **Encryption at rest**: would require SQLCipher or OS-level encryption; out of scope.
+
+## 11. Phase 3 implementation notes
+
+How the Phase 2 document model maps onto schema v1, and what the implementation adds to
+the design above.
+
+**Mapping.** Every record type has its own table; ids are the domain's typed UUIDs stored
+as 16-byte BLOBs (never row ids); `FractionalIndex` values are stored verbatim in
+`sort_key` / `z_key`; colours as `0xAARRGGBB`; timestamps as UTC milliseconds.
+
+| Model | Table / columns |
+|---|---|
+| `WorkspaceInfo {id, name, created}` | `workspace_meta`: `workspace_id` (canonical text), `name`, `created_at`, plus `created_by_version`, `last_written_by_version` |
+| `NotebookInfo` | `notebook` (`title`, `sort_key`, `created_at`, `updated_at` = `modified`) |
+| `SectionInfo` | `section` (`notebook_id`; `parent_id` stays NULL — nested sections are not in the model yet) |
+| `PageInfo` | `page`: `extent` 0/1, `width`/`height` (written for every page, so the unused size of an infinite page also round-trips), `bg_color`, `bg_pattern` 0–3, `bg_spacing` |
+| `Layer` | `layer` |
+| `Element` header | `element`: `kind` = `ElementKind`, transform columns, `locked`; `page_id` is derived in SQL from the layer (`(SELECT page_id FROM layer WHERE id = ?)`) and kept in step when a layer moves; `min_x … max_y` = `document::worldBounds()` |
+| `Stroke` | `stroke`: `brush`, `color`, `base_width`, `point_count`, `point_format` = 1, `points` (codec v1, bit-exact) |
+| `TextBox` | `text_box`: `width`, `height`, `sizing` = 2 (fixed), `content` = `{"v":1,"text":"…"}` (built and read with SQLite's JSON functions), `plain_text` = the text |
+| `Shape` | `shape`: `shape_kind` 0–2, `width`, `height`, nullable `stroke_color` / `fill_color`, `stroke_width` |
+| `Image` | `image`: `asset_id` (→ `asset`, `ON DELETE RESTRICT`), `width`, `height` |
+| `Connector` | `connector`: `start_*` / `end_*` positions, nullable `*_element_id`, `color`, `width` |
+
+Columns without a model field (colours and icons of notebooks, course links, crop, caps,
+routing, labels, `bg_asset_id`, …) are written with their schema defaults on insert and
+never touched by updates. `element.created_at` / `updated_at` and `page.content_version`
+exist only in the database: element timestamps come from the injected clock at write
+time, and `content_version` is incremented once per patch for every page whose layers or
+elements changed. `page.updated_at` is the model's `modified` and is *not* bumped by
+content edits, so the loaded model equals the saved one.
+
+**Loading = applying.** `WorkspaceStore::load()` reads the catalog, then each page's
+layers and elements (`PageStore::load(PageId)` — the unit a later on-demand loader will
+use), turns all rows into one creating `Patch` (parents first; per page, connectors after
+the elements they attach to) and applies it to an empty `Workspace`, followed by
+`Workspace::validate()`. Every document invariant is therefore enforced by the same code
+that guards edits. Before that, rows are decoded strictly (storage class, 16-byte non-nil
+UUIDs, valid ordering keys, enum ranges, colour range, codec and JSON versions, kind row
+matching `element.kind`, element on its layer's page), and every `layer` / `element` row
+must be reachable from the hierarchy. Any violation fails the load with `ParseError`
+("corrupt … row" / "invalid workspace data"); data this version cannot represent
+(`deleted_at` set, nested sections) fails with `Unsupported`. An invalid `Workspace` is
+never returned.
+
+**Assets.** `import` stages into `temporary/<asset id>.part` while hashing, flushes it to
+disk (`fflush` + `_commit`/`fsync` — the module's only platform `#ifdef`, C runtime only),
+renames it to `assets/<h0h1>/<h2h3>/<sha256>.<ext>` and only then inserts the row. An
+existing row with the same hash is returned instead (dedupe); an orphan file with the
+same name (from an interrupted import) is reused. `WorkspaceSession::execute` rejects
+image elements whose asset was never imported (`NotFound`), so the asset foreign key is a
+second line of defence rather than a way for the write queue to get stuck.
+
+**Opening a workspace** (`application::WorkspaceSession`): read-write requires the
+exclusive-writer lock (ARCHITECTURE.md §11.1) *before* the database is opened; the schema
+is migrated if needed (backup first), `last_written_by_version` is recorded, and
+`temporary/` is emptied. Taking over a stale lock additionally runs `PRAGMA quick_check` +
+`PRAGMA foreign_key_check` and refuses to open on problems. Read-only takes no lock and
+never writes.

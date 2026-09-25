@@ -5,9 +5,8 @@ studyapp_add_gtest(document_tests
         EditorTest.cpp
         ElementTest.cpp
         PatchTest.cpp
-        TestWorkspace.hpp
         WorkspaceTest.cpp
     LIBS
         studyapp::document
-        studyapp::test_support
+        studyapp::document_test_support
     LABELS unit)

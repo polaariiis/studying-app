@@ -19,7 +19,7 @@ notebooks, and course/project/task planning, all usable without an internet conn
 | Language | C++20 |
 | UI | Qt 6.8 LTS, Qt Widgets |
 | Canvas rendering | OpenGL 3.3 core, isolated behind a renderer abstraction (from Phase 4) |
-| Persistence | SQLite (from Phase 3); large assets as external files |
+| Persistence | SQLite (WAL, relational schema, patch-driven writes); large assets as content-addressed external files |
 | Build | CMake 3.25+, Ninja, CMake presets |
 | Tests | GoogleTest, Qt Test, CTest |
 | CI | GitHub Actions on Windows, Linux and macOS |
@@ -40,16 +40,16 @@ app (studyapp executable)
  render_gl (OpenGL) ── render ┘
 ```
 
-| Module | Responsibility | Phase 1 state |
+| Module | Responsibility | State (end of Phase 3) |
 |---|---|---|
 | `core` | Geometry, UUIDv7 ids, ordering keys, colours, `Result`, clock, logging | Implemented |
 | `document` | Notebooks, sections, pages, layers, elements, patches, commands, undo/redo | Implemented (headless) |
 | `study` | Courses, projects, tasks, planning | Skeleton (Phase 7) |
 | `render` / `render_gl` | Renderer API / OpenGL 3.3 backend | Skeleton (Phase 4) |
 | `canvas` | Camera, tools, hit testing, selection | Skeleton (Phase 4) |
-| `persistence` | SQLite schema, stores, assets, workspace locking | SQLite wired in (Phase 3) |
-| `application` | Sessions and use cases | Component versions only |
-| `platform` | Qt-backed adapters, OS-specific code | Qt log sink |
+| `persistence` | SQLite schema, stores, assets, workspace directory | Implemented: schema v1 + migrations, patch-driven stores, asset store |
+| `application` | Sessions and use cases | `WorkspaceSession` (create/open/edit/undo/close, persisted) |
+| `platform` | Qt-backed adapters, OS-specific code | Qt log sink, workspace lock (`QLockFile`) |
 | `ui` | Main window, design tokens, themes, app icon | Shell with neutral light/dark themes |
 
 Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), plus the
@@ -115,8 +115,8 @@ cmake --workflow --preset debug
 | 0 | Architecture | ✅ |
 | 1 | Foundation & build skeleton | ✅ |
 | 2 | Document model, commands, undo/redo (headless); app icon; design foundation | ✅ |
-| 3 | SQLite persistence, assets, workspace locking | Next |
-| 4 | Canvas engine + OpenGL renderer (first drawing) | Planned |
+| 3 | SQLite persistence, assets, workspace locking | ✅ |
+| 4 | Canvas engine + OpenGL renderer (first drawing) | Next |
 | 5 | Navigation: notebooks, sections, pages | Planned |
 | 6 | Text, shapes, images, connectors, layers | Planned |
 | 7 | Study & planning | Planned |

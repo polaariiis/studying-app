@@ -45,6 +45,7 @@ include(CompilerWarnings)
 include(Sanitizers)
 include(StudyAppModule)
 include(Dependencies)
+include(EmbedFiles)
 include(Deploy)
 
 if(STUDYAPP_BUILD_TESTS)

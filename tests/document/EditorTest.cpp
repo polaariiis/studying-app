@@ -2,9 +2,8 @@
 
 #include <studyapp/document/Editor.hpp>
 
-#include "TestWorkspace.hpp"
-
 #include <studyapp/document/UndoStack.hpp>
+#include <studyapp/testing/TestWorkspace.hpp>
 
 #include <gtest/gtest.h>
 

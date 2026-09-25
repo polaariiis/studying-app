@@ -1,6 +1,6 @@
 # Schema migrations
 
-Numbered SQL migrations for `workspace.db` live in this directory, starting in Phase 3:
+Numbered SQL migrations for `workspace.db` live in this directory:
 
 ```
 0001_initial.sql
@@ -18,4 +18,11 @@ Rules (see [docs/DATABASE_SCHEMA.md §8](../../../docs/DATABASE_SCHEMA.md#8-migr
 * Migrations are never edited after release; fixes are new migrations.
 * Every migration gets a test that upgrades a fixture database from the previous version.
 
-No migrations exist yet: the schema is created in Phase 3.
+| File | Version | Content |
+|---|---|---|
+| `0001_initial.sql` | 1 | Schema v1 exactly as documented in DATABASE_SCHEMA.md §5 (Phase 3) |
+
+Adding a migration: create `NNNN_<description>.sql`, append it to the `FILES` list of
+`studyapp_embed_files()` in `src/persistence/CMakeLists.txt` (in version order), and add a
+test that migrates a database of the previous version (`MigrationsTest.UpgradesWithBackupAndKeepsData`
+shows the harness).

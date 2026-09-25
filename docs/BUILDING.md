@@ -123,7 +123,8 @@ cmake --install build/release --prefix <dir>     # custom location; must be an a
 
 On Windows the deployed tree includes `opengl32sw.dll`, Qt's software OpenGL fallback.
 
-**Selecting tests** (CTest labels: `unit`, `integration`, `architecture`, `gui`):
+**Selecting tests** (CTest labels: `unit`, `integration`, `architecture`, `gui`;
+`integration` = real SQLite databases and lock files in temporary directories):
 
 ```sh
 ctest --preset debug -L unit
@@ -144,6 +145,8 @@ cmake/
 ├── Sanitizers.cmake           STUDYAPP_SANITIZERS (GCC/Clang)
 ├── Dependencies.cmake         FetchContent (pinned) + find_package(Qt6)
 ├── Deploy.cmake               studyapp_install_app(): install + Qt deployment script
+├── EmbedFiles.cmake           studyapp_embed_files(): files → byte arrays in a generated .cpp
+├── EmbedFilesScript.cmake     script-mode helper of EmbedFiles.cmake (runs at build time)
 └── CMakeUserPresets.example.json
 src/<module>/CMakeLists.txt    one static library per module
 app/CMakeLists.txt             the `studyapp` executable
@@ -221,8 +224,12 @@ Enforcement:
   `python tools/generate_app_icons.py` (requires Pillow; developers only — the build uses
   the committed files). To replace the artwork:
   `python tools/generate_app_icons.py --import-source <image>`.
-* SQL migrations (Phase 3) will be embedded by a CMake script so that `persistence` stays
-  Qt-free; see `src/persistence/migrations/README.md`.
+* SQL migrations (`src/persistence/migrations/*.sql`) are embedded into
+  `studyapp_persistence` at build time by `studyapp_embed_files()`
+  (`cmake/EmbedFiles.cmake`): a custom command regenerates
+  `build/<preset>/src/persistence/generated/…migrationFiles.cpp` (byte arrays) whenever a
+  migration changes, so `persistence` stays Qt-free and needs no files at run time. See
+  `src/persistence/migrations/README.md`.
 
 ## 6. Code quality tooling
 

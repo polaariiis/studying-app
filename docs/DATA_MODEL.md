@@ -1,10 +1,11 @@
 # Data Model
 
-> Status: **Phase 2 implemented.** §2 (core types), §3 (workspace hierarchy), §4.1–4.2
-> (elements, layers), §4.4 (invariants) and §6 (patches, commands, undo/redo) describe the
-> code in `src/core` and `src/document`. §4.3 (rich text), §5 (study model) and the
-> persistence/canvas parts of §6.4 and §7 are target design for later phases and are
-> marked as such.
+> Status: **Phase 2 implemented; persisted since Phase 3.** §2 (core types), §3 (workspace
+> hierarchy), §4.1–4.2 (elements, layers), §4.4 (invariants) and §6 (patches, commands,
+> undo/redo) describe the code in `src/core` and `src/document`. Phase 3 stores this model
+> in SQLite through the same patches (§6.4; mapping in DATABASE_SCHEMA.md §11). §4.3 (rich
+> text), §5 (study model) and the canvas parts of §6.4 and §7 are target design for later
+> phases and are marked as such.
 
 This document describes the in-memory domain model (`core`, `document`, `study`), who owns
 what, the invariants, and how edits, commands and undo/redo work. The on-disk
@@ -140,10 +141,11 @@ come from the injected `core::Clock`; renames update `modified`.
 
 Deferred (target design, not implemented yet):
 
-* **Page content loading.** Phase 2 keeps every page's content in the one `Workspace`.
-  The split into an always-loaded catalog and per-page `PageDocument`s loaded on demand
-  (with per-page undo scoping) is introduced with persistence in Phase 3, when there is
-  something to load from.
+* **Page content loading.** Every page's content lives in the one `Workspace`; Phase 3
+  loads the whole workspace when it is opened. The split into an always-loaded catalog and
+  per-page `PageDocument`s loaded on demand (with per-page undo scoping) is deferred until
+  page-load cost is measured with the canvas (ARCHITECTURE.md decision D25). The storage
+  side is already per page (`persistence::PageStore::load(PageId)`).
 * **Trash / soft delete** (`trashed` timestamps) — Phase 5 (navigation UI). Phase 2
   deletes are hard deletes, fully restorable by undo.
 * **Nested sections, tags, notebook colours/icons, course links** — with the features that
@@ -174,7 +176,7 @@ struct Element {
 | `Stroke` (1) | brush, colour, base width, points `{x, y, pressure}` in element-local space | smoothing, LOD (Phase 4) |
 | `TextBox` (2) | box size, **plain** UTF-8 text | rich-text model (§4.3, Phase 6) |
 | `Shape` (3) | kind (rectangle, ellipse, line), size, stroke colour/width, fill | polygons, dashes, corner radius (Phase 6) |
-| `Image` (4) | `AssetId`, displayed size | crop, asset store (Phases 3/6) |
+| `Image` (4) | `AssetId` (content-addressed asset store since Phase 3), displayed size | crop (Phase 6) |
 | `Connector` (5) | two ends (world position + optional attached element), colour, width | routing, arrow caps, labels (Phase 6) |
 
 Design notes:
@@ -190,7 +192,11 @@ Design notes:
   model, used so that copying an `Element` (for undo snapshots) never copies point data.
   Points are never mutated in place; an edit creates a new array. `Stroke::operator==`
   compares point *values*.
-* **Kind ids are stable** (they will be stored in `element.kind`).
+* **Kind ids are stable** (stored in `element.kind` since Phase 3).
+* **Bounds.** `localBounds(payload)` and `worldBounds(element)` (axis-aligned, after scale →
+  rotation → translation; connectors use their world end positions) are derived values.
+  Phase 3 persists `worldBounds` as the `element.min_x … max_y` cache; the canvas will use
+  the same functions for culling (Phase 4).
 
 ### 4.2 Layer — implemented in Phase 2
 
@@ -230,8 +236,10 @@ re-checks all of them (tests call it after every step):
 * Numbers are finite and in range: bounded pages have a positive size, background
   spacing > 0, layer opacity in [0, 1], transform scale ≠ 0, stroke width > 0, pressure in
   [0, 1], sizes ≥ 0.
-* A stroke has ≥ 1 point; an image references a non-null asset id (asset existence is a
-  persistence concern, Phase 3).
+* A stroke has ≥ 1 point; an image references a non-null asset id. Asset *existence* is a
+  persistence concern: `application::WorkspaceSession` rejects edits whose images
+  reference assets that were never imported, and the database enforces it with a foreign
+  key (Phase 3).
 * Connector ends attach only to existing, non-connector elements on the same page, never
   to themselves; an element cannot be removed (or moved to another page) while a
   connector is attached to it.
@@ -346,8 +354,8 @@ Properties:
   (layers/elements). With everything in one in-memory `Workspace` (Phase 2), two types
   would only duplicate code, and a command such as "delete notebook" naturally spans both
   levels. Consequence: per-page undo stacks are not introduced yet; when pages are loaded
-  on demand (Phase 3), undo scoping will be decided by which records a patch touches,
-  still using this single patch type (ARCHITECTURE.md decision D20).
+  on demand (deferred, D25), undo scoping will be decided by which records a patch
+  touches, still using this single patch type (ARCHITECTURE.md decision D20).
 
 ### 6.2 Commands — named operations that produce patches
 
@@ -386,7 +394,7 @@ Deferred: merging consecutive edits (typing, nudging) and byte-based history bud
 arrive with the canvas tools that need them (Phase 4/6). Live previews stay out of the
 history by design (only the final patch of a gesture is executed).
 
-### 6.4 One patch, many consumers (target, Phase 3+)
+### 6.4 One patch, many consumers (persistence: Phase 3; canvas: Phase 4)
 
 ```mermaid
 flowchart LR
@@ -399,8 +407,15 @@ flowchart LR
     session --> db[(workspace.db)]
 ```
 
-Undo and redo produce patches too and will flow through the same path, so the database,
+Undo and redo produce patches too and flow through the same path, so the database,
 canvas caches and search index stay consistent without per-command code.
+
+Implemented in Phase 3: `application::WorkspaceSession` owns the `Workspace` and its
+`Editor`; after the Editor has applied a command, an undo (the inverse patch) or a redo,
+the session writes exactly that patch with `persistence::WorkspaceStore::write` in one
+transaction (DATABASE_SCHEMA.md §7.1). Loading a workspace rebuilds the `Workspace` by
+applying one creating patch, so persisted data passes the same invariant checks as edits.
+Undo history stays in memory; it is not persisted.
 
 ---
 
@@ -416,10 +431,17 @@ Implemented (Phase 2):
 | The `Workspace` an `Editor` edits | The caller; it must outlive the `Editor` | — |
 | Stroke point arrays | Shared, immutable (`shared_ptr<const>`) by records and undo entries | Until the last reference drops |
 
-Target (later phases): `application` sessions own the workspace, editor and persistence
-connection (Phase 3); `canvas::CanvasController` owns the scene, camera, tool and
-selection, and `ui::CanvasWidget` owns the OpenGL renderer (Phase 4);
-`persistence::AssetStore` owns asset files (Phase 3).
+Implemented (Phase 3):
+
+| Object | Owner | Lifetime |
+|---|---|---|
+| The open `Workspace`, its `Editor`, the pending-write queue | `application::WorkspaceSession` | Until the session is destroyed |
+| The SQLite connection | `persistence::WorkspaceFile`, owned by the session | Until `close()` |
+| The workspace lock | the session (a `WorkspaceLock` from the `WorkspaceLocker` port) | Released after the database is closed |
+| Asset files | `persistence::AssetStore` (immutable, content-addressed) | Until garbage-collected |
+
+Target (later phases): `canvas::CanvasController` owns the scene, camera, tool and
+selection, and `ui::CanvasWidget` owns the OpenGL renderer (Phase 4).
 
 Cross-object references are **by id**, not by pointer, everywhere except short-lived
 borrowed references within a function call.

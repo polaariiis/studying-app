@@ -1,7 +1,8 @@
 # StudyBoard — Architecture
 
-> Status: **Final baseline.** Phase 1 (foundation & build skeleton) and Phase 2 (document
-> model, patches, commands, undo/redo, app icon, design-token foundation) are implemented;
+> Status: **Final baseline.** Phase 1 (foundation & build skeleton), Phase 2 (document
+> model, patches, commands, undo/redo, app icon, design-token foundation) and Phase 3
+> (SQLite persistence, assets, workspace directory and locking) are implemented;
 > §3.2 lists exactly what exists. Everything else describes the target design and is built
 > phase by phase (see [ROADMAP.md](ROADMAP.md)).
 > This document is the entry point. Details live in the companion documents:
@@ -128,7 +129,7 @@ External dependencies per module:
 | `study` | — | No |
 | `render` | — | No |
 | `canvas` | — | No |
-| `persistence` | SQLite (amalgamation); nlohmann/json from Phase 3 | No |
+| `persistence` | SQLite (amalgamation); JSON via SQLite's built-in JSON functions (D26) | No |
 | `application` | — (links `persistence` **privately**) | No |
 | `render_gl` | Qt6::Gui, Qt6::OpenGL | Yes |
 | `platform` | Qt6::Core, Qt6::Gui; Qt6::Pdf (optional, Phase 8) | Yes |
@@ -186,7 +187,7 @@ How the boundaries are enforced (implemented in Phase 1):
 * Commands as free functions producing `Command { label, Patch }`; `Editor` executes them
   and keeps an `UndoStack`.
 * No I/O, no Qt, no threads. Details: [DATA_MODEL.md](DATA_MODEL.md) §3–§7.
-* Later: per-page loading (`PageDocument`) with persistence (Phase 3), change
+* Later: per-page loading (`PageDocument`) when page-load cost is measured (D25), change
   notification for the canvas (Phase 4).
 
 ### `study` — study & planning domain
@@ -221,7 +222,8 @@ How the boundaries are enforced (implemented in Phase 1):
 * Stores: `CatalogStore`, `PageStore`, `StudyStore`, `SettingsStore`, `SearchIndex`.
 * `AssetStore`: content-addressed files on disk for images/PDFs.
 * Codecs: stroke point blob codec, rich-text JSON codec.
-* `WorkspaceFile`: open/create/lock/backup/export of a workspace directory.
+* `WorkspaceFile`: open/create/backup/export of a workspace directory. The exclusive-writer
+  lock itself is an OS lock taken by `application` through the `platform` adapter (§11.1).
 * No UI logic, no Qt, no knowledge of when saves happen.
 
 ### `application` — use cases and orchestration
@@ -296,16 +298,16 @@ Ownership rules:
   Wintab pressure, macOS tablet proximity, Wayland tablet protocol), called by the adapter.
 * `canvas` defines the event value types and consumes them; tests construct them directly.
 
-### 3.2 Implementation status (end of Phase 2)
+### 3.2 Implementation status (end of Phase 3)
 
 | Module | Content |
 |---|---|
 | `core` | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid` + `UuidV7Generator`, `Id<Tag>` + entity id aliases, `Error`/`Result` (incl. `Conflict`), `Clock`/`SystemClock`, `IdGenerator`, logging facade *(Phase 1)*; `FractionalIndex` *(Phase 2)* |
-| `document` | `Workspace` (hierarchy, invariants, atomic `apply`), records, `Element` + payloads, `Patch`/`Change`, commands, `UndoStack`, `Editor` *(Phase 2)* |
+| `document` | `Workspace` (hierarchy, invariants, atomic `apply`), records, `Element` + payloads, `Patch`/`Change`, commands, `UndoStack`, `Editor` *(Phase 2)*; `localBounds`/`worldBounds` *(Phase 3)* |
 | `study`, `render`, `canvas`, `render_gl` | **Module anchor only** (`moduleName()`): the target exists, compiles, links with its final dependencies and is covered by the boundary checks. `render_gl` links Qt6::OpenGL but contains no GL calls yet |
-| `persistence` | SQLite dependency wiring and `sqliteLibraryInfo()`; no schema, no stores |
-| `application` | `componentVersions()` for the About dialog |
-| `platform` | Qt adapter for the core logging facade |
+| `persistence` | *(Phase 3)* RAII SQLite wrapper (`Database`, `Statement`, `Transaction`), embedded migrations + schema v1, `CatalogStore`, `PageStore`, `WorkspaceStore` (patch-driven writes, load through `Workspace::apply`), stroke codec v1, `Sha256`, `AssetStore`, `WorkspaceFile`/`WorkspaceLayout`; `sqliteLibraryInfo()` |
+| `application` | `componentVersions()`; *(Phase 3)* `WorkspaceSession` (create/open/read-only, execute/undo/redo persisted synchronously, pending-write queue, asset import) and the `WorkspaceLocker` port |
+| `platform` | Qt adapter for the core logging facade; *(Phase 3)* `QtWorkspaceLocker` (`QLockFile`) and `os/*/ProcessInfo` |
 | `ui` | `MainWindow` (menus, toolbar, status bar, About), `ThemeManager` + `DesignTokens` (neutral light/dark), `CanvasPlaceholder` (neutral dotted surface; not the canvas), `applicationIcon()` |
 | `app` | `main.cpp` composition root; Windows `.rc` with the executable icon |
 
@@ -370,7 +372,7 @@ studying-app/
 ├── LICENSE                     # MIT
 ├── THIRD_PARTY_NOTICES.md      # licenses of fetched/bundled dependencies
 ├── cmake/                      # StudyAppModule, CompilerWarnings, Sanitizers,
-│                               #   Dependencies, Deploy (+ EmbedFiles in Phase 3)
+│                               #   Dependencies, Deploy, EmbedFiles
 ├── app/                        # `studyapp` executable: main.cpp (composition root)
 ├── src/
 │   ├── core/
@@ -495,9 +497,10 @@ Command → Patch ─┬─ Document (apply)
                  └─ future synchronisation (op log)
 ```
 
-Phase 2 has one `UndoStack` (owned by `document::Editor`) for the whole in-memory
-workspace; per-page undo scoping returns when pages are loaded on demand (Phase 3,
-decision D20). Full
+There is one `UndoStack` (owned by `document::Editor`, inside `WorkspaceSession`) for the
+whole in-memory workspace; per-page undo scoping returns when pages are loaded on demand
+(decisions D20, D25). Undo history is not persisted: a reopened workspace starts with an
+empty history. Full
 details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
 
 ---
@@ -507,10 +510,11 @@ details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
 Threading is introduced **incrementally, when a phase actually needs it**. The module
 boundaries below are designed so that each step is additive and does not change the domain.
 
-### 10.1 Current state (Phase 1–2): single-threaded
+### 10.1 Current state (Phase 1–3): single-threaded
 
 Everything runs on the Qt GUI thread. There is no executor infrastructure, no worker
-thread, no connection pool. `core`, `document` and `study` contain no threading
+thread, no connection pool. Phase 3 persistence is synchronous: `WorkspaceSession` writes
+each applied patch on the calling thread through its single SQLite connection. `core`, `document` and `study` contain no threading
 primitives and no locks. The only process-wide state, the log sink, is installed once at
 start-up and guarded by a mutex.
 
@@ -548,7 +552,8 @@ Mechanics once introduced:
 * **SQLite is the source of truth for structured data**; the filesystem holds large
   external assets. No custom database, no JSON-file store, no whole-workspace blob.
 * **Workspace = a directory**, self-contained and portable (copy it, it works elsewhere).
-  Conceptual layout (exact subdirectories may be refined in Phase 3):
+  Layout (implemented in Phase 3 by `persistence::WorkspaceLayout`; the `.studyws` suffix
+  is a convention, not enforced):
   ```
   MyNotes.studyws/
   ├── workspace.db         # SQLite (WAL); -wal/-shm files are transient
@@ -580,8 +585,12 @@ Mechanics once introduced:
 
 ### 11.1 Workspace locking
 
-A workspace supports **one writer at a time**. Locking is implemented in Phase 3
-(persistence); the design is fixed now:
+A workspace supports **one writer at a time**. Implemented in Phase 3: the port
+`application::WorkspaceLocker` (inspect / acquire) is implemented by
+`platform::QtWorkspaceLocker`; `application::WorkspaceSession` acquires the lock before
+opening the database read-write and releases it on close. The UI prompts below arrive with
+the workspace UI (Phase 5); until then callers choose via `OpenOptions`
+(`AccessMode::ReadOnly`, `recoverStaleLock`) after `WorkspaceSession::inspectLock()`.
 
 ```
 Open workspace
@@ -601,15 +610,20 @@ Attempt to acquire lock  ──── SUCCESS ──→ normal read/write operat
   records owner metadata). The OS releases the lock if the process dies, so a crashed
   session does not block the workspace forever.
 * **Owner metadata** written into the lock file: process id, host name, application
-  name/version, lock creation time and a session UUID. Used to (a) show the user *who*
+  name/version, lock creation time and a session UUID. *Phase 3:* the lock file is
+  `QLockFile`'s own format, which records process id, host name and application name
+  (plus a machine id); version, creation time and session UUID are not recorded (D29). Used to (a) show the user *who*
   holds the lock, and (b) classify staleness.
 * **Stale detection**: a lock is stale if the OS-level lock can be acquired (the holder
   is gone), or the recorded host is this machine and the recorded pid no longer exists
   (or belongs to a different process). A lock owned by *another host* (e.g. a workspace on
   a network drive) is never auto-classified as stale; the user must choose recovery
-  explicitly.
-* **Recovery** takes over the lock, runs `PRAGMA quick_check`, lets SQLite recover the
-  WAL, and cleans `temporary/`.
+  explicitly. A recorded process id that has been reused by an unrelated process is
+  classified *active* — the safe direction (the user can still open read-only).
+  Time-based staleness is disabled (`QLockFile::setStaleLockTime(0)`).
+* **Recovery** takes over the lock, runs `PRAGMA quick_check` (and
+  `PRAGMA foreign_key_check`), lets SQLite recover the WAL, and cleans `temporary/`; the
+  session refuses to open if the check reports problems.
 * **Read-only mode** opens SQLite with `SQLITE_OPEN_READONLY`; the UI disables editing.
 * **SQLite's own locking** still protects the database file itself; the workspace lock
   exists because the application caches state in memory and owns the asset directory,
@@ -758,6 +772,11 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D22 | Deletes are hard deletes in Phase 2 (undoable); Trash later | Soft delete (`trashed`) now | Trash is a UI feature (Phase 5); the record fields are added with it |
 | D23 | Neutral design tokens (black/white/grays, functional status colours only) as `core::Color`, stylesheet generated from one template | Hand-written light/dark QSS with a blue accent (Phase 1) | Product direction: calm, canvas-first UI; one source of truth; reusable by the Qt-free canvas later |
 | D24 | App icon assets generated from a committed master by a dev-only script; Windows `.rc` only on WIN32 | Loading the source image at runtime; generating icons at build time | No build dependency on Pillow or on paths outside the repo; exact artwork preserved |
+| D25 | Phase 3 keeps the single in-memory `Workspace` (whole workspace loaded at open, one undo stack); the catalog/page split and per-page undo scoping are deferred until page-load cost is measured (with the canvas, Phase 4+) | Split in Phase 3 as the roadmap planned | The split changes ownership and undo semantics without a consumer that needs it yet; the persistence API is already per page (`PageStore::load(PageId)`, patch writes per record) so the split stays local to `document`/`application` |
+| D26 | `text_box.content` JSON is built and read with SQLite's built-in JSON functions; content v1 = `{"v":1,"text":…}` (plain text); rich text will be v2 | nlohmann/json now | Phase 2 text is plain; no new dependency until the rich-text model (Phase 6) needs structured parsing in C++ |
+| D27 | Load = decode rows strictly, then apply one creating `Patch` to an empty `Workspace` + `validate()` | A separate persistence-side validator; constructing `Workspace` internals from rows | Reuses every document invariant unchanged; SQL code never mutates `Workspace` internals |
+| D28 | Search index tables are created by schema v1 but maintained only from Phase 8 (`rebuildSearchIndex()` on first use) | Maintain FTS rows from Phase 3 | No consumer yet; the rebuild path is needed anyway |
+| D29 | Workspace lock = `QLockFile` in `platform` behind the `application::WorkspaceLocker` port; `QLockFile`'s metadata format | OS locks in `persistence` (`LockFileEx`/`flock`); custom metadata file | Keeps OS/Qt code out of `persistence`; `QLockFile` holds a real OS-level lock and records pid/host/app; version and session UUID were not worth a second file |
 
 New significant decisions should be appended here (or moved to `docs/adr/` once the list
 grows) with context, alternatives and consequences.

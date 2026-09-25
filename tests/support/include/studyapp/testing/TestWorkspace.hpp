@@ -1,9 +1,12 @@
 #pragma once
 
+// Document-model test fixture shared by the document, persistence and application tests.
+
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/document/Editor.hpp>
 #include <studyapp/document/Workspace.hpp>
 #include <studyapp/testing/ManualClock.hpp>
+#include <studyapp/testing/ResultMacros.hpp>
 #include <studyapp/testing/SequentialIds.hpp>
 
 #include <gtest/gtest.h>
@@ -11,21 +14,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-// Expects a core::Result to hold a value, printing the error message otherwise.
-#define EXPECT_OK(expr)                                                                            \
-    do {                                                                                           \
-        const auto& studyappResult_ = (expr);                                                      \
-        EXPECT_TRUE(studyappResult_.has_value())                                                   \
-            << (studyappResult_.has_value() ? std::string() : studyappResult_.error().message);    \
-    } while (false)
-
-#define ASSERT_OK(expr)                                                                            \
-    do {                                                                                           \
-        const auto& studyappResult_ = (expr);                                                      \
-        ASSERT_TRUE(studyappResult_.has_value())                                                   \
-            << (studyappResult_.has_value() ? std::string() : studyappResult_.error().message);    \
-    } while (false)
 
 namespace studyapp::document::test {
 

@@ -1,6 +1,6 @@
 #include <studyapp/document/Element.hpp>
 
-#include "TestWorkspace.hpp"
+#include <studyapp/testing/TestWorkspace.hpp>
 
 #include <gtest/gtest.h>
 
@@ -46,6 +46,51 @@ TEST(ElementTest, CopyingAnElementDoesNotCopyStrokePoints) {
     EXPECT_EQ(std::get<Stroke>(copy.payload).points.get(),
               std::get<Stroke>(element.payload).points.get());
     EXPECT_EQ(copy, element);
+}
+
+TEST(ElementTest, LocalBoundsPerKind) {
+    EXPECT_EQ(localBounds(TextBox{.size = {120, 40}, .text = "t"}),
+              (core::DRect{{0, 0}, {120, 40}}));
+    EXPECT_EQ(localBounds(Shape{.size = {10, 20}}), (core::DRect{{0, 0}, {10, 20}}));
+    EXPECT_EQ(localBounds(Image{.asset = {}, .size = {30, 5}}), (core::DRect{{0, 0}, {30, 5}}));
+    // Stroke: point extent inflated by half the base width (2 -> 1).
+    EXPECT_EQ(localBounds(makeStroke({{0, 0, 1}, {10, 5, 1}, {-4, 2, 1}})),
+              (core::DRect{{-5, -1}, {11, 6}}));
+    // Connector: world end positions inflated by half the width.
+    EXPECT_EQ(localBounds(makeConnector(std::nullopt, std::nullopt)),
+              (core::DRect{{-1, -1}, {101, 1}}));
+}
+
+TEST(ElementTest, WorldBoundsApplyScaleRotationAndTranslation) {
+    Element element{.id = {},
+                    .layer = {},
+                    .z = core::FractionalIndex::first(),
+                    .transform = {.position = {100, 50}, .rotation = 0, .scale = {2, 3}},
+                    .locked = false,
+                    .payload = Shape{.size = {10, 20}}};
+    EXPECT_EQ(worldBounds(element), (core::DRect{{100, 50}, {120, 110}}));
+
+    // A quarter turn maps local (x, y) to (-y, x).
+    element.transform = {.position = {0, 0}, .rotation = 1.5707963267948966F, .scale = {1, 1}};
+    const core::DRect rotated = worldBounds(element);
+    EXPECT_NEAR(rotated.min.x, -20.0, 1e-5);
+    EXPECT_NEAR(rotated.max.x, 0.0, 1e-5);
+    EXPECT_NEAR(rotated.min.y, 0.0, 1e-5);
+    EXPECT_NEAR(rotated.max.y, 10.0, 1e-5);
+
+    // Negative scale mirrors but still yields ordered bounds.
+    element.transform = {.position = {0, 0}, .rotation = 0, .scale = {-1, 1}};
+    EXPECT_EQ(worldBounds(element), (core::DRect{{-10, 0}, {0, 20}}));
+}
+
+TEST(ElementTest, ConnectorWorldBoundsIgnoreTransform) {
+    Element element{.id = {},
+                    .layer = {},
+                    .z = core::FractionalIndex::first(),
+                    .transform = {.position = {1000, 1000}, .rotation = 1, .scale = {5, 5}},
+                    .locked = false,
+                    .payload = makeConnector(std::nullopt, std::nullopt)};
+    EXPECT_EQ(worldBounds(element), localBounds(element.payload));
 }
 
 } // namespace

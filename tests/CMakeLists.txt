@@ -12,5 +12,6 @@ add_subdirectory(application)
 add_subdirectory(architecture)
 
 if(STUDYAPP_BUILD_APP)
+    add_subdirectory(platform)
     add_subdirectory(ui)
 endif()

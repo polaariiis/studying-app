@@ -3,6 +3,7 @@
 #include <studyapp/core/Color.hpp>
 #include <studyapp/core/FractionalIndex.hpp>
 #include <studyapp/core/Ids.hpp>
+#include <studyapp/core/Rect.hpp>
 #include <studyapp/core/Vec2.hpp>
 
 #include <cstdint>
@@ -141,5 +142,16 @@ struct Element {
 
     [[nodiscard]] friend bool operator==(const Element&, const Element&) = default;
 };
+
+/// Axis-aligned bounds of the payload in element-local coordinates: `[0, size]` for boxes,
+/// the point extent inflated by half the base width for strokes. Connectors are defined by
+/// world-space end positions and report those (inflated by half their width) instead.
+[[nodiscard]] core::DRect localBounds(const ElementPayload& payload);
+
+/// Axis-aligned world-space bounds of the element: its local bounds under its transform
+/// (scale, then rotation, then translation). Connectors ignore the transform because their
+/// end positions are already in world space. Persisted as a derived cache
+/// (docs/DATABASE_SCHEMA.md §5, `element.min_x ... max_y`).
+[[nodiscard]] core::DRect worldBounds(const Element& element);
 
 } // namespace studyapp::document

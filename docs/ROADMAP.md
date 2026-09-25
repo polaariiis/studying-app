@@ -1,6 +1,6 @@
 # Roadmap
 
-> Status: **Phases 0, 1 and 2 complete.** Phases are ordered by dependency; each ends
+> Status: **Phases 0–3 complete.** Phases are ordered by dependency; each ends
 > with explicit exit criteria. Durations are intentionally not given yet.
 >
 > **Rule:** functionality is implemented only in its phase, even when the architecture
@@ -12,8 +12,9 @@
 | 0 — Architecture | ✅ Done |
 | 1 — Foundation & build skeleton | ✅ Done |
 | 2 — Document model, undo/redo, app icon, design foundation | ✅ Done |
-| 3 — Persistence | Next |
-| 4–9 | Planned |
+| 3 — Persistence | ✅ Done |
+| 4 — Canvas & OpenGL MVP | Next |
+| 5–9 | Planned |
 
 ## Phase 0 — Architecture ✅
 
@@ -78,7 +79,40 @@ byte-based history budget yet (no continuous edits exist).
   (`Workspace::operator==`); document tests run without Qt, GPU, SQLite, filesystem or
   wall clock.
 
-## Phase 3 — Persistence
+## Phase 3 — Persistence ✅
+
+Delivered:
+
+* `persistence`: RAII SQLite wrapper (`Database`, `Statement`, `Transaction`, statement
+  cache), per-connection pragmas, migrations embedded at build time
+  (`cmake/EmbedFiles.cmake`) with schema v1 (`0001_initial.sql`, the documented DDL),
+  versioning with pre-upgrade backup and refusal of newer/foreign databases;
+  `CatalogStore`, `PageStore` (all five element kinds), `WorkspaceStore` (patch-driven,
+  one transaction per patch, load through `Workspace::apply`); stroke codec v1; text
+  content JSON v1; `Sha256` + `AssetStore` (import with fsync → rename → row ordering,
+  dedupe, GC with grace period, verify); `WorkspaceFile` (directory layout, create/open,
+  read-only, backup, integrity check, temporary cleanup).
+* `application`: `WorkspaceSession` (create/open/read-only, execute/undo/redo persisted
+  synchronously, pending-write queue with retry, asset import, close) and the
+  `WorkspaceLocker` port. `platform`: `QtWorkspaceLocker` (`QLockFile`; active/stale/free
+  classification, explicit stale take-over).
+* `document`: `localBounds` / `worldBounds` (persisted as the element bounds cache).
+* Tests: `persistence_tests` and `application_tests` against real SQLite in temporary
+  directories (round trips of every record and element kind, ordering, UUIDs, updates,
+  deletes, undo/redo, rollback on failure, 20 corrupt-data cases, migrations harness,
+  asset crash ordering, write-failure retry, locking), `platform` Qt Test for the lock.
+  238 tests in total.
+
+Deviations from the plan below (decisions D25–D29 in ARCHITECTURE.md §18): the catalog /
+per-page split with per-page undo is deferred (D25); nlohmann/json is not added — SQLite's
+JSON functions suffice for plain text (D26); search index maintenance starts with Phase 8
+(D28); lock metadata is `QLockFile`'s (D29). No UI for workspace create/open yet (Phase 5).
+
+* **Exit (met):** create workspace → edit via commands → close → reopen yields an identical
+  model (`WorkspaceSessionTest.ComplexWorkspaceSurvivesCloseAndReopen`); crash-ordering
+  tests for assets pass; migration test harness in place.
+
+Original plan:
 
 * Split the in-memory `Workspace` into an always-loaded catalog and per-page content
   loaded on demand, with undo scoping (D20); reuse the Phase 2 `Patch` for persistence.
@@ -95,6 +129,8 @@ byte-based history budget yet (no continuous edits exist).
 
 ## Phase 4 — Canvas & OpenGL MVP (first "real" drawing)
 
+* Carried over from Phase 3 (D25): introduce per-page content loading (`PageDocument`
+  from `PageStore::load`) and per-page undo scoping once page-load cost is measured.
 * `Camera`, `CanvasScene` (spatial grid, draw order, render cache), `CanvasController`.
 * Stroke tessellation, `render::Renderer`, `OpenGLRenderer` (solid + pattern programs),
   `CanvasWidget`.
@@ -183,6 +219,7 @@ Qt Quick tablet UI · spaced-repetition flashcards from notes.
 1. **PDF library** (Phase 8): QtPdf (PDFium-based) is the default proposal; MuPDF
    (AGPL/commercial) and Poppler (GPL) have licence implications for an MIT project.
 2. **Workspaces in cloud-synced folders**: proposed "unsupported for the live workspace,
-   supported for backups/exports" — to confirm before Phase 3.
+   supported for backups/exports". Phase 3 does not detect such folders; still to confirm
+   (and to surface in the UI) with the workspace UI in Phase 5.
 3. **Rich-text editing scope for v1** (Phase 6): overlay editor with basic run styles.
 4. **Pen hardware test matrix** (Phase 4): Wacom, Surface/Windows Ink, XP-Pen, …
