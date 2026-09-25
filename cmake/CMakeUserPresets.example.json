@@ -1,0 +1,35 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "my-debug",
+      "displayName": "Debug (local Qt)",
+      "inherits": "debug",
+      "cacheVariables": { "CMAKE_PREFIX_PATH": "C:/Qt/6.8.3/msvc2022_64" }
+    },
+    {
+      "name": "my-release",
+      "displayName": "Release (local Qt)",
+      "inherits": "release",
+      "cacheVariables": { "CMAKE_PREFIX_PATH": "C:/Qt/6.8.3/msvc2022_64" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "my-debug", "configurePreset": "my-debug" },
+    { "name": "my-release", "configurePreset": "my-release" }
+  ],
+  "testPresets": [
+    { "name": "my-debug", "configurePreset": "my-debug", "output": { "outputOnFailure": true } },
+    { "name": "my-release", "configurePreset": "my-release", "output": { "outputOnFailure": true } }
+  ],
+  "workflowPresets": [
+    {
+      "name": "my-debug",
+      "steps": [
+        { "type": "configure", "name": "my-debug" },
+        { "type": "build", "name": "my-debug" },
+        { "type": "test", "name": "my-debug" }
+      ]
+    }
+  ]
+}

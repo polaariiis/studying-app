@@ -1,0 +1,155 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/install/${presetName}",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "toolset": { "value": "host=x64", "strategy": "external" },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Full build (requires Qt 6.8) with tests, Debug configuration",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Full build (requires Qt 6.8) with tests, Release configuration",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "relwithdebinfo",
+      "displayName": "RelWithDebInfo",
+      "description": "Optimised build with debug info (profiling)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "core-only",
+      "displayName": "Core only (no Qt)",
+      "description": "Qt-free modules and their tests; no Qt installation required",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "STUDYAPP_BUILD_APP": "OFF"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Address + UB sanitizers (GCC/Clang)",
+      "description": "Qt-free modules with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "inherits": "core-only",
+      "cacheVariables": { "STUDYAPP_SANITIZERS": "address;undefined" },
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "ci-core",
+      "displayName": "CI: core only",
+      "inherits": "core-only",
+      "cacheVariables": { "STUDYAPP_WARNINGS_AS_ERRORS": "ON" }
+    },
+    {
+      "name": "ci-full",
+      "displayName": "CI: full build",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "STUDYAPP_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo" },
+    { "name": "core-only", "configurePreset": "core-only" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "ci-core", "configurePreset": "ci-core" },
+    { "name": "ci-full", "configurePreset": "ci-full" }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    { "name": "debug", "inherits": "base", "configurePreset": "debug" },
+    { "name": "release", "inherits": "base", "configurePreset": "release" },
+    { "name": "relwithdebinfo", "inherits": "base", "configurePreset": "relwithdebinfo" },
+    { "name": "core-only", "inherits": "base", "configurePreset": "core-only" },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "configurePreset": "asan",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
+      }
+    },
+    { "name": "ci-core", "inherits": "base", "configurePreset": "ci-core" },
+    { "name": "ci-full", "inherits": "base", "configurePreset": "ci-full" }
+  ],
+  "workflowPresets": [
+    {
+      "name": "debug",
+      "steps": [
+        { "type": "configure", "name": "debug" },
+        { "type": "build", "name": "debug" },
+        { "type": "test", "name": "debug" }
+      ]
+    },
+    {
+      "name": "release",
+      "steps": [
+        { "type": "configure", "name": "release" },
+        { "type": "build", "name": "release" },
+        { "type": "test", "name": "release" }
+      ]
+    },
+    {
+      "name": "core-only",
+      "steps": [
+        { "type": "configure", "name": "core-only" },
+        { "type": "build", "name": "core-only" },
+        { "type": "test", "name": "core-only" }
+      ]
+    },
+    {
+      "name": "asan",
+      "steps": [
+        { "type": "configure", "name": "asan" },
+        { "type": "build", "name": "asan" },
+        { "type": "test", "name": "asan" }
+      ]
+    },
+    {
+      "name": "ci-core",
+      "steps": [
+        { "type": "configure", "name": "ci-core" },
+        { "type": "build", "name": "ci-core" },
+        { "type": "test", "name": "ci-core" }
+      ]
+    },
+    {
+      "name": "ci-full",
+      "steps": [
+        { "type": "configure", "name": "ci-full" },
+        { "type": "build", "name": "ci-full" },
+        { "type": "test", "name": "ci-full" }
+      ]
+    }
+  ]
+}
