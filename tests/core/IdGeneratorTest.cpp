@@ -98,9 +98,16 @@ TEST(UuidV7GeneratorTest, IdsSurviveStringRoundTrip) {
 
 TEST(SystemClockTest, ReturnsCurrentTime) {
     const SystemClock clock;
-    const auto before = std::chrono::floor<milliseconds>(std::chrono::system_clock::now());
-    const Timestamp now = clock.now();
-    const auto after = std::chrono::floor<milliseconds>(std::chrono::system_clock::now());
+    const auto millisNow = [] {
+        return std::chrono::floor<milliseconds>(std::chrono::system_clock::now())
+            .time_since_epoch()
+            .count();
+    };
+    // Compare raw counts: printing chrono time points (on failure) goes through std::format,
+    // whose floating-point support needs macOS 13.3 while we target macOS 13.0.
+    const auto before = millisNow();
+    const auto now = clock.now().time_since_epoch().count();
+    const auto after = millisNow();
     EXPECT_LE(before, now);
     EXPECT_LE(now, after);
 }

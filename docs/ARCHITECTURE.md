@@ -658,6 +658,10 @@ No plugin system is planned: it would freeze internal APIs too early.
 
 * C++20, no compiler extensions; no C++20 modules yet (Qt/moc/CMake tooling not mature
   enough across our three toolchains).
+* Do not format or stream floating-point values or `std::chrono` types with the standard
+  library (`std::format`, `std::to_chars`, `operator<<` for chrono) in code built for
+  macOS: Apple's libc++ only provides floating-point `to_chars` from macOS 13.3, while the
+  deployment target is 13.0. Use Qt formatting in Qt modules, or compare/print raw counts.
 * RAII for every resource: SQLite handles, GL objects (owned by the backend), file locks.
 * No raw owning pointers; `std::unique_ptr` for ownership, references/`std::span`/views for
   borrowing, `std::shared_ptr<const T>` only for immutable shared payloads.
