@@ -1,28 +1,55 @@
 # Roadmap
 
-> Status: **Proposed — awaiting review.** Phases are ordered by dependency; each ends
-> with explicit exit criteria. Durations are intentionally not given until Phase 1 has
-> calibrated velocity.
+> Status: **Phase 0 and Phase 1 complete.** Phases are ordered by dependency; each ends
+> with explicit exit criteria. Durations are intentionally not given yet.
+>
+> **Rule:** functionality is implemented only in its phase, even when the architecture
+> documents already describe it. A phase adds the smallest foundations it needs and no
+> speculative code for later phases.
 
-## Phase 0 — Architecture ✅ (this change)
+| Phase | Status |
+|---|---|
+| 0 — Architecture | ✅ Done |
+| 1 — Foundation & build skeleton | ✅ Done |
+| 2 — Document model & undo | Next |
+| 3–9 | Planned |
 
-* Architecture, data model, schema, canvas, rendering, testing, build docs.
-* **Exit:** documents reviewed; open questions (below) answered or explicitly deferred.
+## Phase 0 — Architecture ✅
 
-## Phase 1 — Foundation & build skeleton
+* Architecture, data model, schema, canvas, rendering, testing, build docs; final
+  decisions recorded in ARCHITECTURE.md §18.
 
-* Top-level CMake, `cmake/` helpers, `CMakePresets.json`, dependency pinning.
-* Empty module targets with the final dependency graph; forbidden-include CI check.
-* `core`: geometry, `Uuid`/`Id<T>`, `Color`, `FractionalIndex`, `Result`, `Signal`,
-  logging facade, `Clock`/`IdGenerator`.
-* `app` + `ui`: a `MainWindow` shell that starts, with light/dark theme switching.
-* GitHub Actions `ci.yml` (format, core, full on 3 OSes), `.clang-format`, `.clang-tidy`,
-  `.gitignore`, `.gitattributes`, `README`, licence.
-* **Exit:** green CI on Windows/Linux/macOS; `core` tests ≥ 90 % coverage;
-  `cmake --workflow --preset debug` works from a clean checkout on all three OSes.
+## Phase 1 — Foundation & build skeleton ✅
+
+Delivered:
+
+* Top-level CMake (3.25+), `cmake/` helpers, `CMakePresets.json` (debug, release,
+  relwithdebinfo, core-only, asan, ci-core, ci-full + workflow presets), pinned
+  dependencies (tl::expected, SQLite amalgamation, GoogleTest), install + Qt deployment.
+* All eleven targets with the final dependency graph. Modules without Phase 1 content
+  contain only a module anchor (ARCHITECTURE.md §3.2). Boundaries enforced by include
+  roots, PRIVATE linkage, a Qt-free link test and `tools/check_boundaries.py`.
+* `core`: `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid` + `UuidV7Generator`, `Id<T>` +
+  entity id aliases, `Error`/`Result`, `Clock`/`SystemClock`, `IdGenerator`, logging facade.
+* `persistence`: SQLite dependency wiring and `sqliteLibraryInfo()`; `application`:
+  `componentVersions()`; `platform`: Qt log sink.
+* `ui` + `app`: `MainWindow` shell (menus, toolbar, placeholder, status bar, About dialog)
+  with System/Light/Dark theme switching persisted in `QSettings`.
+* Tests: GoogleTest for core/persistence/application/architecture, Qt Test for the UI;
+  CTest integration with labels.
+* GitHub Actions `ci.yml`: format + boundaries, core (3 OSes, no Qt), sanitizers,
+  full build with Qt (3 OSes). `.clang-format`, `.clang-tidy`, `.gitignore`,
+  `.gitattributes`, MIT `LICENSE`, `THIRD_PARTY_NOTICES.md`, README.
+
+Deliberately deferred to their first consumer: `FractionalIndex`, `Signal`, `Affine2`
+(Phase 2); nlohmann/json (Phase 3); renderer API and OpenGL code (Phase 4).
+
+* **Exit:** clean checkout builds with the presets; all tests pass in Debug and Release;
+  CI configured for Windows, Linux and macOS.
 
 ## Phase 2 — Document model & undo (headless)
 
+* `core` additions: `FractionalIndex`, `Signal`, `Affine2`.
 * Element model with all five payload kinds (data only), `PageDocument`,
   `WorkspaceCatalog`, `Patch`/`CatalogPatch`, invariant checks.
 * Command functions for create/delete/move/transform/style/reorder/layers/pages.
@@ -32,11 +59,14 @@
 
 ## Phase 3 — Persistence
 
-* SQLite wrapper, migrations infrastructure, schema v1 (`0001_initial.sql`).
+* SQLite wrapper, migrations infrastructure, schema v1 (`0001_initial.sql`), nlohmann/json.
+* Workspace directory format and **workspace locking** (ARCHITECTURE.md §11.1: OS lock +
+  owner metadata, stale-lock detection, read-only / recover / cancel).
 * `CatalogStore`, `PageStore` (all element kinds), stroke codec v1, rich-text JSON codec.
 * `AssetStore` (import, dedupe, GC), `WorkspaceFile` (create/open/lock/backup).
-* Persistence writer thread + `PersistOp` queue; `WorkspaceSession`/`PageSession`
-  in `application` with `ImmediateExecutor` tests.
+* `WorkspaceSession`/`PageSession` in `application`, persisting patches **synchronously**
+  on the GUI thread. The persistence writer thread + `PersistOp` queue are introduced
+  when measurements require it (ARCHITECTURE.md §10, expected Phase 4).
 * **Exit:** create workspace → edit via commands → close → reopen yields identical
   model; crash-ordering tests for assets pass; migration test harness in place.
 
@@ -102,17 +132,22 @@ Qt Quick tablet UI · spaced-repetition flashcards from notes.
 
 ---
 
-## Open questions for review
+## Resolved decisions (formerly open questions)
 
-1. **Product name / namespace.** Docs use the placeholder namespace `studyapp` and
-   executable `studyapp`. Rename before Phase 1 if a name is chosen.
-2. **Licence** of the project itself — affects Qt (LGPLv3 obligations: dynamic linking,
-   relinkability) and the choice of PDF library.
-3. **PDF library**: QtPdf (PDFium-based, ships with Qt) is the default proposal;
-   MuPDF (AGPL/commercial) and Poppler (GPL) are alternatives with licence implications.
-4. **Minimum OS versions**: proposed Windows 10 22H2+, macOS 13+, Ubuntu 22.04+/equivalent.
-5. **Workspace location in cloud-synced folders**: proposed "unsupported for the live
-   workspace, supported for backups/exports". Acceptable?
-6. **Rich-text editing scope for v1**: overlay editor with basic run styles — enough?
-7. **Pen hardware** to validate on (Wacom, Surface/Windows Ink, iPad-as-tablet via
-   Sidecar, XP-Pen): defines the Phase 4 test matrix.
+| Question | Decision |
+|---|---|
+| Product name / namespace | **StudyBoard**; namespace and executable `studyapp`; repository `studying-app` |
+| Project license | **MIT**; third-party licenses in `THIRD_PARTY_NOTICES.md`; Qt linked dynamically (LGPLv3) |
+| Minimum OS versions | **Windows 10 22H2+, macOS 13+, Linux equivalent to Ubuntu 22.04+** |
+| Renderer | **OpenGL 3.3 core** only; QRhi/Vulkan/Metal/D3D are a future extension point, not planned |
+| Threading | Introduced in stages; single-threaded through Phase 2 |
+| Workspace locking | Exclusive writer with stale-lock detection and read-only fallback (Phase 3) |
+
+## Still open
+
+1. **PDF library** (Phase 8): QtPdf (PDFium-based) is the default proposal; MuPDF
+   (AGPL/commercial) and Poppler (GPL) have licence implications for an MIT project.
+2. **Workspaces in cloud-synced folders**: proposed "unsupported for the live workspace,
+   supported for backups/exports" — to confirm before Phase 3.
+3. **Rich-text editing scope for v1** (Phase 6): overlay editor with basic run styles.
+4. **Pen hardware test matrix** (Phase 4): Wacom, Surface/Windows Ink, XP-Pen, …

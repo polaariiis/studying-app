@@ -1,6 +1,30 @@
 # Testing Architecture
 
-> Status: **Proposed — awaiting review.**
+> Status: **Final baseline.** Phase 1 implements the foundation described in §0; the rest
+> of this document is the plan that later phases follow.
+
+## 0. Current state (Phase 1)
+
+| Test target | Label | Framework | Covers |
+|---|---|---|---|
+| `core_tests` | `unit` | GoogleTest | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid`, `Id<T>`, `UuidV7Generator`, `SystemClock`, `Result`/`Error`, logging facade |
+| `persistence_tests` | `integration` | GoogleTest | Linked SQLite meets the version/feature requirements (FTS5, thread safety) |
+| `application_tests` | `unit` | GoogleTest | `componentVersions()` |
+| `architecture_tests` | `architecture` | GoogleTest | All Qt-free modules link into one plain C++ executable |
+| `architecture.include_boundaries` | `architecture` | Python script | `tools/check_boundaries.py`: forbidden includes / GL calls per module |
+| `ui.MainWindowTest` | `gui` | Qt Test (offscreen) | Main window structure, theme switching, theme actions, settings persistence |
+
+GoogleTest tests are registered with `gtest_discover_tests(... DISCOVERY_MODE PRE_TEST)`,
+so each test case is its own CTest test. Qt Widgets tests use Qt Test because they need
+a `QApplication`; CTest runs them with `QT_QPA_PLATFORM=offscreen`, and on Windows
+prepends the Qt `bin` directory to `PATH`.
+
+```sh
+ctest --preset debug                # everything
+ctest --preset core-only            # without Qt
+ctest --preset debug -L unit        # by label
+```
+
 
 ## 1. Principles
 
@@ -28,8 +52,9 @@
 
 ```
 tests/
-├── support/        # studyapp_test_support: builders, FixedClock, SequentialIds,
+├── support/        # (Phase 2+) studyapp_test_support: builders, FixedClock, SequentialIds,
 │                   #   ImmediateExecutor, TempWorkspace, RecordingRenderer, FakeTextLayout
+├── architecture/   → architecture_tests + include-boundary check (Phase 1)
 ├── core/           → core_tests
 ├── document/       → document_tests
 ├── study/          → study_tests
@@ -38,12 +63,12 @@ tests/
 ├── persistence/    → persistence_tests
 ├── application/    → application_tests
 ├── render_gl/      → render_gl_tests       (needs a GL context; labelled "gpu")
-├── ui/             → ui_tests              (Qt Test; labelled "gui")
+├── ui/             → ui_tests              (Qt Test; labelled "gui"; Phase 1)
 └── fixtures/       # sample workspaces per schema version, PDFs, images, golden PNGs
 ```
 
 One test executable per module, registered with CTest via `gtest_discover_tests`. CTest
-labels (`unit`, `integration`, `gpu`, `gui`, `slow`) let CI and developers select subsets:
+labels (`unit`, `integration`, `architecture`, `gui`; later `gpu`, `slow`) let CI and developers select subsets:
 `ctest --preset debug -L unit`.
 
 Test builders keep tests readable:
@@ -62,9 +87,10 @@ auto page = PageBuilder{}
 * Vec/Rect arithmetic, `Affine2` compose/invert round-trips, degenerate inputs.
 * Point–segment distance, segment intersection, polygon containment, AABB of transformed
   rects — with property-style randomized tests against brute-force references.
-* `FractionalIndex`: `between(a, b)` is strictly between; repeated insertion at the same
+* `FractionalIndex` (Phase 2): `between(a, b)` is strictly between; repeated insertion at the same
   spot stays valid for 10 000 iterations; keys sort bytewise.
-* UUIDv7: format bits, monotonicity within a millisecond, parse/print round-trip.
+* UUIDv7: format bits, monotonicity within a millisecond and across clock regressions,
+  counter overflow, parse/print round-trip *(Phase 1)*.
 
 ### Document model (`document`)
 * `PageDocument::apply` for create/update/delete of each element kind; layer operations.
