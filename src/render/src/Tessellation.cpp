@@ -230,9 +230,13 @@ std::vector<core::Vec2> ellipsePolygon(const core::Rect& bounds,
 void appendMesh(MeshData& target, const MeshData& source) {
     const auto base = static_cast<std::uint32_t>(target.vertices.size());
     target.vertices.insert(target.vertices.end(), source.vertices.begin(), source.vertices.end());
-    target.indices.reserve(target.indices.size() + source.indices.size());
-    for (const std::uint32_t index : source.indices) {
-        target.indices.push_back(base + index);
+    // No exact reserve here: reserving size + n on every append defeats the vector's
+    // geometric growth and made appending k meshes O(k²) (130 ms for 10 000 selection
+    // outlines). insert grows geometrically.
+    const std::size_t first = target.indices.size();
+    target.indices.insert(target.indices.end(), source.indices.begin(), source.indices.end());
+    for (std::size_t i = first; i < target.indices.size(); ++i) {
+        target.indices[i] += base;
     }
     target.bounds = target.bounds.united(source.bounds);
 }

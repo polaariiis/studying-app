@@ -147,5 +147,28 @@ TEST(TessellationTest, ShapesAndOutlines) {
     EXPECT_EQ(combined.triangleCount(), 10U);
 }
 
+TEST(TessellationTest, AppendingManyMeshesIsLinear) {
+    // Selection outlines of 10 000 elements are appended into one mesh every frame. The
+    // buffers must grow geometrically: an exact reserve per append reallocated on every
+    // call (quadratic, ≈ 130 ms per frame). Counted, not timed.
+    const MeshData outline = tessellateRectOutline({{0, 0}, {10, 20}}, 1.0F);
+    MeshData combined;
+    int indexReallocations = 0;
+    int vertexReallocations = 0;
+    for (int i = 0; i < 10'000; ++i) {
+        const std::size_t indexCapacity = combined.indices.capacity();
+        const std::size_t vertexCapacity = combined.vertices.capacity();
+        appendMesh(combined, outline);
+        indexReallocations += combined.indices.capacity() != indexCapacity ? 1 : 0;
+        vertexReallocations += combined.vertices.capacity() != vertexCapacity ? 1 : 0;
+    }
+    expectValid(combined);
+    EXPECT_EQ(combined.triangleCount(), 80'000U);
+    EXPECT_LT(indexReallocations, 64); // logarithmic in the number of appends
+    EXPECT_LT(vertexReallocations, 64);
+    // Indices of the last copy point at its own vertices.
+    EXPECT_EQ(combined.indices.back() / outline.vertices.size(), 9'999U);
+}
+
 } // namespace
 } // namespace studyapp::render
