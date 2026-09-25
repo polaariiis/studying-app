@@ -39,6 +39,7 @@ Qt::CursorShape toQtCursor(canvas::CursorShape shape) noexcept {
         return Qt::ArrowCursor;
     case canvas::CursorShape::Crosshair:
     case canvas::CursorShape::ZoomIn:
+    case canvas::CursorShape::EraserRing: // an image cursor (CanvasWidget::eraserCursor)
         return Qt::CrossCursor;
     case canvas::CursorShape::OpenHand:
         return Qt::OpenHandCursor;
