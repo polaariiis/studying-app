@@ -22,6 +22,7 @@ Fetched automatically at configure time (pinned by version and SHA-256 in
 | tl::expected | 1.1.0 | `core` (`Result<T>`) |
 | SQLite amalgamation | 3.50.4 | `persistence` (private) |
 | GoogleTest | 1.17.0 | tests |
+| Google Benchmark | 1.9.1 | `bench/` only (`STUDYAPP_BUILD_BENCHMARKS=ON`) |
 
 Why these minimums: CMake 3.25 gives presets v6 and `SYSTEM` includes for third-party
 code. Qt 6.8 is the current LTS line and provides `QStyleHints::colorScheme` /
@@ -99,6 +100,20 @@ cmake --workflow --preset debug      # configure + build + test in one step
 
 Build trees go to `build/<preset>`, install trees to `install/<preset>`; both are
 git-ignored. In-source builds are rejected.
+
+**Benchmarks and development options**
+
+```sh
+cmake --preset release -DSTUDYAPP_BUILD_BENCHMARKS=ON
+cmake --build --preset release --target studyapp_benchmarks studyapp
+build/release/bench/studyapp_benchmarks            # CPU: tessellation, scene, frames, page load
+# GPU/frame timing in the real app (logs a summary; QT_FORCE_STDERR_LOGGING=1 on Windows):
+studyapp --workspace <dir> --bench-generate 10000  # once: fills an empty start page
+studyapp --workspace <dir> --bench-pan 600 --bench-zoom 0   # 0 = zoom to fit
+studyapp --workspace <dir> --screenshot canvas.png # save the rendered canvas and quit
+```
+
+`STUDYAPP_MSAA_SAMPLES` overrides the canvas multisampling (default 4).
 
 **Running the application**
 
@@ -193,6 +208,8 @@ Enforcement:
 | `STUDYAPP_WARNINGS_AS_ERRORS` | `OFF` (CI presets: `ON`) | `/WX` / `-Werror` for first-party targets |
 | `STUDYAPP_SANITIZERS` | empty | e.g. `address;undefined` or `thread` (GCC/Clang) |
 | `STUDYAPP_DEPLOY_QT_TO_BUILD_TREE` | `ON` on Windows | Run `windeployqt` after each build so the build-tree executable starts without Qt on `PATH` |
+| `STUDYAPP_ENABLE_PROFILING` | `ON` | Compile `STUDYAPP_PROFILE_SCOPE` timers (debug HUD); `OFF` makes them no-ops |
+| `STUDYAPP_BUILD_BENCHMARKS` | `OFF` (`ci-full`: `ON`) | Build `bench/studyapp_benchmarks` (Google Benchmark); requires tests |
 | `STUDYAPP_USE_SYSTEM_SQLITE` | `OFF` | `find_package(SQLite3 3.43)` instead of the amalgamation; must include FTS5 (verified by `persistence_tests`) |
 
 ### 5.4 Compiler settings

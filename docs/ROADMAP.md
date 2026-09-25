@@ -1,6 +1,6 @@
 # Roadmap
 
-> Status: **Phases 0–3 complete.** Phases are ordered by dependency; each ends
+> Status: **Phases 0–4 complete.** Phases are ordered by dependency; each ends
 > with explicit exit criteria. Durations are intentionally not given yet.
 >
 > **Rule:** functionality is implemented only in its phase, even when the architecture
@@ -13,8 +13,9 @@
 | 1 — Foundation & build skeleton | ✅ Done |
 | 2 — Document model, undo/redo, app icon, design foundation | ✅ Done |
 | 3 — Persistence | ✅ Done |
-| 4 — Canvas & OpenGL MVP | Next |
-| 5–9 | Planned |
+| 4 — Canvas & OpenGL MVP | ✅ Done |
+| 5 — Application shell & navigation | Next |
+| 6–9 | Planned |
 
 ## Phase 0 — Architecture ✅
 
@@ -127,10 +128,68 @@ Original plan:
 * **Exit:** create workspace → edit via commands → close → reopen yields identical
   model; crash-ordering tests for assets pass; migration test harness in place.
 
-## Phase 4 — Canvas & OpenGL MVP (first "real" drawing)
+## Phase 4 — Canvas & OpenGL MVP (first "real" drawing) ✅
+
+Delivered:
+
+* `core`: `Affine2`, segment/rectangle predicates, `Profiler` + `STUDYAPP_PROFILE_SCOPE`
+  (CMake `STUDYAPP_ENABLE_PROFILING`). `document`: `localToWorld`, `deleteElements`,
+  `moveElements`, `setPageFormat`.
+* `render`: renderer API (meshes with optional per-vertex colours, draw items, frames,
+  procedural background, stats) and CPU tessellation. `render_gl`: `OpenGLRenderer`
+  (3.3 core, solid + pattern programs, generational mesh slots, GPU timer queries,
+  context-loss release).
+* `canvas`: camera, input events, `DocumentPort` (D30), stroke pipeline (dedupe →
+  One-Euro → RDP), spatial grid, scene, render cache, draw-call batching (D31), hit
+  testing, selection, tools (pen with pressure, select/rectangle/move, stroke eraser,
+  pan, zoom), `CanvasController`.
+* `application`: session patch listener, `ensureStartPage`. `ui`: `CanvasWidget`
+  (QOpenGLWidget, HiDPI, tablet/mouse/wheel/pinch/keys, debug HUD, pan benchmark),
+  `CanvasInputAdapter`, `SessionDocumentPort`, tool/edit/view/page-format actions, save
+  status. `app`: default workspace (D34) with lock handling; development options.
+* Continuous autosave is the Phase 3 session path: every stroke, move, delete and erase
+  is one command written in one transaction; no save dialogs.
+* Tests: `canvas_tests`, `render_tests`, new core/document/application tests and the
+  real-OpenGL `ui.CanvasWidgetTest` (skips without a 3.3 context); `bench/` with Google
+  Benchmark (D32). 328 CTest tests in the full build (243 after Phase 3).
+
+Measurements (reference laptop: AMD integrated Radeon graphics, 12 × 4.3 GHz, Windows,
+Release build, 144 Hz display, 10 000 hand-writing-like strokes of 30–90 points):
+
+| Scenario | Frame interval avg / p95 / worst | CPU | GPU |
+|---|---|---|---|
+| Pan at zoom 1 (~350 strokes visible) | 7.0 / 9.5 / 10.1 ms | 0.8 ms | 0.6 ms |
+| Pan at zoom 0.3 | 7.7 / 9.5 / 10.5 ms | 1.0 ms | 2.8 ms |
+| Pan with all 10 000 strokes visible, before batching | 32.4 / 36.0 / 71.7 ms | 13.2 ms | 18.2 ms |
+| Pan with all 10 000 strokes visible, with batching | **10.3 / 14.1 / 15.5 ms** | 3.7 ms | 4.0 ms |
+
+`studyapp_benchmarks` (CPU): tessellating one 30-point stroke 6.7 µs; all 10 000 strokes
+133 ms; scene rebuild 21 ms; visible query 0.4 ms (zoom 1) – 1.2 ms (zoom 0.25); topmost
+hit test 24 µs; frame preparation while panning 0.16–0.85 ms; first frame of the whole
+page 210 ms; loading the 10 000-stroke workspace from SQLite 90–120 ms.
+
+Findings: the per-element draw-call path was the bottleneck at full-page views and was
+fixed by batching (D31); the MSAA sample count made no measurable difference. Opening a
+10 000-stroke page (load + scene + first frame) takes ≈ 0.35 s — a little above the
+300 ms budget of ARCHITECTURE.md §12, dominated by tessellating every stroke; the
+catalog/page split (D25) is still not needed (loading the whole workspace takes ≈ 0.1 s).
+Candidates when profiling demands: tessellate the visible strokes first, persist or
+cache meshes.
+
+Deviations: no per-page camera memory, lasso, partial eraser or highlighter (Phases 5/6);
+pen hardware was not available for testing (pressure is exercised by synthetic events and
+mouse input only; the tablet path is implemented through Qt tablet events).
+
+* **Exit (met):** draw → close app → reopen: ink is identical (`CanvasSessionTest`,
+  `ui.CanvasWidgetTest`); the 10 000-stroke page pans at ≥ 60 fps on the reference
+  integrated-GPU laptop with every stroke visible; no GL calls outside `render_gl`
+  (boundary check).
+
+Original plan:
 
 * Carried over from Phase 3 (D25): introduce per-page content loading (`PageDocument`
-  from `PageStore::load`) and per-page undo scoping once page-load cost is measured.
+  from `PageStore::load`) and per-page undo scoping once page-load cost is measured —
+  measured in Phase 4, still not needed (see above).
 * `Camera`, `CanvasScene` (spatial grid, draw order, render cache), `CanvasController`.
 * Stroke tessellation, `render::Renderer`, `OpenGLRenderer` (solid + pattern programs),
   `CanvasWidget`.

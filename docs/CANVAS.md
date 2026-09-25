@@ -1,7 +1,9 @@
 # Canvas Architecture
 
-> Status: **Final baseline — not yet implemented.** The `studyapp_canvas` target exists
-> (module anchor only); the engine described here is built in Phase 4 and Phase 6.
+> Status: **Phase 4 implemented** (camera, input, scene, pen, select/rectangle/move,
+> stroke eraser, pan/zoom, backgrounds); see [§13](#13-phase-4-implementation-notes) for
+> what exists and how it differs from the sketches. Phase 6 adds the remaining tools
+> (highlighter, partial eraser, lasso, transform handles, shapes, text, connectors).
 
 The `canvas` module is the interactive engine between the document model and the
 renderer. It is plain C++ (no Qt, no GL) and fully testable headless: tests can feed it
@@ -316,3 +318,51 @@ simplified meshes; at extreme zoom-out a cached page raster can replace individu
 Everything above is driven through `CanvasController` with synthetic events, a fake
 `TextLayout`, and a recording `render::Renderer` that captures `RenderFrame`s — see
 TESTING.md.
+
+## 13. Phase 4 implementation notes
+
+What exists (`src/canvas`), and where it differs from the sketches above.
+
+* **Camera** (§2) as sketched, plus `viewToDevice`/`deviceToView`, `worldToViewTransform`
+  and `reset()` (zoom 1, world origin at the top-left). Positions are `DVec2` in every space.
+  Bounded pages are fitted on open (32 px margin) and clamped so ≥ 48 px of the page stays
+  visible. The per-page last camera is not persisted yet (with page navigation, Phase 5).
+* **Input** (§4): `PointerEvent` (phase, device incl. the pen's eraser end, button,
+  view position, pressure, modifiers, timestamp, pointer id), `WheelEvent` (angle and
+  pixel deltas), `ZoomGestureEvent`, `KeyEvent` (Space, Escape, Delete). Tilt and
+  coalesced samples are not used yet. Wheel = zoom around the cursor (×1.0015 per 1/8°);
+  touchpad pixel scrolling pans; Ctrl+wheel always zooms; pinch zooms; middle button or
+  Space+drag pans with any tool.
+* **Document access**: tools get a `DocumentPort` (decision D30) instead of an `Editor`;
+  the owner reports every applied patch to `CanvasController::onDocumentChanged`.
+  One gesture commits at most one command. Read-only ports refuse edits in the tools.
+* **Pen** (§5.1): dedupe < 0.5 view px → One-Euro (min cutoff 2 Hz, β 0.02 per view px/s,
+  derivative cutoff 1 Hz; missing timestamps assume 120 Hz) → on pen-up the last raw
+  sample is appended (no end lag) → RDP with ε = 0.25 view px that also keeps points whose
+  pressure deviates > 0.05 from the chord. Thresholds are view pixels converted with the
+  zoom at stroke start; stored geometry is world units (points relative to the first
+  point, which becomes the element position). Width = `baseWidth` × (0.3 + 0.7 ×
+  pressure); mice report pressure 1. Strokes start only inside a bounded page.
+* **Eraser** (§5.2): the stroke eraser only (8 view px radius, whole strokes, one patch
+  on release). The partial eraser is Phase 6.
+* **Selection** (§7): click (4 view px tolerance, topmost, Shift toggles), rectangle
+  (intersection with the ink by default, Alt = bounds fully contained, Shift adds), move
+  by dragging a selected element (3 px threshold; preview offset, one `moveElements`
+  command), Delete/Backspace (`deleteElements`). Selection is pruned when patches remove
+  elements. Lasso, handles and snapping are Phase 6.
+* **Scene** (§3): `CanvasScene` mirrors the displayed page of the (whole, in-memory)
+  `Workspace` — there is no `PageDocument` yet (D25). Spatial grid as §3.1 (512-unit
+  cells, > 16 cells → "large" list; queries sorted and exact on bounds). Draw order is the
+  Workspace's ordered indexes (layers, then elements), so no extra sort. Content versions
+  change only when a payload changes (moves keep the mesh).
+* **Render cache** (§3.3): CPU meshes per element keyed by content version and a
+  power-of-two zoom bucket; rebuilt only for new content or when drawn at a finer bucket.
+  GPU handles of removed or rebuilt meshes are destroyed at the next frame.
+* **Batching** (D31): above 1 024 visible elements, `RenderBatches` draws runs of up to
+  256 consecutive same-layer elements as one mesh; runs touched by a move/erase preview
+  are drawn per element.
+* **Hit testing** (§6): strokes by distance to the transformed polyline (per-point
+  radius + tolerance); shapes, text boxes and images by their local boxes; connectors by
+  segment distance. Locked layers are not hit-testable; hidden layers are skipped.
+* **Profiling**: `CanvasController::profiler()` records "build frame", "scene query",
+  "prepare content", "live stroke" and "scene update" (`STUDYAPP_PROFILE_SCOPE`).

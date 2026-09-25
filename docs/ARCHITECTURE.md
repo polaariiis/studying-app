@@ -1,8 +1,9 @@
 # StudyBoard — Architecture
 
 > Status: **Final baseline.** Phase 1 (foundation & build skeleton), Phase 2 (document
-> model, patches, commands, undo/redo, app icon, design-token foundation) and Phase 3
-> (SQLite persistence, assets, workspace directory and locking) are implemented;
+> model, patches, commands, undo/redo, app icon, design-token foundation), Phase 3
+> (SQLite persistence, assets, workspace directory and locking) and Phase 4 (canvas
+> engine, OpenGL 3.3 renderer, pen/select/eraser/pan/zoom, backgrounds) are implemented;
 > §3.2 lists exactly what exists. Everything else describes the target design and is built
 > phase by phase (see [ROADMAP.md](ROADMAP.md)).
 > This document is the entry point. Details live in the companion documents:
@@ -298,18 +299,21 @@ Ownership rules:
   Wintab pressure, macOS tablet proximity, Wayland tablet protocol), called by the adapter.
 * `canvas` defines the event value types and consumes them; tests construct them directly.
 
-### 3.2 Implementation status (end of Phase 3)
+### 3.2 Implementation status (end of Phase 4)
 
 | Module | Content |
 |---|---|
-| `core` | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid` + `UuidV7Generator`, `Id<Tag>` + entity id aliases, `Error`/`Result` (incl. `Conflict`), `Clock`/`SystemClock`, `IdGenerator`, logging facade *(Phase 1)*; `FractionalIndex` *(Phase 2)* |
-| `document` | `Workspace` (hierarchy, invariants, atomic `apply`), records, `Element` + payloads, `Patch`/`Change`, commands, `UndoStack`, `Editor` *(Phase 2)*; `localBounds`/`worldBounds` *(Phase 3)* |
-| `study`, `render`, `canvas`, `render_gl` | **Module anchor only** (`moduleName()`): the target exists, compiles, links with its final dependencies and is covered by the boundary checks. `render_gl` links Qt6::OpenGL but contains no GL calls yet |
+| `core` | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid` + `UuidV7Generator`, `Id<Tag>` + entity id aliases, `Error`/`Result` (incl. `Conflict`), `Clock`/`SystemClock`, `IdGenerator`, logging facade *(Phase 1)*; `FractionalIndex` *(Phase 2)*; `Affine2`, segment/rectangle predicates (`Geometry.hpp`), `Profiler` + `STUDYAPP_PROFILE_SCOPE` *(Phase 4)* |
+| `document` | `Workspace` (hierarchy, invariants, atomic `apply`), records, `Element` + payloads, `Patch`/`Change`, commands, `UndoStack`, `Editor` *(Phase 2)*; `localBounds`/`worldBounds` *(Phase 3)*; `localToWorld`, commands `deleteElements`, `moveElements`, `setPageFormat` *(Phase 4)* |
+| `study` | **Module anchor only** (`moduleName()`): the target exists, compiles, links with its final dependencies and is covered by the boundary checks |
+| `render` | *(Phase 4)* `Renderer` interface, `MeshHandle`/`MeshData` (optional per-vertex colours), `DrawItem`, `RenderFrame`, `Background`, `RenderStats`; CPU tessellation (`tessellatePolyline` with round caps/joins, fills, outlines, ellipses) |
+| `canvas` | *(Phase 4)* `Camera`, input events, `DocumentPort`, `StrokeBuilder` (dedupe, One-Euro, RDP), `SpatialGrid`, `CanvasScene` (draw order, versions), `RenderCache`, `RenderBatches`, `ElementGeometry` (meshes, hit tests), `Selection`, tools (pen, select/rectangle/move, stroke eraser, pan, zoom), `CanvasController` (routing, commits, frame building, stats) |
+| `render_gl` | *(Phase 4)* `OpenGLRenderer` (OpenGL 3.3 core via `QOpenGLFunctions_3_3_Core`; solid + pattern programs from `resources/shaders`; generational mesh slots; GPU timer queries; context-loss release) |
 | `persistence` | *(Phase 3)* RAII SQLite wrapper (`Database`, `Statement`, `Transaction`), embedded migrations + schema v1, `CatalogStore`, `PageStore`, `WorkspaceStore` (patch-driven writes, load through `Workspace::apply`), stroke codec v1, `Sha256`, `AssetStore`, `WorkspaceFile`/`WorkspaceLayout`; `sqliteLibraryInfo()` |
-| `application` | `componentVersions()`; *(Phase 3)* `WorkspaceSession` (create/open/read-only, execute/undo/redo persisted synchronously, pending-write queue, asset import) and the `WorkspaceLocker` port |
+| `application` | `componentVersions()`; *(Phase 3)* `WorkspaceSession` (create/open/read-only, execute/undo/redo persisted synchronously, pending-write queue, asset import) and the `WorkspaceLocker` port; *(Phase 4)* session patch listener, `ensureStartPage` |
 | `platform` | Qt adapter for the core logging facade; *(Phase 3)* `QtWorkspaceLocker` (`QLockFile`) and `os/*/ProcessInfo` |
-| `ui` | `MainWindow` (menus, toolbar, status bar, About), `ThemeManager` + `DesignTokens` (neutral light/dark), `CanvasPlaceholder` (neutral dotted surface; not the canvas), `applicationIcon()` |
-| `app` | `main.cpp` composition root; Windows `.rc` with the executable icon |
+| `ui` | `MainWindow` (menus, toolbar, status bar, About; *(Phase 4)* tool, edit, view, page-format and debug-HUD actions, save status), `ThemeManager` + `DesignTokens` (neutral light/dark), `CanvasPlaceholder` (shown without a workspace), `applicationIcon()`; *(Phase 4)* `CanvasWidget` (`QOpenGLWidget`, HUD, pan benchmark), `CanvasInputAdapter`, `SessionDocumentPort` |
+| `app` | `main.cpp` composition root; Windows `.rc` with the executable icon; *(Phase 4)* opens/creates the default workspace (lock handling), `--workspace`, development options `--bench-generate`, `--bench-pan`, `--bench-zoom`, `--screenshot` |
 
 ### 3.3 Design system foundation *(Phase 2)*
 
@@ -510,11 +514,13 @@ details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
 Threading is introduced **incrementally, when a phase actually needs it**. The module
 boundaries below are designed so that each step is additive and does not change the domain.
 
-### 10.1 Current state (Phase 1–3): single-threaded
+### 10.1 Current state (Phase 1–4): single-threaded
 
 Everything runs on the Qt GUI thread. There is no executor infrastructure, no worker
 thread, no connection pool. Phase 3 persistence is synchronous: `WorkspaceSession` writes
-each applied patch on the calling thread through its single SQLite connection. `core`, `document` and `study` contain no threading
+each applied patch on the calling thread through its single SQLite connection. Phase 4
+measured this (a stroke commit is one small transaction) and the canvas rendering path
+(ROADMAP.md, Phase 4 results) and found no need for worker threads yet. `core`, `document` and `study` contain no threading
 primitives and no locks. The only process-wide state, the log sink, is installed once at
 start-up and guarded by a mutex.
 
@@ -780,6 +786,11 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D27 | Load = decode rows strictly, then apply one creating `Patch` to an empty `Workspace` + `validate()` | A separate persistence-side validator; constructing `Workspace` internals from rows | Reuses every document invariant unchanged; SQL code never mutates `Workspace` internals |
 | D28 | Search index tables are created by schema v1 but maintained only from Phase 8 (`rebuildSearchIndex()` on first use) | Maintain FTS rows from Phase 3 | No consumer yet; the rebuild path is needed anyway |
 | D29 | Workspace lock = `QLockFile` in `platform` behind the `application::WorkspaceLocker` port; `QLockFile`'s metadata format | OS locks in `persistence` (`LockFileEx`/`flock`); custom metadata file | Keeps OS/Qt code out of `persistence`; `QLockFile` holds a real OS-level lock and records pid/host/app; version and session UUID were not worth a second file |
+| D30 | The canvas edits through a `canvas::DocumentPort` (`workspace()`, `execute(Command)`, `isReadOnly()`) instead of holding a `document::Editor`; applied patches (including undo/redo) come back through `CanvasController::onDocumentChanged` | Pass the session's `Editor` to tools (CANVAS.md §5 sketch) | The `Editor` lives inside `WorkspaceSession`, which also persists every patch; handing tools the Editor would bypass persistence. The port keeps the canvas free of application/persistence and lets tests use a plain Editor |
+| D31 | Draw-call batching (`RenderBatches`: runs of ≤ 256 consecutive same-layer elements merged into one mesh with per-vertex colours) above 1 024 visible elements, in Phase 4 rather than Phase 9 | One draw call per element only (RENDERING.md §6.3 Phase 4 plan) | Measured on the reference integrated-GPU laptop: with 10 000 visible strokes, per-element drawing took 32 ms/frame (13 ms CPU submission, 18 ms GPU for 10 000 tiny draws); batching brought it to 10 ms/frame (ROADMAP.md Phase 4 results). Consecutive runs preserve painter's order exactly |
+| D32 | Google Benchmark 1.9.1 (pinned FetchContent, `STUDYAPP_BUILD_BENCHMARKS`, built in `ci-full`) for `bench/` | Hand-rolled timing loops | Planned in TESTING.md; statistically sound repetitions; not a runtime dependency |
+| D33 | Dark theme shows paper through a display transform: HSL lightness inversion, then lifted so white paper becomes the dark canvas grey (#171717) | Plain inversion (white → pure black); storing dark colours | Stored colours never change; the lifted range matches the dark design tokens and keeps the desk/paper contrast |
+| D34 | Until page navigation (Phase 5), the app opens one default workspace (per-user app data, or `--workspace`) and shows its first page, creating a starter page as one undo step | Ask for a workspace at start-up | Keeps Phase 4 free of Phase 5 UI while making drawing persistent end to end |
 
 New significant decisions should be appended here (or moved to `docs/adr/` once the list
 grows) with context, alternatives and consequences.

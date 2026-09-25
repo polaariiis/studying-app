@@ -372,6 +372,9 @@ commands return `Created<Id> { Id id; Command command; }`. Ids come from the inj
 | `createPage` / `renamePage` / `deletePage` | create page **and its first layer**; update; remove subtree |
 | `createLayer` / `renameLayer` / `deleteLayer` | create / update / remove the layer and its elements (last layer: rejected) |
 | `createElement` / `deleteElement` | create (appended in z-order) / remove; connectors attached to removed elements are **detached** in the same patch |
+| `deleteElements` *(Phase 4)* | removes a set (any pages) as one patch; detaches connectors outside the set |
+| `moveElements` *(Phase 4)* | translates a set as one patch; connectors move their free ends and ends attached to moved elements; other connectors' cached ends follow moved targets |
+| `setPageFormat` *(Phase 4)* | changes a page's extent, size and background; empty patch if unchanged |
 
 Errors: `NotFound` (unknown id), `InvalidArgument` (blank name, last layer). Anything a
 command cannot know in advance is caught by `Workspace::apply`.

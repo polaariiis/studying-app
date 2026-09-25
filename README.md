@@ -18,7 +18,7 @@ notebooks, and course/project/task planning, all usable without an internet conn
 |---|---|
 | Language | C++20 |
 | UI | Qt 6.8 LTS, Qt Widgets |
-| Canvas rendering | OpenGL 3.3 core, isolated behind a renderer abstraction (from Phase 4) |
+| Canvas rendering | OpenGL 3.3 core, isolated behind a renderer abstraction |
 | Persistence | SQLite (WAL, relational schema, patch-driven writes); large assets as content-addressed external files |
 | Build | CMake 3.25+, Ninja, CMake presets |
 | Tests | GoogleTest, Qt Test, CTest |
@@ -40,17 +40,17 @@ app (studyapp executable)
  render_gl (OpenGL) ── render ┘
 ```
 
-| Module | Responsibility | State (end of Phase 3) |
+| Module | Responsibility | State (end of Phase 4) |
 |---|---|---|
 | `core` | Geometry, UUIDv7 ids, ordering keys, colours, `Result`, clock, logging | Implemented |
 | `document` | Notebooks, sections, pages, layers, elements, patches, commands, undo/redo | Implemented (headless) |
 | `study` | Courses, projects, tasks, planning | Skeleton (Phase 7) |
-| `render` / `render_gl` | Renderer API / OpenGL 3.3 backend | Skeleton (Phase 4) |
-| `canvas` | Camera, tools, hit testing, selection | Skeleton (Phase 4) |
+| `render` / `render_gl` | Renderer API / OpenGL 3.3 backend | Implemented: tessellation, solid + pattern programs, batching |
+| `canvas` | Camera, tools, hit testing, selection | Implemented: pen, select/move, stroke eraser, pan/zoom |
 | `persistence` | SQLite schema, stores, assets, workspace directory | Implemented: schema v1 + migrations, patch-driven stores, asset store |
 | `application` | Sessions and use cases | `WorkspaceSession` (create/open/edit/undo/close, persisted) |
 | `platform` | Qt-backed adapters, OS-specific code | Qt log sink, workspace lock (`QLockFile`) |
-| `ui` | Main window, design tokens, themes, app icon | Shell with neutral light/dark themes |
+| `ui` | Main window, design tokens, themes, app icon | Shell with the OpenGL canvas, tools and debug HUD |
 
 Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), plus the
 [data model](docs/DATA_MODEL.md), [database schema](docs/DATABASE_SCHEMA.md),
@@ -116,8 +116,8 @@ cmake --workflow --preset debug
 | 1 | Foundation & build skeleton | ✅ |
 | 2 | Document model, commands, undo/redo (headless); app icon; design foundation | ✅ |
 | 3 | SQLite persistence, assets, workspace locking | ✅ |
-| 4 | Canvas engine + OpenGL renderer (first drawing) | Next |
-| 5 | Navigation: notebooks, sections, pages | Planned |
+| 4 | Canvas engine + OpenGL renderer (first drawing) | ✅ |
+| 5 | Navigation: notebooks, sections, pages | Next |
 | 6 | Text, shapes, images, connectors, layers | Planned |
 | 7 | Study & planning | Planned |
 | 8 | Search, PDF annotation, export | Planned |

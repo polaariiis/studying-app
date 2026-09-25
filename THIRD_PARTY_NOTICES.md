@@ -10,6 +10,7 @@ following third-party software, each under its own license. Versions are pinned 
 | [SQLite](https://sqlite.org/) | 3.50.4 | Public domain | Persistence | Yes — statically linked (unless `STUDYAPP_USE_SYSTEM_SQLITE=ON`) |
 | [tl::expected](https://github.com/TartanLlama/expected) | 1.1.0 | CC0-1.0 | `Result<T>` in `core` | Yes — header-only |
 | [GoogleTest](https://github.com/google/googletest) | 1.17.0 | BSD-3-Clause | Unit tests | No — test builds only |
+| [Google Benchmark](https://github.com/google/benchmark) | 1.9.1 | Apache-2.0 | Micro-benchmarks (`bench/`) | No — optional developer builds only |
 
 ## Qt (LGPL-3.0)
 
@@ -31,3 +32,10 @@ The SQLite amalgamation is in the public domain (<https://sqlite.org/copyright.h
 
 Copyright 2008, Google Inc. All rights reserved. Used only to build and run tests; not
 distributed with the application.
+
+## Google Benchmark (Apache-2.0)
+
+Copyright 2015 Google Inc. Licensed under the Apache License, Version 2.0
+(<https://www.apache.org/licenses/LICENSE-2.0>). Fetched only when
+`STUDYAPP_BUILD_BENCHMARKS=ON` to build the developer micro-benchmarks; not distributed
+with the application.

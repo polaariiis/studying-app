@@ -1,9 +1,9 @@
 # Rendering Architecture
 
-> Status: **Final baseline — not yet implemented.** Phase 1 creates the `studyapp_render`
-> and `studyapp_render_gl` targets (module anchors; `render_gl` links Qt6::OpenGL). The
-> OpenGL 3.3 core renderer is built in Phase 4. OpenGL 3.3 core is the only renderer target;
-> QRhi, Vulkan, Metal and Direct3D are *not* planned work.
+> Status: **Phase 4 implemented** for solid meshes and procedural backgrounds; see
+> [§12](#12-phase-4-implementation-notes). Textures, highlighter stencil and export are
+> later phases. OpenGL 3.3 core is the only renderer target; QRhi, Vulkan, Metal and
+> Direct3D are *not* planned work.
 
 ## 1. Goals and non-goals
 
@@ -279,3 +279,30 @@ binding points, no global state) so a `render_rhi` target could implement it wit
 
 Switching would change `ui::CanvasWidget` (from `QOpenGLWidget` to `QRhiWidget`) and the
 backend target — nothing in `canvas`, `document` or `persistence`.
+
+## 12. Phase 4 implementation notes
+
+* **API subset** (§3): meshes only — `createMesh`/`updateMesh`/`destroyMesh`, `render`,
+  `lastFrameStats`, `releaseAll`. Textures, materials other than solid, and
+  `ColorTransform` beyond `InvertLightness` arrive with their content (Phases 6/8).
+  `MeshData` may carry per-vertex colours (used by batches); `RenderStats` includes the
+  GPU time. A `RecordingRenderer` for tests lives in `tests/support`.
+* **Programs** (§6.2): `solid` (content and overlays; overlays use a view-space
+  projection instead of a separate program) and `pattern` (full-screen triangle; paper,
+  bounded page edge, ruled/grid/dot lines one device pixel wide, faded out below 8 px
+  spacing). Sources are `resources/shaders/*.vert|frag`, compiled into `studyapp_render_gl`
+  with `qt_add_resources`; compile and link errors are returned with the driver's log.
+* **Dark paper** (§8): lightness inversion lifted to the dark canvas grey (D33); applied
+  to content and paper, not to UI colours (desk, pattern, selection).
+* **Context** (§6.1): `CanvasWidget` requests 3.3 core, 4× MSAA (`STUDYAPP_MSAA_SAMPLES`
+  overrides it) and stencil 8. The renderer disconnects from `aboutToBeDestroyed` and
+  releases in time; the widget releases in its destructor while the context is current.
+  Framebuffer size = logical size × device pixel ratio, set on every paint.
+* **Buffers** (§6.3): one VAO/VBO/IBO (+ colour VBO) per mesh in generational slots;
+  batching was brought forward from Phase 9 after measurement (D31).
+* **GPU timing** (§10): three round-robin `GL_TIME_ELAPSED` queries, read without
+  stalling; shown in the HUD and the pan benchmark.
+* **Debug HUD** (View ▸ Debug HUD, F3; off by default, remembered in settings): frame
+  interval, CPU time and profiler sections, zoom and centre, view/framebuffer size and
+  DPR, scene/visible/drawn/selected counts, draw calls, triangles, GPU meshes and time,
+  render-cache statistics, tool, live points, GL version.
