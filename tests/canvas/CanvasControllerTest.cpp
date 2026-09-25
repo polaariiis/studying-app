@@ -320,6 +320,61 @@ TEST(CanvasControllerTest, HoverRequestsNoRepaint) {
     f.controller.setRedrawCallback({});
 }
 
+TEST(CanvasControllerTest, ZoomingInRefinesDetailOverFramesThenGoesIdle) {
+    // A batched page (> 1024 visible strokes) zoomed in past two detail buckets: meshes are
+    // refined at most `budget` per frame, each refining frame asks for the next one, and
+    // rendering stops asking once everything is at the new detail.
+    CanvasFixture f;
+    for (int i = 0; i < 1200; ++i) {
+        auto created = document::commands::createElement(
+            f.doc.workspace, f.layer,
+            {.transform = {.position = {(i % 40) * 39.0, (i / 40) * 39.0}},
+             .payload = document::test::makeStroke()},
+            f.doc.ids);
+        ASSERT_TRUE(created.has_value());
+        ASSERT_OK(f.port.execute(std::move(created->command)));
+    }
+    f.controller.zoomToFit();
+    f.controller.zoomBy(0.25);
+    (void)f.frame(); // everything built at the coarse bucket
+    ASSERT_TRUE(f.controller.stats().batched);
+    ASSERT_FALSE(f.controller.stats().cache.refinementPending);
+
+    constexpr std::size_t budget = 100;
+    f.controller.setRefinementBudget(budget);
+    int redraws = 0;
+    f.controller.setRedrawCallback([&redraws] { ++redraws; });
+    f.controller.zoomBy(4.0); // two buckets finer; the whole page stays in view
+    const auto drawnTriangles = [&f] {
+        std::size_t total = 0;
+        for (const render::DrawItem& item : f.renderer.lastContent) {
+            total += f.renderer.meshes.at(item.mesh.index).triangleCount();
+        }
+        return total;
+    };
+    const std::size_t triangles = drawnTriangles();
+    int frames = 0;
+    std::uint32_t refined = 0;
+    while (frames < 50) {
+        redraws = 0;
+        (void)f.frame();
+        ++frames;
+        const auto stats = f.controller.stats();
+        EXPECT_LE(stats.cache.refinedLastFrame, budget);
+        EXPECT_EQ(stats.visibleElements, 1200U); // every frame shows the whole page
+        refined += stats.cache.refinedLastFrame;
+        if (!stats.cache.refinementPending) {
+            EXPECT_EQ(redraws, 0); // done: back to rendering on demand
+            break;
+        }
+        EXPECT_EQ(redraws, 1); // one more frame to continue refining
+    }
+    EXPECT_EQ(refined, 1200U);
+    EXPECT_EQ(frames, 12);                  // 12 × 100
+    EXPECT_GE(drawnTriangles(), triangles); // finer (rounder) meshes
+    f.controller.setRedrawCallback({});
+}
+
 // ---------------------------------------------------------------------------- navigation
 
 TEST(CanvasControllerTest, SpacePanAndWheelZoomAroundTheCursor) {
@@ -528,6 +583,40 @@ TEST(CanvasControllerTest, BatchesTouchedByAPreviewAreDrawnPerElement) {
     f.frame();
     EXPECT_EQ(f.renderer.lastContent.size(), runs);
     EXPECT_EQ(f.controller.stats().batchesRebuilt, 1U); // the moved element's run
+}
+
+TEST(CanvasControllerTest, RunsMovingAsAWholeStayOneDrawDuringTheMovePreview) {
+    CrowdedFixture f(1300);
+    f.controller.zoomToFit();
+    f.frame();
+    const std::size_t runs = f.renderer.lastContent.size();
+    const std::vector<render::DrawItem> before = f.renderer.lastContent;
+    const std::uint64_t triangles = f.triangles(before);
+    // Select All, then drag one of the strokes: every run moves as a whole.
+    f.controller.setTool(ToolKind::Select);
+    f.controller.selectAll();
+    const core::DVec2 at =
+        f.controller.camera().worldToView(document::worldBounds(f.element(f.strokes[0])).center());
+    f.controller.onPointer({.phase = PointerPhase::Down, .viewPos = at});
+    f.controller.onPointer({.phase = PointerPhase::Move, .viewPos = at + core::DVec2{30, 12}});
+    f.frame();
+    EXPECT_EQ(f.renderer.lastContent.size(), runs); // still one draw per run
+    EXPECT_EQ(f.controller.stats().batchesRebuilt, 0U);
+    EXPECT_EQ(f.triangles(f.renderer.lastContent), triangles);
+    const double zoom = f.controller.camera().zoom();
+    for (std::size_t i = 0; i < runs; ++i) { // moved by the preview offset, in world units
+        EXPECT_NEAR(f.renderer.lastContent[i].transform.tx - before[i].transform.tx, 30 / zoom,
+                    1e-3);
+        EXPECT_NEAR(f.renderer.lastContent[i].transform.ty - before[i].transform.ty, 12 / zoom,
+                    1e-3);
+    }
+    // Releasing commits one move; the runs are rebuilt at the new positions.
+    f.controller.onPointer({.phase = PointerPhase::Up, .viewPos = at + core::DVec2{30, 12}});
+    f.frame();
+    EXPECT_EQ(f.renderer.lastContent.size(), runs);
+    EXPECT_EQ(f.triangles(f.renderer.lastContent), triangles);
+    expectNear(document::worldBounds(f.element(f.strokes[0])).center(),
+               f.controller.camera().viewToWorld(at + core::DVec2{30, 12}), 1e-6);
 }
 
 TEST(CanvasControllerTest, ToolSwitchCancelsTheGesture) {

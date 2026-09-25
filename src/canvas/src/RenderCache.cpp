@@ -33,8 +33,13 @@ const RenderCache::Entry& RenderCache::ensure(const document::Element& element,
                                               render::Renderer* uploadTo) {
     auto [it, inserted] = entries_.try_emplace(element.id);
     Entry& entry = it->second;
-    const bool stale = inserted || entry.version != version || entry.lodBucket < lodBucket;
-    if (stale) {
+    const bool changed = inserted || entry.version != version;
+    bool refine = !changed && entry.lodBucket < lodBucket;
+    if (refine && refined_ >= refinementBudget_) {
+        refine = false; // keep the coarser mesh this frame
+        refinementPending_ = true;
+    }
+    if (changed || refine) {
         for (const render::MeshHandle handle : entry.gpu) {
             pendingDestroy_.push_back(handle);
         }
@@ -46,6 +51,9 @@ const RenderCache::Entry& RenderCache::ensure(const document::Element& element,
         entry.version = version;
         entry.lodBucket = lodBucket;
         ++built_;
+        if (refine) {
+            ++refined_;
+        }
     }
     if (uploadTo != nullptr && entry.gpu.size() != entry.parts.size()) {
         entry.gpu.clear();
@@ -98,14 +106,18 @@ void RenderCache::forgetGpuResources() noexcept {
 
 void RenderCache::beginFrame() noexcept {
     built_ = 0;
+    refined_ = 0;
     uploaded_ = 0;
+    refinementPending_ = false;
 }
 
 RenderCache::Stats RenderCache::stats() const noexcept {
     return {.entries = entries_.size(),
             .cpuBytes = cpuBytes_,
             .builtLastFrame = built_,
-            .uploadedLastFrame = uploaded_};
+            .refinedLastFrame = refined_,
+            .uploadedLastFrame = uploaded_,
+            .refinementPending = refinementPending_};
 }
 
 } // namespace studyapp::canvas

@@ -93,6 +93,7 @@ std::string_view toString(ToolKind tool) noexcept {
 
 CanvasController::CanvasController(DocumentPort& document, core::IdGenerator& ids)
     : document_(&document), ids_(&ids), preview_(std::make_unique<detail::Preview>()) {
+    cache_.setRefinementBudget(RenderCache::kDefaultRefinementBudget);
     tools_[indexOf(ToolKind::Pen)] = std::make_unique<detail::PenTool>();
     tools_[indexOf(ToolKind::Select)] = std::make_unique<detail::SelectTool>();
     tools_[indexOf(ToolKind::Eraser)] = std::make_unique<detail::EraserTool>();
@@ -510,25 +511,34 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
                     continue; // no member of this run is in view
                 }
                 // Runs touched by a preview (move, erase) are drawn element by element, so
-                // previews never force a rebuild.
-                const bool anyPreview = !preview_->erased.empty() || preview_->moving;
-                const bool previewed =
-                    anyPreview &&
-                    std::any_of(batch.members.begin(), batch.members.end(),
-                                [&](core::ElementId id) {
-                                    return preview_->erased.contains(id) ||
-                                           (preview_->moving && selection_.contains(id));
-                                });
-                if (previewed || !batch.gpu.isValid()) {
+                // previews never force a rebuild. A run that moves as a whole (every
+                // member selected, e.g. Select All) is still one draw: its mesh moves by
+                // the preview offset. Per element, dragging a selected 10 000-stroke page
+                // took 8 000 draw calls and 135 ms frames.
+                bool erased = false;
+                bool anySelected = false;
+                bool allSelected = true;
+                if (!preview_->erased.empty() || preview_->moving) {
+                    for (const core::ElementId id : batch.members) {
+                        erased = erased || preview_->erased.contains(id);
+                        const bool selected = preview_->moving && selection_.contains(id);
+                        anySelected = anySelected || selected;
+                        allSelected = allSelected && selected;
+                    }
+                }
+                const bool movesWhole = anySelected && allSelected && !erased;
+                if (!batch.gpu.isValid() || erased || (anySelected && !movesWhole)) {
                     for (std::size_t i = first; i < v; ++i) {
                         drawElement(visible_[i].id);
                     }
                     continue;
                 }
+                const core::DVec2 origin =
+                    batch.origin + (movesWhole ? preview_->moveOffset : core::DVec2{});
                 content_.push_back(
                     {.mesh = batch.gpu,
-                     .transform = (toCameraRelative * core::Affine2::translation(batch.origin))
-                                      .cast<float>(),
+                     .transform =
+                         (toCameraRelative * core::Affine2::translation(origin)).cast<float>(),
                      .color = core::Color::white(),
                      .opacity = batch.opacity});
             }
@@ -556,6 +566,8 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
     // Overlays in view space.
     if (!selection_.empty()) {
         render::MeshData mesh;
+        mesh.vertices.reserve(8 * selection_.size()); // one 8-vertex outline per element
+        mesh.indices.reserve(24 * selection_.size());
         const core::DVec2 offset = preview_->moving ? preview_->moveOffset : core::DVec2{};
         for (const core::ElementId id : selection_.ids()) {
             if (const SceneEntry* entry = scene_.find(id)) {
@@ -578,6 +590,11 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
         }
     }
     lastDrawItems_ = content_.size();
+    if (cache_.refinementPending()) {
+        // Some meshes were drawn at a coarser level of detail than this zoom asks for; the
+        // next frames refine them within the budget, then rendering is idle again.
+        requestRedraw();
+    }
     frame.content = content_;
     frame.overlay = overlay_;
     return frame;

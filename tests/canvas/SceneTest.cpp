@@ -238,6 +238,56 @@ TEST_F(SceneTest, RenderCacheRebuildsOnlyForNewVersionsOrFinerDetail) {
     EXPECT_EQ(cache.stats().cpuBytes, 0U);
 }
 
+TEST_F(SceneTest, RenderCacheSpreadsRefinementOverFramesButNeverDelaysContent) {
+    scene.rebuild(doc.workspace, page);
+    test::RecordingRenderer renderer;
+    RenderCache cache;
+    cache.setRefinementBudget(2);
+    std::vector<core::ElementId> ids;
+    for (int i = 0; i < 5; ++i) {
+        ids.push_back(add(bottom, makeStroke(), {i * 20.0, 0.0}));
+    }
+    const auto ensureAll = [&](int lod) {
+        for (const core::ElementId id : ids) {
+            (void)cache.ensure(*doc.workspace.findElement(id), 1, lod, &renderer);
+        }
+    };
+    cache.beginFrame();
+    ensureAll(0); // new content is built regardless of the budget
+    EXPECT_EQ(cache.stats().builtLastFrame, 5U);
+    EXPECT_FALSE(cache.refinementPending());
+
+    // Zooming in two buckets: two refinements per frame, the rest keep their coarse mesh.
+    int frames = 0;
+    std::uint32_t refined = 0;
+    do {
+        cache.beginFrame();
+        ensureAll(2);
+        EXPECT_LE(cache.stats().refinedLastFrame, 2U);
+        refined += cache.stats().refinedLastFrame;
+        ++frames;
+    } while (cache.refinementPending() && frames < 10);
+    EXPECT_EQ(refined, 5U);
+    EXPECT_EQ(frames, 3); // 2 + 2 + 1, and the third frame reports nothing pending
+    cache.beginFrame();
+    ensureAll(2);
+    EXPECT_EQ(cache.stats().builtLastFrame, 0U); // all at the finer detail now
+    EXPECT_FALSE(cache.refinementPending());
+
+    // A content change is never deferred, even with the budget used up.
+    cache.setRefinementBudget(0);
+    cache.beginFrame();
+    (void)cache.ensure(*doc.workspace.findElement(ids[0]), 2, 2, &renderer);
+    EXPECT_EQ(cache.stats().builtLastFrame, 1U);
+    ensureAll(3);
+    EXPECT_TRUE(cache.refinementPending());
+    EXPECT_EQ(cache.stats().refinedLastFrame, 0U);
+    for (const core::ElementId id : ids) { // coarse, but every element still has a mesh
+        const auto& entry = cache.ensure(*doc.workspace.findElement(id), 1, 3, &renderer);
+        EXPECT_FALSE(entry.gpu.empty());
+    }
+}
+
 TEST(RenderCacheTest, LodBuckets) {
     EXPECT_EQ(RenderCache::lodBucketFor(1.0), 0);
     EXPECT_EQ(RenderCache::lodBucketFor(1.5), 1);

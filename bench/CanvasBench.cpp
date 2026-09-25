@@ -11,9 +11,12 @@
 #include <studyapp/render/Tessellation.hpp>
 #include <studyapp/testing/RecordingRenderer.hpp>
 
+#include <algorithm>
 #include <benchmark/benchmark.h>
+#include <chrono>
 #include <memory>
 #include <random>
+#include <vector>
 
 namespace studyapp::bench {
 namespace {
@@ -160,6 +163,69 @@ void BM_BuildFramePanning(benchmark::State& state) {
 }
 // Zoom 1 (≈ 200 strokes visible), zoomed out to 0.3 (≈ 30 %), and the whole page (0.15).
 BENCHMARK(BM_BuildFramePanning)->Arg(100)->Arg(30)->Arg(15)->Unit(benchmark::kMicrosecond);
+
+/// As BM_BuildFramePanning with every stroke selected (Select All): the selection overlay
+/// is part of every frame.
+void BM_BuildFramePanningAllSelected(benchmark::State& state) {
+    const SyntheticPage& page = page10k();
+    ViewPort port(page.workspace);
+    testing::SequentialIds ids;
+    canvas::CanvasController controller(port, ids);
+    testing::RecordingRenderer renderer;
+    (void)renderer.initialize();
+    controller.setViewport({1920, 1080}, 1.0);
+    controller.setPage(page.page);
+    controller.zoomBy(static_cast<double>(state.range(0)) / 100.0);
+    controller.selectAll();
+    (void)controller.buildFrame(renderer);
+    double direction = 1.0;
+    int frame = 0;
+    for (auto _ : state) {
+        if (++frame % 120 == 0) {
+            direction = -direction;
+        }
+        controller.panBy({12.0 * direction, 4.0 * direction});
+        const render::RenderFrame built = controller.buildFrame(renderer);
+        benchmark::DoNotOptimize(built.overlay.data());
+    }
+    state.counters["selected"] = static_cast<double>(controller.selection().size());
+}
+BENCHMARK(BM_BuildFramePanningAllSelected)->Arg(100)->Arg(15)->Unit(benchmark::kMicrosecond);
+
+/// Wheel zooming with the whole page in view: each step of ×1.2 in, then back out. Zooming
+/// in past a level-of-detail bucket needs finer meshes for the visible strokes.
+void BM_BuildFrameZoomingWholePage(benchmark::State& state) {
+    const SyntheticPage& page = page10k();
+    ViewPort port(page.workspace);
+    testing::SequentialIds ids;
+    std::vector<double> frameMs;
+    for (auto _ : state) {
+        // One zoom-in / zoom-out gesture per iteration, 8 steps each way, starting from a
+        // page whose meshes were built at the whole-page zoom.
+        state.PauseTiming();
+        auto controller = std::make_unique<canvas::CanvasController>(port, ids);
+        testing::RecordingRenderer renderer;
+        (void)renderer.initialize();
+        controller->setViewport({1920, 1080}, 1.0);
+        controller->setPage(page.page);
+        controller->zoomBy(0.15);
+        (void)controller->buildFrame(renderer);
+        state.ResumeTiming();
+        for (int step = 0; step < 16; ++step) {
+            controller->zoomBy(step < 8 ? 1.2 : 1.0 / 1.2);
+            const auto start = std::chrono::steady_clock::now();
+            const render::RenderFrame built = controller->buildFrame(renderer);
+            benchmark::DoNotOptimize(built.content.data());
+            frameMs.push_back(
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                    .count());
+        }
+    }
+    std::sort(frameMs.begin(), frameMs.end());
+    state.counters["worstFrameMs"] = frameMs.back();
+    state.counters["medianFrameMs"] = frameMs[frameMs.size() / 2];
+}
+BENCHMARK(BM_BuildFrameZoomingWholePage)->Unit(benchmark::kMillisecond)->Iterations(3);
 
 /// First frame of a freshly opened 10 000-stroke page: every visible stroke tessellated.
 void BM_FirstFrameWholePage(benchmark::State& state) {

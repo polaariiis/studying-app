@@ -60,6 +60,9 @@ private:
     std::uint64_t sceneGeneration_ = 0;
     int lodBucket_ = 0;
     bool valid_ = false;
+    /// Every member's mesh is at the current level of detail; while the cache refines over
+    /// several frames (RenderCache::refinementBudget) the runs are re-checked each update.
+    bool refined_ = false;
     std::uint32_t rebuilt_ = 0;
 };
 

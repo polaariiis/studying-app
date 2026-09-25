@@ -39,9 +39,10 @@ private:
 void RenderBatches::update(const CanvasScene& scene, const document::Workspace& workspace,
                            RenderCache& cache, int lodBucket, render::Renderer& renderer) {
     rebuilt_ = 0;
-    if (valid_ && sceneGeneration_ == scene.generation() && lodBucket_ == lodBucket) {
+    if (valid_ && refined_ && sceneGeneration_ == scene.generation() && lodBucket_ == lodBucket) {
         return;
     }
+    bool refined = true;
 
     // 1. Partition the draw order into runs and compute each run's signature.
     std::vector<Batch> next;
@@ -64,6 +65,7 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
         batch.lastDrawIndex = entry->drawIndex;
         const RenderCache::Entry& cached =
             cache.ensure(*element, entry->contentVersion, lodBucket, nullptr);
+        refined = refined && cached.lodBucket >= lodBucket;
         const document::Transform& t = element->transform;
         Signature signature;
         signature.add(batch.signature);
@@ -134,6 +136,7 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
     sceneGeneration_ = scene.generation();
     lodBucket_ = lodBucket;
     valid_ = true;
+    refined_ = refined;
 }
 
 void RenderBatches::clear(render::Renderer& renderer) {

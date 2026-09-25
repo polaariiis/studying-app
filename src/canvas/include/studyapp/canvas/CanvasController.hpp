@@ -145,6 +145,10 @@ public:
     void onGraphicsReset() noexcept;
 
     [[nodiscard]] CanvasStats stats() const noexcept;
+    /// Level-of-detail refinements per frame (RenderCache::setRefinementBudget).
+    void setRefinementBudget(std::size_t perFrame) noexcept {
+        cache_.setRefinementBudget(perFrame);
+    }
     [[nodiscard]] core::Profiler& profiler() noexcept { return profiler_; }
 
 private:
