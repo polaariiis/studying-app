@@ -15,7 +15,8 @@ constexpr std::uint64_t kTimestampMask = (1ULL << 48U) - 1;
 std::mt19937_64 seededFromRandomDevice() {
     std::random_device device;
     std::array<std::uint32_t, 8> seedData{};
-    std::ranges::generate(seedData, std::ref(device));
+    // NOLINTNEXTLINE(modernize-use-ranges): std::ranges algorithms are incomplete in older libc++
+    std::generate(seedData.begin(), seedData.end(), std::ref(device));
     std::seed_seq seq(seedData.begin(), seedData.end());
     return std::mt19937_64(seq);
 }

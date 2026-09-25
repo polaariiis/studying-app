@@ -51,8 +51,19 @@ public:
     [[nodiscard]] std::optional<std::uint64_t> unixMillis() const noexcept;
 
     [[nodiscard]] friend constexpr bool operator==(const Uuid&, const Uuid&) noexcept = default;
-    [[nodiscard]] friend constexpr std::strong_ordering operator<=>(const Uuid&,
-                                                                    const Uuid&) noexcept = default;
+
+    /// Bytewise (big-endian) ordering, so UUIDv7 values sort by creation time. Written out
+    /// instead of defaulted because older libc++ versions lack `operator<=>` for std::array.
+    [[nodiscard]] friend constexpr std::strong_ordering operator<=>(const Uuid& lhs,
+                                                                    const Uuid& rhs) noexcept {
+        for (std::size_t i = 0; i < lhs.bytes_.size(); ++i) {
+            if (lhs.bytes_[i] != rhs.bytes_[i]) {
+                return lhs.bytes_[i] < rhs.bytes_[i] ? std::strong_ordering::less
+                                                     : std::strong_ordering::greater;
+            }
+        }
+        return std::strong_ordering::equal;
+    }
 
 private:
     Bytes bytes_{};

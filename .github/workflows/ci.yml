@@ -23,7 +23,7 @@ jobs:
     name: Format & module boundaries
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
@@ -47,7 +47,7 @@ jobs:
         os: [windows-2022, ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
@@ -59,7 +59,17 @@ jobs:
           arch: x64
 
       - name: Configure, build and test (ci-core preset)
-        run: cmake --workflow --preset ci-core
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --workflow --preset ci-core 2>&1 | tee workflow.log
+
+      # Job logs require sign-in; annotations are public, so surface the key lines there.
+      - name: Report build/test errors as annotations
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "error|Error|FAILED|Failed|failed|\*\*\*" workflow.log | head -40 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
   # ---------------------------------------------------------------- sanitizers
   sanitizers:
@@ -69,13 +79,23 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
 
       - name: Configure, build and test (asan preset)
-        run: cmake --workflow --preset asan
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --workflow --preset asan 2>&1 | tee workflow.log
+
+      # Job logs require sign-in; annotations are public, so surface the key lines there.
+      - name: Report build/test errors as annotations
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "error|Error|FAILED|Failed|failed|\*\*\*" workflow.log | head -40 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
   # ---------------------------------------------------------------- full build with Qt
   full:
@@ -94,7 +114,7 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
@@ -123,7 +143,17 @@ jobs:
           cache: true
 
       - name: Configure, build and test (ci-full preset)
-        run: cmake --workflow --preset ci-full
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --workflow --preset ci-full 2>&1 | tee workflow.log
+
+      # Job logs require sign-in; annotations are public, so surface the key lines there.
+      - name: Report build/test errors as annotations
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "error|Error|FAILED|Failed|failed|\*\*\*" workflow.log | head -40 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
       - name: Install (runs Qt deployment tooling)
         run: cmake --install build/ci-full --prefix "${{ runner.temp }}/studyboard-install"
