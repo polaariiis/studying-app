@@ -1,0 +1,20 @@
+# Build output
+/build/
+/out/
+/dist/
+
+# Personal CMake presets (e.g. local Qt path)
+CMakeUserPresets.json
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+*.user
+.cache/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+aqtinstall.log
