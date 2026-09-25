@@ -1,0 +1,47 @@
+# clang-format 19 (CI pins the same major version; see .github/workflows/ci.yml)
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+ColumnLimit: 100
+IndentWidth: 4
+AccessModifierOffset: -4
+IndentCaseLabels: false
+NamespaceIndentation: None
+FixNamespaceComments: true
+PointerAlignment: Left
+DerivePointerAlignment: false
+QualifierAlignment: Leave
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline
+AllowShortEnumsOnASingleLine: false
+BreakTemplateDeclarations: Yes
+BreakBeforeBraces: Attach
+BinPackArguments: true
+BinPackParameters: true
+Cpp11BracedListStyle: true
+SpaceAfterTemplateKeyword: true
+InsertNewlineAtEOF: true
+SeparateDefinitionBlocks: Leave
+IncludeBlocks: Regroup
+SortIncludes: CaseSensitive
+MainIncludeChar: Any
+IncludeIsMainRegex: '(Test)?$'
+IncludeCategories:
+  # 1: main header (automatic), then private headers in quotes
+  - Regex: '^"'
+    Priority: 2
+  # 3: project headers
+  - Regex: '^<studyapp/'
+    Priority: 3
+  # 4: Qt
+  - Regex: '^<Q'
+    Priority: 4
+  # 5: third-party (gtest, sqlite, tl)
+  - Regex: '^<(gtest|gmock|sqlite3|tl)[/.]'
+    Priority: 5
+  # 6: standard library
+  - Regex: '^<'
+    Priority: 6

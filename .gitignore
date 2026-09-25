@@ -1,20 +1,21 @@
-# Build output
+# Build and install trees (presets use build/<preset> and install/<preset>)
 /build/
 /out/
+/install/
 /dist/
 
-# Personal CMake presets (e.g. local Qt path)
+# Personal CMake presets (local Qt path etc.); see cmake/CMakeUserPresets.example.json
 CMakeUserPresets.json
 
-# IDEs
+# IDEs and tooling
 .vs/
 .vscode/
 .idea/
 *.user
 .cache/
 compile_commands.json
+aqtinstall.log
 
 # OS
 .DS_Store
 Thumbs.db
-aqtinstall.log
