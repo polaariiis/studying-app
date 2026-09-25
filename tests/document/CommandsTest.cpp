@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
+#include <vector>
 
 namespace studyapp::document::test {
 namespace {
@@ -229,6 +231,93 @@ TEST(CommandsTest, AreDeterministic) {
     const auto b = build();
     EXPECT_EQ(a->workspace, b->workspace);
     EXPECT_EQ(*a->editor.history().nextUndo(), *b->editor.history().nextUndo());
+}
+
+// ---------------------------------------------------------------------------- Phase 4
+
+TEST(CommandsTest, DeleteElementsRemovesASetInOnePatchAndDetachesConnectors) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto a = t.addElement(layer, makeStroke());
+    const auto b = t.addElement(layer, makeStroke());
+    const auto keep = t.addElement(layer, makeStroke());
+    const auto link = t.addElement(layer, makeConnector(a, keep));
+    const auto undoBefore = t.editor.history().undoCount();
+
+    const std::vector<core::ElementId> doomed{b, a, a}; // unsorted, duplicated
+    t.run(commands::deleteElements(t.workspace, doomed));
+    EXPECT_EQ(t.editor.history().undoCount(), undoBefore + 1);
+    EXPECT_EQ(t.workspace.findElement(a), nullptr);
+    EXPECT_EQ(t.workspace.findElement(b), nullptr);
+    const auto& connector = std::get<Connector>(t.workspace.findElement(link)->payload);
+    EXPECT_FALSE(connector.start.attachedTo.has_value()); // detached, not dangling
+    EXPECT_EQ(connector.end.attachedTo, keep);
+    ASSERT_OK(t.workspace.validate());
+
+    ASSERT_OK(t.editor.undo());
+    EXPECT_NE(t.workspace.findElement(a), nullptr);
+    EXPECT_EQ(std::get<Connector>(t.workspace.findElement(link)->payload).start.attachedTo, a);
+
+    EXPECT_EQ(commands::deleteElements(t.workspace, {}).error().code, ErrorCode::InvalidArgument);
+    const std::vector<core::ElementId> unknown{core::ElementId{t.ids.next()}};
+    EXPECT_EQ(commands::deleteElements(t.workspace, unknown).error().code, ErrorCode::NotFound);
+}
+
+TEST(CommandsTest, MoveElementsTranslatesAndConnectorEndsFollow) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto moved = t.addElement(layer, makeStroke(), {.position = {10, 20}});
+    const auto still = t.addElement(layer, makeStroke(), {.position = {500, 500}});
+    const auto attached = t.addElement(layer, makeConnector(moved, still));    // not moved itself
+    const auto free = t.addElement(layer, makeConnector(std::nullopt, still)); // moved
+
+    const std::vector<core::ElementId> ids{moved, free};
+    t.run(commands::moveElements(t.workspace, ids, {5, -3}));
+    EXPECT_EQ(t.workspace.findElement(moved)->transform.position, (core::DVec2{15, 17}));
+    EXPECT_EQ(t.workspace.findElement(still)->transform.position, (core::DVec2{500, 500}));
+    const auto& a = std::get<Connector>(t.workspace.findElement(attached)->payload);
+    EXPECT_EQ(a.start.position, (core::DVec2{5, -3})); // follows the moved element
+    EXPECT_EQ(a.end.position, (core::DVec2{100, 0}));  // attached to an unmoved element
+    const auto& f = std::get<Connector>(t.workspace.findElement(free)->payload);
+    EXPECT_EQ(f.start.position, (core::DVec2{5, -3})); // free end of a moved connector
+    EXPECT_EQ(f.end.position, (core::DVec2{100, 0}));  // stays on its unmoved target
+    ASSERT_OK(t.workspace.validate());
+
+    const Workspace afterMove = t.workspace;
+    ASSERT_OK(t.editor.undo());
+    EXPECT_EQ(t.workspace.findElement(moved)->transform.position, (core::DVec2{10, 20}));
+    ASSERT_OK(t.editor.redo());
+    EXPECT_EQ(t.workspace, afterMove);
+
+    EXPECT_TRUE(commands::moveElements(t.workspace, ids, {0, 0})->patch.empty());
+    EXPECT_EQ(commands::moveElements(t.workspace, ids, {std::nan(""), 0}).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(commands::moveElements(t.workspace, {}, {1, 1}).error().code,
+              ErrorCode::InvalidArgument);
+}
+
+TEST(CommandsTest, SetPageFormatChangesExtentAndBackground) {
+    TestWorkspace t;
+    const auto notebook = t.addNotebook("N");
+    const auto section = t.addSection(notebook, "S");
+    const auto page = t.addPage(section, "P");
+    t.clock.advance(1min);
+    const commands::PageFormat format{.extent = PageExtent::Bounded,
+                                      .size = kA4PortraitSize,
+                                      .background = {.color = core::Color::white(),
+                                                     .pattern = BackgroundPattern::Dots,
+                                                     .spacing = 24}};
+    t.run(commands::setPageFormat(t.workspace, page, format, t.clock));
+    const PageInfo& info = *t.workspace.findPage(page);
+    EXPECT_EQ(info.extent, PageExtent::Bounded);
+    EXPECT_EQ(info.background.pattern, BackgroundPattern::Dots);
+    EXPECT_EQ(millis(info.modified), millis(t.clock.now()));
+    EXPECT_TRUE(commands::setPageFormat(t.workspace, page, format, t.clock)->patch.empty());
+
+    const commands::PageFormat invalid{.extent = PageExtent::Bounded, .size = {0, 0}};
+    auto rejected = commands::setPageFormat(t.workspace, page, invalid, t.clock);
+    ASSERT_OK(rejected);
+    EXPECT_FALSE(t.editor.execute(std::move(*rejected)).has_value()); // validated by apply
 }
 
 } // namespace

@@ -88,14 +88,19 @@ core::DRect localBounds(const ElementPayload& payload) {
         payload);
 }
 
+core::Affine2 localToWorld(const Transform& transform) noexcept {
+    return core::Affine2::translation(transform.position) *
+           core::Affine2::rotation(static_cast<double>(transform.rotation)) *
+           core::Affine2::scaling(static_cast<double>(transform.scale.x),
+                                  static_cast<double>(transform.scale.y));
+}
+
 core::DRect worldBounds(const Element& element) {
     const core::DRect local = localBounds(element.payload);
     if (local.isEmpty() || std::holds_alternative<Connector>(element.payload)) {
         return local;
     }
-    const Transform& t = element.transform;
-    const double c = std::cos(static_cast<double>(t.rotation));
-    const double s = std::sin(static_cast<double>(t.rotation));
+    const core::Affine2 toWorld = localToWorld(element.transform);
     const std::array<core::DVec2, 4> corners{{
         {local.min.x, local.min.y},
         {local.max.x, local.min.y},
@@ -104,10 +109,7 @@ core::DRect worldBounds(const Element& element) {
     }};
     auto bounds = core::DRect::emptyBounds();
     for (const core::DVec2& corner : corners) {
-        const double x = corner.x * static_cast<double>(t.scale.x);
-        const double y = corner.y * static_cast<double>(t.scale.y);
-        bounds =
-            bounds.including({t.position.x + (x * c) - (y * s), t.position.y + (x * s) + (y * c)});
+        bounds = bounds.including(toWorld.apply(corner));
     }
     return bounds;
 }

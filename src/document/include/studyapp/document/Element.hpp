@@ -1,5 +1,6 @@
 #pragma once
 
+#include <studyapp/core/Affine2.hpp>
 #include <studyapp/core/Color.hpp>
 #include <studyapp/core/FractionalIndex.hpp>
 #include <studyapp/core/Ids.hpp>
@@ -142,6 +143,9 @@ struct Element {
 
     [[nodiscard]] friend bool operator==(const Element&, const Element&) = default;
 };
+
+/// Element-local to world transform: scale, then rotation, then translation.
+[[nodiscard]] core::Affine2 localToWorld(const Transform& transform) noexcept;
 
 /// Axis-aligned bounds of the payload in element-local coordinates: `[0, size]` for boxes,
 /// the point extent inflated by half the base width for strokes. Connectors are defined by

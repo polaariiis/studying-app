@@ -1,6 +1,10 @@
 #include <studyapp/document/Commands.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <span>
+#include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -328,6 +332,23 @@ Result<Created<core::ElementId>> createElement(const Workspace& workspace, core:
     return Created<core::ElementId>{id, makeCommand(label, {created(std::move(record))})};
 }
 
+Result<Command> setPageFormat(const Workspace& workspace, core::PageId page,
+                              const PageFormat& format, const core::Clock& clock) {
+    const PageInfo* current = workspace.findPage(page);
+    if (current == nullptr) {
+        return tl::unexpected(notFound("page", page));
+    }
+    PageInfo after = *current;
+    after.extent = format.extent;
+    after.size = format.size;
+    after.background = format.background;
+    if (after == *current) {
+        return Command{"Change page format", Patch{}};
+    }
+    after.modified = clock.now();
+    return makeCommand("Change page format", {updated(*current, std::move(after))});
+}
+
 Result<Command> deleteElement(const Workspace& workspace, core::ElementId element) {
     const Element* current = workspace.findElement(element);
     if (current == nullptr) {
@@ -336,6 +357,120 @@ Result<Command> deleteElement(const Workspace& workspace, core::ElementId elemen
     std::vector<AnyChange> changes;
     appendElementRemovals(workspace, *workspace.pageOf(element), ElementSet{element}, changes);
     return makeCommand("Delete " + std::string(toString(current->kind())), std::move(changes));
+}
+
+namespace {
+
+/// Validates `ids` and returns them deduplicated and sorted (deterministic patches).
+Result<std::vector<core::ElementId>> existingElements(const Workspace& workspace,
+                                                      std::span<const core::ElementId> ids) {
+    if (ids.empty()) {
+        return makeError(ErrorCode::InvalidArgument, "no elements given");
+    }
+    std::vector<core::ElementId> sorted(ids.begin(), ids.end());
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    for (const core::ElementId id : sorted) {
+        if (workspace.findElement(id) == nullptr) {
+            return tl::unexpected(notFound("element", id));
+        }
+    }
+    return sorted;
+}
+
+std::string elementsLabel(std::string_view verb, std::size_t count) {
+    return std::string(verb) +
+           (count == 1 ? std::string(" element") : " " + std::to_string(count) + " elements");
+}
+
+/// Pages containing `ids`, in id order.
+std::vector<core::PageId> pagesOf(const Workspace& workspace,
+                                  std::span<const core::ElementId> ids) {
+    std::vector<core::PageId> pages;
+    for (const core::ElementId id : ids) {
+        pages.push_back(*workspace.pageOf(id));
+    }
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    return pages;
+}
+
+} // namespace
+
+Result<Command> deleteElements(const Workspace& workspace,
+                               std::span<const core::ElementId> elements) {
+    auto ids = existingElements(workspace, elements);
+    if (!ids) {
+        return tl::unexpected(ids.error());
+    }
+    std::vector<AnyChange> changes;
+    for (const core::PageId page : pagesOf(workspace, *ids)) {
+        ElementSet doomed;
+        for (const core::ElementId id : *ids) {
+            if (*workspace.pageOf(id) == page) {
+                doomed.insert(id);
+            }
+        }
+        appendElementRemovals(workspace, page, doomed, changes);
+    }
+    return makeCommand(elementsLabel("Delete", ids->size()), std::move(changes));
+}
+
+Result<Command> moveElements(const Workspace& workspace, std::span<const core::ElementId> elements,
+                             core::DVec2 worldDelta) {
+    auto ids = existingElements(workspace, elements);
+    if (!ids) {
+        return tl::unexpected(ids.error());
+    }
+    if (!std::isfinite(worldDelta.x) || !std::isfinite(worldDelta.y)) {
+        return makeError(ErrorCode::InvalidArgument, "move delta must be finite");
+    }
+    const std::string label = elementsLabel("Move", ids->size());
+    if (worldDelta.x == 0.0 && worldDelta.y == 0.0) {
+        return Command{label, Patch{}};
+    }
+    const ElementSet moved(ids->begin(), ids->end());
+    // An end follows if it is attached to a moved element, or if it is a free end of a
+    // connector that is itself being moved.
+    const auto follow = [&](ConnectorEnd& end, bool connectorMoves) {
+        const bool attachedToMoved = end.attachedTo && moved.contains(*end.attachedTo);
+        if (attachedToMoved || (connectorMoves && !end.attachedTo)) {
+            end.position += worldDelta;
+            return true;
+        }
+        return false;
+    };
+
+    std::vector<AnyChange> changes;
+    for (const core::ElementId id : *ids) {
+        const Element& element = *workspace.findElement(id);
+        Element after = element;
+        if (auto* connector = std::get_if<Connector>(&after.payload)) {
+            follow(connector->start, true);
+            follow(connector->end, true);
+        } else {
+            after.transform.position += worldDelta;
+        }
+        changes.push_back(updated(element, std::move(after)));
+    }
+    for (const core::PageId page : pagesOf(workspace, *ids)) {
+        for (const core::LayerId layer : workspace.layersOf(page)) {
+            for (const core::ElementId id : workspace.elementsOf(layer)) {
+                const Element& element = *workspace.findElement(id);
+                if (moved.contains(id) || !std::holds_alternative<Connector>(element.payload)) {
+                    continue;
+                }
+                Element after = element;
+                auto& connector = std::get<Connector>(after.payload);
+                const bool startFollows = follow(connector.start, false);
+                const bool endFollows = follow(connector.end, false);
+                if (startFollows || endFollows) {
+                    changes.push_back(updated(element, std::move(after)));
+                }
+            }
+        }
+    }
+    return makeCommand(label, std::move(changes));
 }
 
 } // namespace studyapp::document::commands

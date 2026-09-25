@@ -20,6 +20,9 @@ option(STUDYAPP_BUILD_APP
     ON)
 option(STUDYAPP_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(STUDYAPP_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(STUDYAPP_ENABLE_PROFILING
+    "Compile STUDYAPP_PROFILE_SCOPE timers in (cheap; feeds the canvas debug HUD)" ON)
+option(STUDYAPP_BUILD_BENCHMARKS "Build the Google Benchmark micro-benchmarks in bench/" OFF)
 option(STUDYAPP_USE_SYSTEM_SQLITE
     "Use the system SQLite (find_package) instead of the pinned amalgamation" OFF)
 option(STUDYAPP_DEPLOY_QT_TO_BUILD_TREE
@@ -61,6 +64,13 @@ endif()
 
 if(STUDYAPP_BUILD_TESTS)
     add_subdirectory(tests)
+endif()
+
+if(STUDYAPP_BUILD_BENCHMARKS)
+    if(NOT STUDYAPP_BUILD_TESTS)
+        message(FATAL_ERROR "STUDYAPP_BUILD_BENCHMARKS requires STUDYAPP_BUILD_TESTS (shared test support)")
+    endif()
+    add_subdirectory(bench)
 endif()
 
 install(FILES LICENSE THIRD_PARTY_NOTICES.md

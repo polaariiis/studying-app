@@ -9,6 +9,7 @@
 #include <studyapp/document/Records.hpp>
 #include <studyapp/document/Workspace.hpp>
 
+#include <span>
 #include <string>
 
 namespace studyapp::document::commands {
@@ -92,5 +93,34 @@ struct NewElement {
 /// Removes the element. Connectors attached to it are detached in the same patch.
 [[nodiscard]] core::Result<Command> deleteElement(const Workspace& workspace,
                                                   core::ElementId element);
+
+/// Removes several elements (possibly on different pages) as one undoable edit.
+/// Connectors outside the set that are attached to removed elements are detached.
+/// Errors: InvalidArgument for an empty set, NotFound for unknown ids.
+[[nodiscard]] core::Result<Command> deleteElements(const Workspace& workspace,
+                                                   std::span<const core::ElementId> elements);
+
+/// Translates several elements by `worldDelta` as one undoable edit. Connectors are
+/// defined by world end positions, so for them the ends move instead of the transform:
+/// a moved connector's free ends and the ends attached to moved elements follow, and the
+/// cached end position of any other connector attached to a moved element follows too.
+/// Errors: InvalidArgument for an empty set or a non-finite delta, NotFound for unknown
+/// ids. A zero delta gives an empty (no-op) command.
+[[nodiscard]] core::Result<Command> moveElements(const Workspace& workspace,
+                                                 std::span<const core::ElementId> elements,
+                                                 core::DVec2 worldDelta);
+
+// ---- page format -----------------------------------------------------------------------
+struct PageFormat {
+    PageExtent extent = PageExtent::Infinite;
+    core::DVec2 size{}; ///< required (> 0) for bounded pages
+    PageBackground background{};
+};
+
+/// Changes a page's extent, size and background (validated by the workspace). An
+/// unchanged format gives an empty (no-op) command.
+[[nodiscard]] core::Result<Command> setPageFormat(const Workspace& workspace, core::PageId page,
+                                                  const PageFormat& format,
+                                                  const core::Clock& clock);
 
 } // namespace studyapp::document::commands
