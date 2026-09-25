@@ -34,8 +34,8 @@ TEST(CommandsTest, CreateNotebookSetsMetadata) {
     const NotebookInfo* notebook = t.workspace.findNotebook(created->id);
     ASSERT_NE(notebook, nullptr);
     EXPECT_EQ(notebook->title, "Chemistry");
-    EXPECT_EQ(notebook->created, t.clock.now());
-    EXPECT_EQ(notebook->modified, t.clock.now());
+    EXPECT_EQ(millis(notebook->created), millis(t.clock.now()));
+    EXPECT_EQ(millis(notebook->modified), millis(t.clock.now()));
     EXPECT_EQ(notebook->order, core::FractionalIndex::first());
 }
 
@@ -57,9 +57,9 @@ TEST(CommandsTest, RenameUpdatesTitleAndModifiedTime) {
     EXPECT_EQ(t.workspace.findSection(section)->title, "New section");
     EXPECT_EQ(t.workspace.findPage(page)->title, "New page");
     EXPECT_EQ(t.workspace.findLayer(layer)->name, "New layer");
-    EXPECT_EQ(t.workspace.findNotebook(notebook)->created, createdAt);
-    EXPECT_EQ(t.workspace.findNotebook(notebook)->modified, t.clock.now());
-    EXPECT_EQ(t.workspace.findPage(page)->modified, t.clock.now());
+    EXPECT_EQ(millis(t.workspace.findNotebook(notebook)->created), millis(createdAt));
+    EXPECT_EQ(millis(t.workspace.findNotebook(notebook)->modified), millis(t.clock.now()));
+    EXPECT_EQ(millis(t.workspace.findPage(page)->modified), millis(t.clock.now()));
 }
 
 TEST(CommandsTest, PageTitleMayBeEmptyButOtherNamesMayNot) {

@@ -24,7 +24,7 @@ TEST(WorkspaceTest, StartsEmptyWithMetadata) {
     TestWorkspace t;
     EXPECT_EQ(t.workspace.info().name, "Test workspace");
     EXPECT_FALSE(t.workspace.info().id.isNull());
-    EXPECT_EQ(t.workspace.info().created, t.clock.now());
+    EXPECT_EQ(millis(t.workspace.info().created), millis(t.clock.now()));
     EXPECT_TRUE(t.workspace.notebooks().empty());
     EXPECT_EQ(t.workspace.notebookCount(), 0U);
     EXPECT_OK(t.workspace.validate());

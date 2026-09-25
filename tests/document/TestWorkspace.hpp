@@ -90,6 +90,14 @@ struct TestWorkspace {
     }
 };
 
+/// Milliseconds since the epoch. Tests compare timestamps through this instead of comparing
+/// time points directly: printing a std::chrono time point (GoogleTest does so on failure)
+/// needs floating-point std::to_chars, which Apple's libc++ only provides from macOS 13.3,
+/// while the deployment target is 13.0 (docs/ARCHITECTURE.md §17).
+inline auto millis(core::Timestamp t) {
+    return t.time_since_epoch().count();
+}
+
 inline Stroke makeStroke(std::vector<StrokePoint> points = {{0, 0, 1}, {10, 5, 0.5F}}) {
     return Stroke{.points = makeStrokePoints(std::move(points))};
 }
