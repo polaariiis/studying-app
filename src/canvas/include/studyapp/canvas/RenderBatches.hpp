@@ -38,7 +38,7 @@ public:
         core::DVec2 origin{}; ///< world position the mesh is relative to
         float opacity = 1.0F; ///< layer opacity
         std::uint64_t signature = 0;
-        render::MeshHandle gpu;
+        render::MeshHandle gpu{};
         std::size_t triangles = 0;
     };
 

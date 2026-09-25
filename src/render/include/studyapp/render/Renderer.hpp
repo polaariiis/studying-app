@@ -48,11 +48,11 @@ struct MeshData {
 
 /// One mesh to draw, in painter's order.
 struct DrawItem {
-    MeshHandle mesh;
+    MeshHandle mesh{};
     /// Content items: element-local to camera-relative world (world minus camera centre),
     /// so float precision is only needed for element and screen sizes (floating origin,
     /// docs/RENDERING.md §5). Overlay items: mesh space to view pixels.
-    core::Affine2f transform;
+    core::Affine2f transform{};
     core::Color color = core::Color::black();
     float opacity = 1.0F;
 };
