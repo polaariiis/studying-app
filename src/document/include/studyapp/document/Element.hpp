@@ -85,7 +85,7 @@ struct Shape {
     core::Vec2 size{}; ///< components >= 0
     std::optional<core::Color> strokeColor = core::Color::black();
     float strokeWidth = 2.0F; ///< >= 0
-    std::optional<core::Color> fillColor;
+    std::optional<core::Color> fillColor{};
 
     [[nodiscard]] friend bool operator==(const Shape&, const Shape&) = default;
 };
@@ -133,7 +133,7 @@ struct Element {
     core::ElementId id;
     core::LayerId layer;     ///< parent
     core::FractionalIndex z; ///< order within the layer (painter's order)
-    Transform transform;
+    Transform transform{};
     bool locked = false;
     ElementPayload payload;
 

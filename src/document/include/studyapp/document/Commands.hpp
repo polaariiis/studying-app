@@ -57,7 +57,7 @@ createSection(const Workspace& workspace, core::NotebookId notebook, std::string
 struct PageOptions {
     PageExtent extent = PageExtent::Infinite;
     core::DVec2 size{}; ///< required (> 0) for bounded pages
-    PageBackground background;
+    PageBackground background{};
     std::string firstLayerName = "Layer 1";
 };
 
@@ -80,7 +80,7 @@ createPage(const Workspace& workspace, core::SectionId section, std::string titl
 
 // ---- elements -------------------------------------------------------------------------
 struct NewElement {
-    Transform transform;
+    Transform transform{};
     ElementPayload payload;
     bool locked = false;
 };

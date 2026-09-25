@@ -48,9 +48,6 @@ const core::FractionalIndex& orderKey(const Element& r) noexcept {
     return r.z;
 }
 
-bool isFinite(double v) noexcept {
-    return std::isfinite(v);
-}
 bool isFinite(const core::Vec2& v) noexcept {
     return std::isfinite(v.x) && std::isfinite(v.y);
 }

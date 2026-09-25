@@ -23,7 +23,7 @@ namespace studyapp::document {
 
 /// Workspace metadata. Fixed at construction in Phase 2.
 struct WorkspaceInfo {
-    core::WorkspaceId id;
+    core::WorkspaceId id{};
     std::string name;
     core::Timestamp created{};
 
@@ -81,7 +81,7 @@ struct PageInfo {
     core::FractionalIndex order;
     PageExtent extent = PageExtent::Infinite;
     core::DVec2 size{}; ///< used when `extent == Bounded`; both components > 0
-    PageBackground background;
+    PageBackground background{};
     core::Timestamp created{};
     core::Timestamp modified{};
 
