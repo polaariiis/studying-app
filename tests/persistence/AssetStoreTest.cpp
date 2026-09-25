@@ -32,7 +32,9 @@ std::size_t fileCount(const std::filesystem::path& directory) {
     std::error_code ec;
     for (auto it = std::filesystem::recursive_directory_iterator(directory, ec);
          it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-        count += it->is_regular_file() ? 1 : 0;
+        if (it->is_regular_file()) {
+            ++count;
+        }
     }
     return count;
 }
