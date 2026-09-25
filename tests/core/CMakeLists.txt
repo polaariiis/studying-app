@@ -4,6 +4,7 @@ studyapp_add_gtest(core_tests
         ErrorTest.cpp
         GeometryTest.cpp
         FractionalIndexTest.cpp
+        FrameTimingsTest.cpp
         IdGeneratorTest.cpp
         IdTest.cpp
         LogTest.cpp

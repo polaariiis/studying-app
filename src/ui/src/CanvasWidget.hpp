@@ -1,5 +1,6 @@
 #pragma once
 
+#include <studyapp/core/FrameTimings.hpp>
 #include <studyapp/ui/PanBenchmark.hpp>
 
 #include <QColor>
@@ -7,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QOpenGLWidget>
 #include <QString>
+#include <QTimer>
 
 #include <cstdint>
 #include <functional>
@@ -78,7 +80,7 @@ protected:
 
 private:
     void syncViewport();
-    void updateHud(double cpuMs);
+    void updateHud();
     void releaseGraphics();
     void onRedrawRequested();
     void onFrameSwapped();
@@ -89,13 +91,17 @@ private:
     QLabel* hud_ = nullptr;
     QString graphicsError_;
     bool pointerDown_ = false;
+    bool inResizeGL_ = false;
 
-    // Frame timing for the HUD (on-demand rendering: gaps between frames are idle time,
-    // not frame time, and are kept out of the averages).
+    // Frame timing for the HUD and the benchmark (on-demand rendering: gaps between frames
+    // are idle time, not frame time, and are kept out of the statistics).
     QElapsedTimer clock_;                      ///< monotonic, started at construction
     double lastPaintMs_ = -1.0;                ///< clock_ time of the previous paint
-    double lastIntervalMs_ = 0.0;              ///< since the previous paint, idle gaps included
-    std::vector<double> activeIntervalsMs_;    ///< consecutive frames of the current activity
+    core::FrameTimings presents_;              ///< cadence of presented canvas frames
+    double lastPresentMs_ = -1.0;              ///< clock_ time of the last presented frame
+    std::vector<double> recentCpuMs_;          ///< GUI-thread cost of recent frames
+    std::vector<double> recentGpuMs_;          ///< GPU time of recent frames
+    QTimer hudTimer_;                          ///< refreshes the HUD outside paintGL
     bool requestPending_ = false;              ///< a repaint was requested and not yet painted
     double requestedAtMs_ = 0.0;               ///< when the pending request was made
     std::optional<double> paintedRequestAtMs_; ///< request time of the frame being presented

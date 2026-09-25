@@ -6,15 +6,21 @@ namespace studyapp::ui {
 
 /// Result of the automated pan benchmark (MainWindow::runPanBenchmark): the canvas pans
 /// continuously for a number of frames while frame timing is recorded. Frame intervals
-/// include vsync, so ≈16.7 ms means the 60 fps display rate was reached.
+/// include vsync, so they cannot go below the display's refresh period (≈ 16.7 ms at
+/// 60 Hz, ≈ 6.9 ms at 144 Hz). Percentiles use the nearest-rank method.
 struct PanBenchmarkResult {
     int frames = 0;
     double averageIntervalMs = 0.0; ///< time between presented frames
-    double worstIntervalMs = 0.0;
+    double medianIntervalMs = 0.0;
     double p95IntervalMs = 0.0;
-    double averageCpuMs = 0.0; ///< buildFrame + render submission on the GUI thread
+    double p99IntervalMs = 0.0;
+    double worstIntervalMs = 0.0;
+    double intervalStdDevMs = 0.0; ///< jitter
+    double averageCpuMs = 0.0;     ///< buildFrame + render submission on the GUI thread
+    double p95CpuMs = 0.0;
     double worstCpuMs = 0.0;
     double averageGpuMs = -1.0; ///< GL_TIME_ELAPSED per frame; < 0 if unavailable
+    double p95GpuMs = -1.0;
     std::size_t sceneElements = 0;
     std::size_t averageDrawItems = 0;
 };

@@ -226,17 +226,20 @@ int main(int argc, char* argv[]) {
         const double zoom = parser.value(benchZoomOption).toDouble();
         QTimer::singleShot(500, window.get(), [&window, frames, zoom] {
             window->runPanBenchmark(frames, zoom, [](const studyapp::ui::PanBenchmarkResult& r) {
+                const auto n = [](double value) {
+                    return QString::number(value, 'f', 2).toStdString();
+                };
                 studyapp::core::logInfo(
-                    "bench",
-                    "pan: " + std::to_string(r.frames) + " frames, " +
-                        std::to_string(r.sceneElements) + " elements, " +
-                        std::to_string(r.averageDrawItems) + " draw items/frame; interval avg " +
-                        QString::number(r.averageIntervalMs, 'f', 2).toStdString() + " ms, p95 " +
-                        QString::number(r.p95IntervalMs, 'f', 2).toStdString() + " ms, worst " +
-                        QString::number(r.worstIntervalMs, 'f', 2).toStdString() + " ms; cpu avg " +
-                        QString::number(r.averageCpuMs, 'f', 2).toStdString() + " ms, worst " +
-                        QString::number(r.worstCpuMs, 'f', 2).toStdString() + " ms; gpu avg " +
-                        QString::number(r.averageGpuMs, 'f', 2).toStdString() + " ms");
+                    "bench", "pan: " + std::to_string(r.frames) + " frames, " +
+                                 std::to_string(r.sceneElements) + " elements, " +
+                                 std::to_string(r.averageDrawItems) +
+                                 " draw items/frame; interval avg " + n(r.averageIntervalMs) +
+                                 " median " + n(r.medianIntervalMs) + " p95 " + n(r.p95IntervalMs) +
+                                 " p99 " + n(r.p99IntervalMs) + " worst " + n(r.worstIntervalMs) +
+                                 " jitter " + n(r.intervalStdDevMs) + " ms; cpu avg " +
+                                 n(r.averageCpuMs) + " p95 " + n(r.p95CpuMs) + " worst " +
+                                 n(r.worstCpuMs) + " ms; gpu avg " + n(r.averageGpuMs) + " p95 " +
+                                 n(r.p95GpuMs) + " ms");
                 QApplication::quit();
             });
         });

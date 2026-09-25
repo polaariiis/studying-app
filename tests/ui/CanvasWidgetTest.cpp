@@ -296,6 +296,69 @@ private Q_SLOTS:
         QVERIFY(!hud->isVisible());
     }
 
+    // Resizing changes only the viewport: after several resizes (at this desktop's device
+    // pixel ratio) ink still appears exactly under the pointer that drew it, and the page
+    // content is not rebuilt.
+    void resizeKeepsInputAndRenderingAligned() {
+        QTemporaryDir dir;
+        const auto root = toPath(dir.filePath(QStringLiteral("ws")));
+        testing::ManualClock clock;
+        testing::SequentialIds ids;
+        platform::QtWorkspaceLocker locker;
+        auto created = application::WorkspaceSession::create(root, "Resize", {clock, ids, locker});
+        QVERIFY(created.has_value());
+        auto& session = **created;
+        auto page = application::ensureStartPage(session, clock, ids);
+        QVERIFY(page.has_value());
+        { // blank paper, so sampled pixels are either ink or paper
+            const document::PageInfo& info = *session.workspace().findPage(*page);
+            document::commands::PageFormat format{
+                .extent = info.extent, .size = info.size, .background = info.background};
+            format.background.pattern = document::BackgroundPattern::None;
+            auto command =
+                document::commands::setPageFormat(session.workspace(), *page, format, clock);
+            QVERIFY(command.has_value());
+            QVERIFY(session.execute(std::move(*command)).has_value());
+        }
+        QSettings settings(dir.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+        ui::ThemeManager themes;
+        ui::MainWindow window(
+            themes, settings,
+            ui::WorkspaceContext{.session = session, .ids = ids, .clock = clock, .page = *page});
+        window.resize(900, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* canvas = window.findChild<QOpenGLWidget*>(QStringLiteral("canvasWidget"));
+        QVERIFY(canvas != nullptr);
+        QTest::qWait(50);
+        if (!canvas->isValid() || canvas->grabFramebuffer().isNull()) {
+            QSKIP("no OpenGL 3.3 context on this platform");
+        }
+        drag(canvas, {150, 150}, {350, 150});
+        for (const QSize size : {QSize(700, 520), QSize(1100, 800), QSize(820, 640)}) {
+            window.resize(size);
+            QTest::qWait(30);
+        }
+        drag(canvas, {150, 260}, {350, 260});
+        QCOMPARE(strokesOn(session.workspace(), *page).size(), std::size_t{2});
+        canvas->update();
+        QTest::qWait(30);
+        const QImage image = canvas->grabFramebuffer();
+        const qreal dpr = canvas->devicePixelRatioF();
+        // Framebuffer = logical size × DPR.
+        QCOMPARE(image.size(),
+                 QSize(qRound(canvas->width() * dpr), qRound(canvas->height() * dpr)));
+        const auto at = [&](qreal x, qreal y) {
+            return image.pixelColor(QPointF(x * dpr, y * dpr).toPoint());
+        };
+        const QColor paper = at(250, 205);
+        // The canvas keeps its centre across resizes, so the stroke drawn before moved by
+        // half the size change; the stroke drawn after lies under the pointer.
+        QVERIFY2(at(250, 260) != paper, "stroke drawn after resizing is not under the pointer");
+        QCOMPARE(at(250, 280), paper);
+    }
+
     // The eraser's reach is shown as the platform cursor (no OpenGL needed): it follows the
     // pointer without render latency and the window system removes it when the pointer
     // leaves the canvas. Choosing the tool applies it at once, without a pointer move.

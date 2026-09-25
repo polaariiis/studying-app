@@ -3,6 +3,7 @@
 #include "CanvasInputAdapter.hpp"
 
 #include <studyapp/canvas/CanvasController.hpp>
+#include <studyapp/core/FrameTimings.hpp>
 #include <studyapp/core/Log.hpp>
 #include <studyapp/render_gl/OpenGLRenderer.hpp>
 
@@ -14,24 +15,41 @@
 #include <QPainter>
 #include <QPen>
 #include <QPixmap>
+#include <QScreen>
 #include <QSurfaceFormat>
 #include <QTabletEvent>
 #include <QTimer>
 #include <QWheelEvent>
+#include <QWindow>
 
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 
 namespace studyapp::ui {
 
 namespace {
 
-constexpr std::size_t kFpsWindow = 60;
+/// Frames kept for the HUD's statistics (about 1.7 s at 144 Hz, 4 s at 60 Hz).
+constexpr std::size_t kStatsWindow = 240;
 /// Frames further apart than this are separated by idle time (nothing asked for a
-/// repaint), not by slow rendering; such gaps are left out of the HUD's frame averages.
+/// repaint), not by slow rendering; such gaps are left out of the HUD's frame statistics.
 constexpr double kIdleGapMs = 100.0;
+/// The HUD label is refreshed at most this often, never from inside paintGL: changing it
+/// during a frame made Qt compose and present the window a second time, which halved the
+/// frame rate being measured (144 → ≈ 100 fps on the reference laptop).
+constexpr int kHudRefreshMs = 250;
 constexpr int kBenchmarkWarmUpFrames = 10;
+
+void pushBounded(std::vector<double>& values, double value) {
+    if (values.size() == kStatsWindow) {
+        values.erase(values.begin());
+    }
+    values.push_back(value);
+}
+
+QString ms(double value) {
+    return QString::number(value, 'f', 2);
+}
 
 Qt::CursorShape toQtCursor(canvas::CursorShape shape) noexcept {
     switch (shape) {
@@ -54,17 +72,6 @@ Qt::CursorShape toQtCursor(canvas::CursorShape shape) noexcept {
 QString megabytes(std::uint64_t bytes) {
     return QString::number(static_cast<double>(bytes) / (1024.0 * 1024.0), 'f', 1) +
            QStringLiteral(" MB");
-}
-
-double percentile(std::vector<double> values, double fraction) {
-    if (values.empty()) {
-        return 0.0;
-    }
-    std::sort(values.begin(), values.end());
-    const auto index =
-        static_cast<std::size_t>(std::clamp(fraction * static_cast<double>(values.size() - 1), 0.0,
-                                            static_cast<double>(values.size() - 1)));
-    return values[index];
 }
 
 } // namespace
@@ -94,6 +101,9 @@ CanvasWidget::CanvasWidget(canvas::CanvasController& controller, QWidget* parent
     hud_->setAttribute(Qt::WA_TransparentForMouseEvents);
     hud_->move(8, 8);
     hud_->hide();
+    hudTimer_.setSingleShot(true);
+    hudTimer_.setInterval(kHudRefreshMs);
+    connect(&hudTimer_, &QTimer::timeout, this, &CanvasWidget::updateHud);
 
     clock_.start();
     // Render on demand: the controller asks for a frame when something changed; Qt
@@ -110,16 +120,19 @@ void CanvasWidget::onRedrawRequested() {
         requestPending_ = true;
         requestedAtMs_ = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
     }
-    update();
+    if (!inResizeGL_) {
+        update(); // during resizeGL, QOpenGLWidget paints right afterwards anyway
+    }
 }
 
 void CanvasWidget::onFrameSwapped() {
+    // Only presents that carry a canvas frame count; the window is also presented when
+    // other widgets (e.g. the HUD label) repaint.
     if (paintedRequestAtMs_) {
         const double now = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
-        recentLatenciesMs_.push_back(now - *paintedRequestAtMs_);
-        if (recentLatenciesMs_.size() > kFpsWindow) {
-            recentLatenciesMs_.erase(recentLatenciesMs_.begin());
-        }
+        presents_.presented(now);
+        lastPresentMs_ = now;
+        pushBounded(recentLatenciesMs_, now - *paintedRequestAtMs_);
         paintedRequestAtMs_.reset();
     }
 }
@@ -140,6 +153,11 @@ void CanvasWidget::releaseGraphics() {
 
 void CanvasWidget::setHudVisible(bool visible) {
     hud_->setVisible(visible);
+    if (visible) {
+        updateHud();
+    } else {
+        hudTimer_.stop();
+    }
     update();
 }
 
@@ -168,7 +186,13 @@ void CanvasWidget::initializeGL() {
 }
 
 void CanvasWidget::resizeGL(int /*width*/, int /*height*/) {
+    // A resize changes the viewport only: the camera keeps its centre and zoom, and
+    // meshes, caches and GL resources stay (QOpenGLWidget has already resized its FBO).
+    // QOpenGLWidget paints immediately after resizeGL, so the repaint the controller asks
+    // for would be a second, identical frame: it is not scheduled.
+    inResizeGL_ = true;
     syncViewport(); // Qt passes logical sizes; the framebuffer size is derived in paintGL
+    inResizeGL_ = false;
 }
 
 void CanvasWidget::syncViewport() {
@@ -187,15 +211,6 @@ void CanvasWidget::paintGL() {
     const double nowMs = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
     const double intervalMs = lastPaintMs_ >= 0.0 ? nowMs - lastPaintMs_ : 0.0;
     lastPaintMs_ = nowMs;
-    lastIntervalMs_ = intervalMs;
-    if (intervalMs > kIdleGapMs) {
-        activeIntervalsMs_.clear(); // the canvas was idle: a new burst of activity starts
-    } else if (intervalMs > 0.0) {
-        activeIntervalsMs_.push_back(intervalMs);
-        if (activeIntervalsMs_.size() > kFpsWindow) {
-            activeIntervalsMs_.erase(activeIntervalsMs_.begin());
-        }
-    }
     // Paints Qt makes on its own (expose, resize) count from the paint itself.
     paintedRequestAtMs_ = requestPending_ ? requestedAtMs_ : nowMs;
     requestPending_ = false;
@@ -218,9 +233,15 @@ void CanvasWidget::paintGL() {
     const render::RenderFrame frame = controller_->buildFrame(*renderer_);
     renderer_->render(frame);
     const double cpuMs = static_cast<double>(cpu.nsecsElapsed()) / 1e6;
+    pushBounded(recentCpuMs_, cpuMs);
+    // GL_TIME_ELAPSED results arrive a few frames late; each is recorded once.
+    if (const render::RenderStats gpu = renderer_->lastFrameStats(); gpu.gpuMs >= 0.0) {
+        pushBounded(recentGpuMs_, gpu.gpuMs);
+    }
 
-    if (hud_->isVisible()) {
-        updateHud(cpuMs);
+    // The HUD is refreshed later, outside the frame (kHudRefreshMs).
+    if (hud_->isVisible() && !hudTimer_.isActive()) {
+        hudTimer_.start();
     }
 
     if (benchmark_) {
@@ -238,27 +259,27 @@ void CanvasWidget::paintGL() {
         } else {
             const Benchmark& b = *benchmark_;
             PanBenchmarkResult result;
-            result.frames = b.total;
-            if (!b.intervalsMs.empty()) {
-                result.averageIntervalMs =
-                    std::accumulate(b.intervalsMs.begin(), b.intervalsMs.end(), 0.0) /
-                    static_cast<double>(b.intervalsMs.size());
-                result.worstIntervalMs =
-                    *std::max_element(b.intervalsMs.begin(), b.intervalsMs.end());
-                result.p95IntervalMs = percentile(b.intervalsMs, 0.95);
-            }
+            const core::FrameTimeSummary intervals = core::summarizeFrameTimes(b.intervalsMs);
+            result.frames = static_cast<int>(intervals.samples);
+            result.averageIntervalMs = intervals.averageMs;
+            result.medianIntervalMs = intervals.medianMs;
+            result.p95IntervalMs = intervals.p95Ms;
+            result.p99IntervalMs = intervals.p99Ms;
+            result.worstIntervalMs = intervals.maxMs;
+            result.intervalStdDevMs = intervals.stdDevMs;
+            const core::FrameTimeSummary cpuSummary = core::summarizeFrameTimes(b.cpuMs);
+            result.averageCpuMs = cpuSummary.averageMs;
+            result.p95CpuMs = cpuSummary.p95Ms;
+            result.worstCpuMs = cpuSummary.maxMs;
             if (!b.cpuMs.empty()) {
-                result.averageCpuMs = std::accumulate(b.cpuMs.begin(), b.cpuMs.end(), 0.0) /
-                                      static_cast<double>(b.cpuMs.size());
-                result.worstCpuMs = *std::max_element(b.cpuMs.begin(), b.cpuMs.end());
                 result.averageDrawItems = static_cast<std::size_t>(
                     b.drawItems / static_cast<std::uint64_t>(b.cpuMs.size()));
             }
             if (!b.gpuMs.empty()) {
-                result.averageGpuMs = std::accumulate(b.gpuMs.begin(), b.gpuMs.end(), 0.0) /
-                                      static_cast<double>(b.gpuMs.size());
+                const core::FrameTimeSummary gpuSummary = core::summarizeFrameTimes(b.gpuMs);
+                result.averageGpuMs = gpuSummary.averageMs;
+                result.p95GpuMs = gpuSummary.p95Ms;
             }
-            result.frames = static_cast<int>(b.intervalsMs.size());
             result.sceneElements = controller_->stats().sceneElements;
             auto done = std::move(benchmark_->done);
             benchmark_.reset();
@@ -280,56 +301,72 @@ void CanvasWidget::runPanBenchmark(int frames,
     update();
 }
 
-void CanvasWidget::updateHud(double cpuMs) {
-    const canvas::CanvasStats stats = controller_->stats();
-    const render::RenderStats gpu = renderer_->lastFrameStats();
-    const canvas::Camera& camera = controller_->camera();
-    const auto mean = [](const std::vector<double>& values) {
-        return values.empty() ? 0.0
-                              : std::accumulate(values.begin(), values.end(), 0.0) /
-                                    static_cast<double>(values.size());
-    };
-    // Frame rate only over consecutive frames: with rendering on demand, the time between
-    // two frames separated by idleness says nothing about how fast frames are made.
-    QString frameLine;
-    if (activeIntervalsMs_.empty()) {
-        frameLine = QStringLiteral("frame  first after %1 ms idle (renders on demand)")
-                        .arg(QString::number(lastIntervalMs_, 'f', 0));
-    } else {
-        const double average = mean(activeIntervalsMs_);
-        frameLine =
-            QStringLiteral("frame  %1 fps while active (avg %2 ms, last %3 ms, %4 frames; "
-                           "gaps > %5 ms are idle, renders on demand)")
-                .arg(QString::number(1000.0 / average, 'f', 0), QString::number(average, 'f', 1),
-                     QString::number(lastIntervalMs_, 'f', 1))
-                .arg(static_cast<qulonglong>(activeIntervalsMs_.size()))
-                .arg(QString::number(kIdleGapMs, 'f', 0));
+void CanvasWidget::updateHud() {
+    if (!hud_->isVisible() || !graphicsError_.isEmpty()) {
+        return;
     }
-    const QString latencyLine =
-        QStringLiteral("input  repaint request to presented: avg %1 ms, worst %2 ms (%3 frames)")
-            .arg(QString::number(mean(recentLatenciesMs_), 'f', 1),
-                 QString::number(
-                     recentLatenciesMs_.empty()
-                         ? 0.0
-                         : *std::max_element(recentLatenciesMs_.begin(), recentLatenciesMs_.end()),
-                     'f', 1))
-            .arg(static_cast<qulonglong>(recentLatenciesMs_.size()));
+    const canvas::CanvasStats stats = controller_->stats();
+    const render::RenderStats gpu =
+        renderer_ != nullptr ? renderer_->lastFrameStats() : render::RenderStats{};
+    const canvas::Camera& camera = controller_->camera();
+    const double now = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
+
+    // Presented-frame cadence of the current (or last) burst of activity. Rendering is on
+    // demand: idle gaps are not frames and are left out (core::FrameTimings).
+    const core::FrameTimeSummary frames = presents_.summary();
+    QString frameLine;
+    if (frames.samples == 0) {
+        frameLine = QStringLiteral("frames idle (renders on demand; no consecutive frames yet)");
+    } else {
+        frameLine =
+            QStringLiteral("frames %1 fps  avg %2  median %3  p95 %4  p99 %5  max %6  jitter "
+                           "%7 ms (%8 frames)")
+                .arg(QString::number(frames.fps(), 'f', 0), ms(frames.averageMs),
+                     ms(frames.medianMs), ms(frames.p95Ms), ms(frames.p99Ms), ms(frames.maxMs),
+                     ms(frames.stdDevMs))
+                .arg(static_cast<qulonglong>(frames.samples));
+        if (lastPresentMs_ >= 0.0 && now - lastPresentMs_ > presents_.idleGapMs()) {
+            frameLine += QStringLiteral("  last burst, idle %1 s")
+                             .arg(QString::number((now - lastPresentMs_) / 1000.0, 'f', 1));
+        }
+    }
+    // What the display offers: the refresh rate Qt reports for the canvas's screen and the
+    // swap interval of the window that presents the canvas (vsync on = 1).
+    const QScreen* display = screen();
+    const double refreshHz = display != nullptr ? display->refreshRate() : 0.0;
+    const QWindow* presenting = window() != nullptr ? window()->windowHandle() : nullptr;
+    const QString displayLine =
+        QStringLiteral("display %1 Hz (%2 ms per refresh)  swap interval %3  render on demand")
+            .arg(refreshHz > 0.0 ? QString::number(refreshHz, 'f', 0) : QStringLiteral("?"),
+                 refreshHz > 0.0 ? ms(1000.0 / refreshHz) : QStringLiteral("?"),
+                 presenting != nullptr ? QString::number(presenting->format().swapInterval())
+                                       : QStringLiteral("?"));
+    const core::FrameTimeSummary latency = core::summarizeFrameTimes(recentLatenciesMs_);
+    const core::FrameTimeSummary cpu = core::summarizeFrameTimes(recentCpuMs_);
+    const core::FrameTimeSummary gpuTime = core::summarizeFrameTimes(recentGpuMs_);
+    const QString costLine =
+        QStringLiteral("input  request to presented avg %1 p95 %2 ms   cpu avg %3 p95 %4 ms   "
+                       "gpu avg %5 p95 %6 ms")
+            .arg(ms(latency.averageMs), ms(latency.p95Ms), ms(cpu.averageMs), ms(cpu.p95Ms),
+                 gpuTime.samples > 0 ? ms(gpuTime.averageMs) : QStringLiteral("-"),
+                 gpuTime.samples > 0 ? ms(gpuTime.p95Ms) : QStringLiteral("-"));
     const auto section = [this](const char* name) {
         const core::Profiler::Section* s = controller_->profiler().find(name);
         return s != nullptr ? QString::number(s->lastMs(), 'f', 2) : QStringLiteral("-");
     };
     const QString text =
-        frameLine + QLatin1Char('\n') + latencyLine + QLatin1Char('\n') +
-        QStringLiteral("cpu    %4 ms  build %5  query %6  prepare %7\n"
+        frameLine + QLatin1Char('\n') + displayLine + QLatin1Char('\n') + costLine +
+        QLatin1Char('\n') +
+        QStringLiteral("last   cpu %4 ms  build %5  query %6  prepare %7\n"
                        "camera zoom %8  centre (%9, %10)\n"
                        "view   %11x%12 px  dpr %13  framebuffer %14x%15\n"
-                       "scene  %16 elements  visible %17  drawn %18  selected %19\n"
+                       "scene  %16 elements  visible %17  drawn %18  selected %19%32\n"
                        "gpu    %20 draw calls  %21 triangles  %22 meshes  %23  %31 ms\n"
                        "cache  %24 entries  %25  built %26  uploaded %27\n"
                        "tool   %28  live points %29\n"
                        "%30")
-            .arg(QString::number(cpuMs, 'f', 2), section("build frame"), section("scene query"),
-                 section("prepare content"))
+            .arg(recentCpuMs_.empty() ? QStringLiteral("-") : ms(recentCpuMs_.back()),
+                 section("build frame"), section("scene query"), section("prepare content"))
             .arg(QString::number(camera.zoom(), 'f', 3), QString::number(camera.center().x, 'f', 1),
                  QString::number(camera.center().y, 'f', 1))
             .arg(width())
@@ -352,8 +389,12 @@ void CanvasWidget::updateHud(double cpuMs) {
             .arg(QString::fromUtf8(canvas::toString(stats.tool).data(),
                                    static_cast<qsizetype>(canvas::toString(stats.tool).size())))
             .arg(static_cast<qulonglong>(stats.livePoints))
-            .arg(QString::fromStdString(renderer_->description()))
-            .arg(gpu.gpuMs >= 0.0 ? QString::number(gpu.gpuMs, 'f', 2) : QStringLiteral("-"));
+            .arg(renderer_ != nullptr ? QString::fromStdString(renderer_->description())
+                                      : QString())
+            .arg(gpu.gpuMs >= 0.0 ? ms(gpu.gpuMs) : QStringLiteral("-"))
+            .arg(stats.batched ? QStringLiteral("  batched (%1 runs)")
+                                     .arg(static_cast<qulonglong>(stats.batches))
+                               : QString());
     hud_->setText(text);
     hud_->adjustSize();
 }
