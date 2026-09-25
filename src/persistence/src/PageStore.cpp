@@ -314,7 +314,7 @@ Result<PageData> PageStore::load(core::PageId page) {
         auto statement = database_->cached(
             "SELECT e.id, e.layer_id, e.kind, e.z_key, e.pos_x, e.pos_y, e.rotation, e.scale_x, "
             "e.scale_y, e.locked, l.page_id FROM element e LEFT JOIN layer l ON l.id = e.layer_id "
-            "WHERE e.page_id = ?1");
+            "WHERE e.page_id = ?1 ORDER BY e.layer_id, e.z_key"); // DATABASE_SCHEMA.md §7.2
         if (!statement) {
             return forward(statement);
         }

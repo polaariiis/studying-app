@@ -1,6 +1,7 @@
 #include <studyapp/persistence/Migrations.hpp>
 
 #include <studyapp/persistence/Database.hpp>
+#include <studyapp/persistence/Transaction.hpp>
 #include <studyapp/testing/ResultMacros.hpp>
 #include <studyapp/testing/TempDirectory.hpp>
 
@@ -156,6 +157,60 @@ TEST_F(MigrationsTest, FailedMigrationRollsBackCompletely) {
     EXPECT_NE(result.error().message.find("0001_broken.sql"), std::string::npos);
     EXPECT_EQ(schemaVersion(database).value_or(-1), 0);
     EXPECT_TRUE(tableNames(database).empty());
+    // The application id is part of the rolled-back transaction (audit P3-03): the file is
+    // still an empty database that a new attempt initialises.
+    EXPECT_EQ(database.queryInt("PRAGMA application_id").value_or(-1), 0);
+    ASSERT_OK(migrate(database, builtinMigrations()));
+}
+
+// Audit P3-03: initial data is committed with the schema, or not at all.
+TEST_F(MigrationsTest, InitialDataIsCommittedAtomicallyWithTheSchema) {
+    Database failing = create("failing.db");
+    MigrationOptions options;
+    options.initializeNew = [](Transaction& transaction) -> core::Result<void> {
+        if (auto written = transaction.database().execute(
+                "INSERT INTO workspace_meta (key, value) VALUES ('name', 'Draft')");
+            !written) {
+            return written;
+        }
+        return core::makeError(core::ErrorCode::IoError, "simulated failure");
+    };
+    ASSERT_FALSE(migrate(failing, builtinMigrations(), options).has_value());
+    EXPECT_EQ(schemaVersion(failing).value_or(-1), 0);
+    EXPECT_EQ(failing.queryInt("PRAGMA application_id").value_or(-1), 0);
+    EXPECT_TRUE(tableNames(failing).empty());
+
+    Database succeeding = create("succeeding.db");
+    options.initializeNew = [](Transaction& transaction) {
+        return transaction.database().execute(
+            "INSERT INTO workspace_meta (key, value) VALUES ('name', 'Draft')");
+    };
+    ASSERT_OK(migrate(succeeding, builtinMigrations(), options));
+    EXPECT_EQ(
+        succeeding.queryText("SELECT value FROM workspace_meta WHERE key = 'name'").value_or(""),
+        "Draft");
+
+    // The initializer is for new databases only.
+    bool called = false;
+    options.initializeNew = [&](Transaction&) -> core::Result<void> {
+        called = true;
+        return {};
+    };
+    ASSERT_OK(migrate(succeeding, builtinMigrations(), options));
+    EXPECT_FALSE(called);
+}
+
+// Audit P3-03: a creation interrupted after the non-transactional settings (and, with
+// earlier builds, the application id) were written is still treated as a new database.
+TEST_F(MigrationsTest, InterruptedInitialisationIsTreatedAsNew) {
+    Database database = create();
+    ASSERT_OK(database.execute("PRAGMA page_size = 4096; PRAGMA journal_mode = WAL;"
+                               "PRAGMA application_id = " +
+                               std::to_string(kApplicationId)));
+    auto result = migrate(database, builtinMigrations());
+    ASSERT_OK(result);
+    EXPECT_EQ(result->fromVersion, 0);
+    EXPECT_EQ(schemaVersion(database).value_or(-1), currentSchemaVersion());
 }
 
 TEST_F(MigrationsTest, RefusesNewerSchemaForWritingButAllowsReadOnly) {

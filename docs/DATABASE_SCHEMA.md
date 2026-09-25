@@ -595,6 +595,14 @@ same name (from an interrupted import) is reused. `WorkspaceSession::execute` re
 image elements whose asset was never imported (`NotFound`), so the asset foreign key is a
 second line of defence rather than a way for the write queue to get stuck.
 
+**Creating a workspace** is atomic where it matters: `page_size` / `journal_mode` (which
+cannot be set in a transaction) are applied first; `application_id`, the schema and the
+`workspace_meta` rows are committed in the migration transaction (`MigrationOptions::
+initializeNew`). A crash therefore leaves either a database without schema — which `open`
+refuses without modifying and `create` reinitialises (`WorkspaceFile::checkCanCreate`
+accepts only such leftovers, a `.lock` file and empty subdirectories) — or a complete
+workspace. A file that is not an SQLite database is never reinitialised or overwritten.
+
 **Opening a workspace** (`application::WorkspaceSession`): read-write requires the
 exclusive-writer lock (ARCHITECTURE.md §11.1) *before* the database is opened; the schema
 is migrated if needed (backup first), `last_written_by_version` is recorded, and

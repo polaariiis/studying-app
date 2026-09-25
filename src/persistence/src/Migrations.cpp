@@ -45,10 +45,22 @@ Result<void> checkNumbering(std::span<const Migration> migrations) {
     return {};
 }
 
-Result<void> runMigration(Database& database, const Migration& migration) {
+/// Runs one migration in its own transaction. `initialize` (new databases only, last
+/// migration) runs inside the same transaction, so the schema, the application id and the
+/// caller's initial data become visible together or not at all.
+Result<void> runMigration(Database& database, const Migration& migration, bool setApplicationId,
+                          const MigrationOptions::Initializer* initialize) {
     auto transaction = Transaction::begin(database, Transaction::Kind::Immediate);
     if (!transaction) {
         return tl::unexpected<core::Error>(std::move(transaction.error()));
+    }
+    if (setApplicationId) {
+        // Transactional (a header field), unlike page_size/journal_mode.
+        if (auto identified =
+                database.execute("PRAGMA application_id = " + std::to_string(kApplicationId));
+            !identified) {
+            return identified;
+        }
     }
     if (auto applied = database.execute(migration.sql); !applied) {
         return makeError(applied.error().code, "migration '" + std::string(migration.name) +
@@ -58,6 +70,11 @@ Result<void> runMigration(Database& database, const Migration& migration) {
             database.execute("PRAGMA user_version = " + std::to_string(migration.version));
         !versioned) {
         return versioned;
+    }
+    if (initialize != nullptr && *initialize) {
+        if (auto initialized = (*initialize)(*transaction); !initialized) {
+            return initialized;
+        }
     }
     return transaction->commit();
 }
@@ -166,7 +183,10 @@ Result<MigrationResult> migrate(Database& database, std::span<const Migration> m
         if (!objects) {
             return tl::unexpected<core::Error>(std::move(objects.error()));
         }
-        if (*applicationId != 0 || *objects != 0) {
+        // Version 0 with no objects is a new database, or one whose creation was interrupted
+        // before the first migration committed (only settings that cannot be part of a
+        // transaction may have been written); both are initialised from scratch.
+        if ((*applicationId != 0 && !ours) || *objects != 0) {
             return makeError(ErrorCode::Unsupported,
                              "the database is not an empty or StudyBoard workspace database");
         }
@@ -174,10 +194,10 @@ Result<MigrationResult> migrate(Database& database, std::span<const Migration> m
             return makeError(ErrorCode::Unsupported,
                              "the workspace database is not initialised (opened read-only)");
         }
-        // Database-level settings (docs/DATABASE_SCHEMA.md §2); not allowed in a transaction.
+        // Database-level settings (docs/DATABASE_SCHEMA.md §2) that cannot be changed inside a
+        // transaction. application_id is set with the first migration instead.
         if (auto configured =
-                database.execute("PRAGMA application_id = " + std::to_string(kApplicationId) +
-                                 ";PRAGMA page_size = 4096;PRAGMA journal_mode = WAL;");
+                database.execute("PRAGMA page_size = 4096;PRAGMA journal_mode = WAL;");
             !configured) {
             return tl::unexpected<core::Error>(std::move(configured.error()));
         }
@@ -217,11 +237,15 @@ Result<MigrationResult> migrate(Database& database, std::span<const Migration> m
         result.backup = backup;
     }
 
+    const bool isNew = *version == 0;
     for (const Migration& migration : migrations) {
         if (migration.version <= *version) {
             continue;
         }
-        if (auto ran = runMigration(database, migration); !ran) {
+        const bool last = migration.version == latest;
+        if (auto ran = runMigration(database, migration, isNew && migration.version == 1,
+                                    isNew && last ? &options.initializeNew : nullptr);
+            !ran) {
             return tl::unexpected<core::Error>(std::move(ran.error()));
         }
         result.toVersion = migration.version;

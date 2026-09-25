@@ -10,6 +10,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 
 namespace studyapp::persistence {
 namespace {
@@ -163,6 +165,75 @@ TEST_F(WorkspaceFileTest, WorkspaceDirectoryCanBeMoved) {
     auto reopened = WorkspaceFile::open(moved, AccessMode::ReadWrite, clock.now(), "0.1.0");
     ASSERT_OK(reopened);
     EXPECT_OK(WorkspaceStore(reopened->database(), clock).load());
+}
+
+std::string readBytes(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// Audit P3-03: a crash during create() must not leave a directory that can neither be opened
+// nor created again.
+TEST_F(WorkspaceFileTest, InterruptedCreationCanBeCompleted) {
+    // What an interrupted creation leaves behind: the subdirectories and a database whose
+    // non-transactional settings (and, with earlier builds, the application id) were
+    // written, but no schema.
+    std::filesystem::create_directories(root() / "assets");
+    std::filesystem::create_directories(root() / "backups");
+    std::filesystem::create_directories(root() / "temporary");
+    {
+        auto leftover = Database::open(root() / "workspace.db", OpenMode::Create);
+        ASSERT_OK(leftover);
+        ASSERT_OK(leftover->execute("PRAGMA page_size = 4096; PRAGMA journal_mode = WAL;"
+                                    "PRAGMA application_id = " +
+                                    std::to_string(kApplicationId)));
+    }
+
+    // open() never initialises it (only create() writes schema + metadata together).
+    const auto opened = WorkspaceFile::open(root(), AccessMode::ReadWrite, clock.now(), "0.1.0");
+    ASSERT_FALSE(opened.has_value());
+    EXPECT_EQ(opened.error().code, core::ErrorCode::Unsupported);
+    {
+        auto untouched = Database::open(root() / "workspace.db", OpenMode::ReadOnly);
+        ASSERT_OK(untouched);
+        EXPECT_EQ(schemaVersion(*untouched).value_or(-1), 0);
+    }
+
+    // create() completes it, and the result opens normally.
+    EXPECT_OK(WorkspaceFile::checkCanCreate(root()));
+    {
+        auto created = WorkspaceFile::create(root(), info, "0.1.0");
+        ASSERT_OK(created);
+    }
+    auto reopened = WorkspaceFile::open(root(), AccessMode::ReadWrite, clock.now(), "0.1.0");
+    ASSERT_OK(reopened);
+    auto loaded = WorkspaceStore(reopened->database(), clock).load();
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->info(), info);
+}
+
+// Audit P3-08: arbitrary non-SQLite data in workspace.db is refused everywhere and never
+// overwritten, reinitialised or removed.
+TEST_F(WorkspaceFileTest, GarbageDatabaseIsRefusedAndLeftUntouched) {
+    std::filesystem::create_directories(root());
+    std::string garbage;
+    for (int i = 0; i < 8192; ++i) {
+        garbage.push_back(static_cast<char>((i * 31 + 7) % 251));
+    }
+    std::ofstream(root() / "workspace.db", std::ios::binary) << garbage;
+
+    for (const AccessMode mode : {AccessMode::ReadWrite, AccessMode::ReadOnly}) {
+        const auto opened = WorkspaceFile::open(root(), mode, clock.now(), "0.1.0");
+        ASSERT_FALSE(opened.has_value());
+        EXPECT_EQ(opened.error().code, core::ErrorCode::ParseError) << opened.error().message;
+    }
+    const auto creatable = WorkspaceFile::checkCanCreate(root());
+    ASSERT_FALSE(creatable.has_value());
+    EXPECT_EQ(creatable.error().code, core::ErrorCode::AlreadyExists);
+    EXPECT_FALSE(WorkspaceFile::create(root(), info, "0.1.0").has_value());
+
+    EXPECT_EQ(readBytes(root() / "workspace.db"), garbage);
+    EXPECT_FALSE(std::filesystem::exists(root() / "assets")); // nothing was set up around it
 }
 
 } // namespace

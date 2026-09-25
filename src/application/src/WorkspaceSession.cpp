@@ -168,10 +168,9 @@ WorkspaceSession::create(const std::filesystem::path& root, std::string name,
     const persistence::WorkspaceLayout layout{root};
     std::error_code ec;
     const bool createdRoot = !std::filesystem::exists(root, ec);
-    if (!createdRoot &&
-        (!std::filesystem::is_directory(root, ec) || !std::filesystem::is_empty(root, ec))) {
-        return makeError(ErrorCode::AlreadyExists,
-                         "a new workspace needs an empty or new directory");
+    // Checked before taking the lock, so a refused directory is left exactly as it was.
+    if (auto creatable = persistence::WorkspaceFile::checkCanCreate(root); !creatable) {
+        return forward(creatable);
     }
     std::filesystem::create_directories(root, ec);
     if (ec) {

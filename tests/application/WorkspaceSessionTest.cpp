@@ -369,16 +369,37 @@ TEST_F(WorkspaceSessionTest, WriteFailureKeepsTheEditQueuedAndRetries) {
     EXPECT_NE(session->workspace().findElement(second), nullptr);
 }
 
-TEST_F(WorkspaceSessionTest, DestroyingWithoutCloseKeepsSavedState) {
+// Audit P3-07: the destructor writes what is still pending. Writes are synchronous, so a
+// pending write is produced with the fault injection used above, then the fault is removed
+// before the session goes away without close().
+TEST_F(WorkspaceSessionTest, DestructorFlushesPendingWrites) {
     document::Workspace expected{document::WorkspaceInfo{}};
+    core::ElementId unsaved;
     {
         auto session = create();
         ASSERT_NE(session, nullptr);
-        addPath(*session);
+        const auto layer = addPath(*session);
+        {
+            auto other = persistence::Database::open(root() / "workspace.db",
+                                                     persistence::OpenMode::ReadWrite);
+            ASSERT_OK(other);
+            ASSERT_OK(other->execute("CREATE TRIGGER inject_failure BEFORE INSERT ON element "
+                                     "BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;"));
+        }
+        unsaved = addElement(*session, layer, makeText("pending at destruction"));
+        ASSERT_EQ(session->pendingWriteCount(), 1U);
+        {
+            auto other = persistence::Database::open(root() / "workspace.db",
+                                                     persistence::OpenMode::ReadWrite);
+            ASSERT_OK(other);
+            ASSERT_OK(other->execute("DROP TRIGGER inject_failure"));
+        }
+        ASSERT_EQ(session->pendingWriteCount(), 1U); // still only in memory
         expected = session->workspace();
-    } // no explicit close
+    } // destroyed without close(): the destructor must write the pending patch
     auto reopened = open();
     ASSERT_NE(reopened, nullptr);
+    EXPECT_NE(reopened->workspace().findElement(unsaved), nullptr);
     EXPECT_TRUE(reopened->workspace() == expected);
 }
 

@@ -118,6 +118,17 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
     if (mediaType.empty()) {
         return makeError(ErrorCode::InvalidArgument, "an asset needs a media type");
     }
+    std::error_code sourceError;
+    const auto sourceStatus = std::filesystem::status(source, sourceError);
+    if (!std::filesystem::exists(sourceStatus)) {
+        return makeError(ErrorCode::NotFound, "cannot read '" + utf8(source) + "'");
+    }
+    // Only regular files (or symlinks to them): opening a directory with ifstream succeeds on
+    // POSIX and would import it as an empty asset.
+    if (!std::filesystem::is_regular_file(sourceStatus)) {
+        return makeError(ErrorCode::InvalidArgument,
+                         "'" + utf8(source) + "' is not a regular file");
+    }
     std::ifstream in(source, std::ios::binary);
     if (!in) {
         return makeError(ErrorCode::NotFound, "cannot read '" + utf8(source) + "'");

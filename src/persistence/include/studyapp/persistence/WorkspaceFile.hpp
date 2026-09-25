@@ -25,17 +25,25 @@ enum class AccessMode {
 /// workspace read-write.
 class WorkspaceFile {
 public:
-    /// Creates a new workspace in `root`, which must not exist or be an empty directory
-    /// (a `.lock` file already held by the caller is allowed): the directory structure,
-    /// the database with the current schema, and the metadata. On failure, everything
-    /// created is removed again.
+    /// Whether create() may use `root`: it does not exist, or is a directory that is empty
+    /// except for a `.lock` file and the leftovers of an interrupted creation (empty
+    /// subdirectories, a database without schema). A directory holding anything else — in
+    /// particular any real or unreadable database — is refused (AlreadyExists), so creating
+    /// never overwrites existing data.
+    [[nodiscard]] static core::Result<void> checkCanCreate(const std::filesystem::path& root);
+
+    /// Creates a new workspace in `root` (see checkCanCreate): the directory structure, and
+    /// the database with the current schema and the metadata, committed in one transaction.
+    /// On failure, everything created is removed again.
     [[nodiscard]] static core::Result<WorkspaceFile> create(const std::filesystem::path& root,
                                                             const document::WorkspaceInfo& info,
                                                             std::string_view appVersion);
 
     /// Opens an existing workspace. Read-write: upgrades the schema if needed (after a
     /// backup in backups/), recreates missing subdirectories and records `appVersion` as
-    /// the last writer. Fails with NotFound if `root` holds no workspace database.
+    /// the last writer. Fails with NotFound if `root` holds no workspace database, and with
+    /// Unsupported for a database without schema (an interrupted creation), which open never
+    /// initialises. Nothing is written before the database is known to be a workspace.
     [[nodiscard]] static core::Result<WorkspaceFile> open(const std::filesystem::path& root,
                                                           AccessMode mode, core::Timestamp now,
                                                           std::string_view appVersion);

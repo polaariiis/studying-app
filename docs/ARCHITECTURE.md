@@ -620,7 +620,10 @@ Attempt to acquire lock  ──── SUCCESS ──→ normal read/write operat
   a network drive) is never auto-classified as stale; the user must choose recovery
   explicitly. A recorded process id that has been reused by an unrelated process is
   classified *active* — the safe direction (the user can still open read-only).
-  Time-based staleness is disabled (`QLockFile::setStaleLockTime(0)`).
+  Time-based staleness is disabled (`QLockFile::setStaleLockTime(0)`). Taking over a
+  stale lock goes through `QLockFile::tryLock()`, which re-checks the owner and removes the
+  leftover under its own guard, so two processes recovering at once cannot both win; only a
+  lock file without readable owner information is removed explicitly.
 * **Recovery** takes over the lock, runs `PRAGMA quick_check` (and
   `PRAGMA foreign_key_check`), lets SQLite recover the WAL, and cleans `temporary/`; the
   session refuses to open if the check reports problems.

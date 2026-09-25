@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -35,12 +36,20 @@ struct Migration {
 /// Schema version this binary writes (the newest built-in migration).
 [[nodiscard]] int currentSchemaVersion();
 
+class Transaction;
+
 struct MigrationOptions {
+    using Initializer = std::function<core::Result<void>(Transaction&)>;
+
     /// Where to write the pre-migration backup of an existing database. Required when an
     /// existing database needs upgrading (never needed for a new one).
     std::optional<std::filesystem::path> backupDirectory;
     /// Used in the backup file name.
     core::Timestamp now{};
+    /// New databases only: writes initial data (e.g. workspace metadata) inside the
+    /// transaction of the last migration, so a database never exists with a schema but
+    /// without its initial data. A failure rolls that migration back.
+    Initializer initializeNew{};
 };
 
 struct MigrationResult {
@@ -52,8 +61,10 @@ struct MigrationResult {
 /// Brings `database` to the newest version in `migrations` (which must be numbered
 /// 1..N without gaps).
 ///
-///   * new, empty database: sets application_id / page_size / WAL, then runs all
-///     migrations (no backup; nothing to lose);
+///   * new, empty database (version 0, no schema objects, application_id 0 or ours — the
+///     latter after an interrupted creation): sets page_size / WAL, then runs all
+///     migrations, the first one together with application_id and the last one together
+///     with `options.initializeNew` (no backup; nothing to lose);
 ///   * older version: writes a backup, then runs the pending migrations;
 ///   * same version: nothing to do;
 ///   * newer version: fails with Unsupported for a read-write connection (a newer app

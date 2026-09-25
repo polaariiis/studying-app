@@ -134,6 +134,19 @@ TEST_F(AssetStoreTest, MissingSourceFailsWithoutSideEffects) {
     EXPECT_EQ(fileCount(file->layout().temporary()), 0U);
 }
 
+// Audit P3-05: on POSIX, ifstream opens a directory successfully and reads nothing, which
+// used to import the directory as an empty asset.
+TEST_F(AssetStoreTest, DirectoriesAreNotImported) {
+    const auto directory = dir / "a directory.png";
+    std::filesystem::create_directories(directory);
+    const auto imported = assets->import(directory, "image/png", ids, clock);
+    ASSERT_FALSE(imported.has_value());
+    EXPECT_EQ(imported.error().code, core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(rows(), 0);
+    EXPECT_EQ(fileCount(file->layout().assets()), 0U);
+    EXPECT_EQ(fileCount(file->layout().temporary()), 0U);
+}
+
 TEST_F(AssetStoreTest, UnknownAssetsAreReported) {
     const core::AssetId unknown{ids.next()};
     auto exists = assets->exists(unknown);

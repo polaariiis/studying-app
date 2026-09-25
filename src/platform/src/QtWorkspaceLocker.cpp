@@ -96,7 +96,15 @@ QtWorkspaceLocker::acquire(const std::filesystem::path& lockFile, bool takeOverS
                                                       describe(*status) +
                                                       "; recovery must be requested explicitly");
         }
-        file->removeStaleLockFile();
+        // A readable leftover lock is taken over by tryLock() itself: QLockFile re-checks that
+        // the recorded owner is gone and removes the file under its own guard, so two
+        // processes recovering at the same moment cannot both win (an unconditional
+        // removeStaleLockFile() could delete the lock the other one just created). Only a
+        // file without owner information — which tryLock() never treats as stale once
+        // time-based staleness is off — is removed explicitly.
+        if (!status->owner) {
+            file->removeStaleLockFile();
+        }
     }
     if (!file->tryLock(0)) {
         switch (file->error()) {

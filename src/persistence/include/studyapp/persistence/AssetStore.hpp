@@ -65,6 +65,8 @@ public:
 
     /// Imports a file. Returns the existing asset if identical content was imported
     /// before (dedupe by hash). `mediaType` is e.g. "image/png" or "application/pdf".
+    /// Fails with NotFound if `source` does not exist and with InvalidArgument if it is not
+    /// a regular file (e.g. a directory).
     [[nodiscard]] core::Result<core::AssetId> import(const std::filesystem::path& source,
                                                      std::string_view mediaType,
                                                      core::IdGenerator& ids,
