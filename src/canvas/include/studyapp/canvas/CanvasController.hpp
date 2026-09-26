@@ -121,6 +121,10 @@ public:
     void resetView();
     /// Fits everything on the page (bounded pages: the page) into the viewport.
     void zoomToFit();
+    /// Shows world point `center` at the viewport centre at `zoom` (clamped as any zoom;
+    /// bounded pages stay in reach), instead of the initial view of the page — e.g. to
+    /// return to where the user left a page. Call after setPage().
+    void setView(const core::DVec2& center, double zoom);
 
     [[nodiscard]] const Camera& camera() const noexcept { return camera_; }
     [[nodiscard]] const Selection& selection() const noexcept { return selection_; }

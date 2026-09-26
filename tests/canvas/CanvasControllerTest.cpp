@@ -306,6 +306,14 @@ TEST(CanvasControllerTest, HoverRequestsNoRepaint) {
         f.controller.onPointer({.phase = PointerPhase::Cancel});
         EXPECT_EQ(redraws, 0) << toString(tool);
     }
+    // Keys that change nothing visible neither: Space (the widget also reports it released
+    // whenever the canvas loses focus, e.g. to the navigation tree), Escape without a
+    // gesture or selection, Delete without a selection.
+    f.controller.onKey({.key = Key::Space, .pressed = true});
+    f.controller.onKey({.key = Key::Space, .pressed = false});
+    f.controller.onKey({.key = Key::Escape, .pressed = true});
+    f.controller.onKey({.key = Key::Delete, .pressed = true});
+    EXPECT_EQ(redraws, 0);
     // A gesture repaints on every step, so the frame follows the pointer.
     f.controller.setTool(ToolKind::Pen);
     f.pointer(PointerPhase::Down, {100, 100});
@@ -617,6 +625,29 @@ TEST(CanvasControllerTest, RunsMovingAsAWholeStayOneDrawDuringTheMovePreview) {
     EXPECT_EQ(f.triangles(f.renderer.lastContent), triangles);
     expectNear(document::worldBounds(f.element(f.strokes[0])).center(),
                f.controller.camera().viewToWorld(at + core::DVec2{30, 12}), 1e-6);
+}
+
+TEST(CanvasControllerTest, SetViewRestoresAViewAfterSwitchingPages) {
+    CanvasFixture f;
+    const auto second = f.doc.addPage(f.doc.workspace.findPage(f.page)->section, "Second");
+    f.controller.zoomBy(3.0);
+    f.controller.panBy({-120, 40});
+    const Camera left = f.controller.camera();
+
+    f.controller.setPage(second); // a page opens at its initial view
+    EXPECT_NEAR(f.controller.camera().zoom(), 1.0, 1e-12);
+    f.controller.setPage(f.page);
+    f.controller.setView(left.center(), left.zoom()); // back where the user left it
+    expectNear(f.controller.camera().center(), left.center(), 1e-9);
+    EXPECT_NEAR(f.controller.camera().zoom(), left.zoom(), 1e-12);
+    // Drawing is aligned with the restored view.
+    f.drag({200, 200}, {300, 200}, 5);
+    ASSERT_EQ(f.elements().size(), 1U);
+    expectNear(strokeEnds(f.element(f.elements()[0])).first, left.viewToWorld({200, 200}), 1e-9);
+
+    // Invalid zooms are clamped like any other zoom.
+    f.controller.setView({0, 0}, 1e9);
+    EXPECT_LE(f.controller.camera().zoom(), 64.0);
 }
 
 TEST(CanvasControllerTest, ToolSwitchCancelsTheGesture) {

@@ -222,6 +222,8 @@ void CanvasController::onZoomGesture(const ZoomGestureEvent& event) {
 }
 
 void CanvasController::onKey(const KeyEvent& event) {
+    // Only keys that change what the canvas shows ask for a frame. Space only arms panning
+    // (a cursor change), and the widget reports it released on every focus loss.
     switch (event.key) {
     case Key::Space:
         if (!event.autoRepeat) {
@@ -232,20 +234,21 @@ void CanvasController::onKey(const KeyEvent& event) {
         if (event.pressed) {
             if (gestureTool_ != nullptr) {
                 cancelGesture();
-            } else {
+                requestRedraw();
+            } else if (!selection_.empty()) {
                 selection_.clear();
+                requestRedraw();
             }
         }
         break;
     case Key::Delete:
         if (event.pressed && !event.autoRepeat) {
-            (void)deleteSelection();
+            (void)deleteSelection(); // repaints when something was deleted
         }
         break;
     case Key::Other:
         break;
     }
-    requestRedraw();
 }
 
 void CanvasController::setViewport(const core::DVec2& logicalSize, double devicePixelRatio) {
@@ -369,6 +372,14 @@ void CanvasController::zoomToFit() {
         clampCamera();
         requestRedraw();
     }
+}
+
+void CanvasController::setView(const core::DVec2& center, double zoom) {
+    camera_.setZoom(zoom);
+    camera_.setCenter(center);
+    needsInitialView_ = false; // also when the viewport is not known yet
+    clampCamera();
+    requestRedraw();
 }
 
 void CanvasController::frameInitialView() noexcept {
