@@ -7,6 +7,7 @@ studyapp_add_module(ui
         include/studyapp/ui/DesignTokens.hpp
         include/studyapp/ui/MainWindow.hpp
         include/studyapp/ui/PanBenchmark.hpp
+        include/studyapp/ui/ShellDialogs.hpp
         include/studyapp/ui/ThemeManager.hpp
         src/AppIcon.cpp
         src/CanvasInputAdapter.cpp
@@ -16,8 +17,15 @@ studyapp_add_module(ui
         src/CanvasWidget.hpp
         src/DesignTokens.cpp
         src/MainWindow.cpp
+        src/NavigationPanel.cpp
+        src/NavigationPanel.hpp
         src/SessionDocumentPort.hpp
+        src/ShellDialogs.cpp
+        src/ThemeIcons.cpp
+        src/ThemeIcons.hpp
         src/ThemeManager.cpp
+        src/WorkspaceTreeModel.cpp
+        src/WorkspaceTreeModel.hpp
     PUBLIC_DEPS
         Qt6::Widgets
         studyapp::core

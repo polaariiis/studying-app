@@ -59,6 +59,11 @@ public:
     /// Pans continuously for `frames` frames (back and forth), then reports frame timings.
     void runPanBenchmark(int frames, std::function<void(const PanBenchmarkResult&)> done);
 
+    /// Canvas frames painted since construction (paintGL calls; diagnostics and tests).
+    /// Unlike frameSwapped, which fires whenever the window is presented, this counts only
+    /// frames of the canvas itself.
+    [[nodiscard]] std::uint64_t paintCount() const noexcept { return paintCount_; }
+
     /// Empty while the renderer works; otherwise why it could not start.
     [[nodiscard]] const QString& graphicsError() const noexcept { return graphicsError_; }
 
@@ -75,6 +80,7 @@ protected:
     void tabletEvent(QTabletEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
+    void focusInEvent(QFocusEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
     bool event(QEvent* event) override;
 
@@ -92,6 +98,7 @@ private:
     QString graphicsError_;
     bool pointerDown_ = false;
     bool inResizeGL_ = false;
+    std::uint64_t paintCount_ = 0;
 
     // Frame timing for the HUD and the benchmark (on-demand rendering: gaps between frames
     // are idle time, not frame time, and are kept out of the statistics).

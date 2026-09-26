@@ -208,6 +208,7 @@ void CanvasWidget::paintGL() {
     if (!renderer_ || !renderer_->isInitialized()) {
         return;
     }
+    ++paintCount_;
     const double nowMs = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
     const double intervalMs = lastPaintMs_ >= 0.0 ? nowMs - lastPaintMs_ : 0.0;
     lastPaintMs_ = nowMs;
@@ -524,7 +525,14 @@ void CanvasWidget::focusOutEvent(QFocusEvent* event) {
         controller_->onPointer({.phase = canvas::PointerPhase::Cancel});
     }
     controller_->onKey({.key = canvas::Key::Space, .pressed = false});
-    QOpenGLWidget::focusOutEvent(event);
+    // Not QWidget::focusOutEvent: it calls update() to redraw a focus indicator, which for
+    // this widget is a whole GL frame per focus change (e.g. each click into the navigation
+    // tree). The canvas draws no focus indicator.
+    event->accept();
+}
+
+void CanvasWidget::focusInEvent(QFocusEvent* event) {
+    event->accept(); // as focusOutEvent: no repaint for a focus change
 }
 
 bool CanvasWidget::event(QEvent* event) {

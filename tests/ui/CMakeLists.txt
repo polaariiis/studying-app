@@ -25,6 +25,8 @@ endif()
 # itself without an OpenGL 3.3 context, which is the case on the offscreen platform used
 # here and in CI; run build/<preset>/tests/ui/canvas_widget_tests directly on a desktop.
 add_executable(canvas_widget_tests CanvasWidgetTest.cpp)
+# Includes the private CanvasWidget header for its paint counter.
+target_include_directories(canvas_widget_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/ui/src")
 target_link_libraries(canvas_widget_tests PRIVATE
     studyapp::ui
     studyapp::application
@@ -43,5 +45,30 @@ set_tests_properties(ui.CanvasWidgetTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 if(WIN32)
     set_property(TEST ui.CanvasWidgetTest APPEND PROPERTY ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()
+
+# Phase 5 shell: navigation tree model and MainWindow workflows with real sessions and
+# scripted dialogs. Needs no OpenGL (the canvas widget simply stays blank offscreen). It
+# includes the private WorkspaceTreeModel header to test the model on its own.
+add_executable(shell_tests ShellTest.cpp)
+target_include_directories(shell_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/ui/src")
+target_link_libraries(shell_tests PRIVATE
+    studyapp::ui
+    studyapp::application
+    studyapp::platform
+    studyapp::test_support
+    Qt6::Test
+    studyapp_project_options
+    studyapp_warnings)
+target_compile_features(shell_tests PRIVATE cxx_std_20)
+studyapp_enable_qt(shell_tests)
+set_target_properties(shell_tests PROPERTIES FOLDER "tests")
+add_test(NAME ui.ShellTest COMMAND shell_tests)
+set_tests_properties(ui.ShellTest PROPERTIES
+    LABELS gui
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+if(WIN32)
+    set_property(TEST ui.ShellTest APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()

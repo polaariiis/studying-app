@@ -5,6 +5,8 @@
 // Needs an OpenGL 3.3 context. On platforms without one (e.g. QT_QPA_PLATFORM=offscreen
 // on CI) the test skips itself; run the executable directly on a desktop to exercise it.
 
+#include "CanvasWidget.hpp"
+
 #include <studyapp/application/StartPage.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/document/Commands.hpp>
@@ -26,6 +28,7 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTreeView>
 #include <QWheelEvent>
 
 #include <cmath>
@@ -357,6 +360,62 @@ private Q_SLOTS:
         // half the size change; the stroke drawn after lies under the pointer.
         QVERIFY2(at(250, 260) != paper, "stroke drawn after resizing is not under the pointer");
         QCOMPARE(at(250, 280), paper);
+    }
+
+    // Rendering stays on demand inside the shell: using the navigation tree (focus changes,
+    // selecting a notebook, collapsing and expanding) presents no canvas frame; opening a
+    // page does.
+    void navigationDoesNotRepaintTheCanvas() {
+        QTemporaryDir dir;
+        const auto root = toPath(dir.filePath(QStringLiteral("ws")));
+        testing::ManualClock clock;
+        testing::SequentialIds ids;
+        platform::QtWorkspaceLocker locker;
+        auto created = application::WorkspaceSession::create(root, "Idle", {clock, ids, locker});
+        QVERIFY(created.has_value());
+        auto& session = **created;
+        auto page = application::ensureStartPage(session, clock, ids);
+        QVERIFY(page.has_value());
+        QSettings settings(dir.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+        ui::ThemeManager themes;
+        ui::MainWindow window(
+            themes, settings,
+            ui::WorkspaceContext{.session = session, .ids = ids, .clock = clock, .page = *page});
+        window.resize(900, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* canvas = window.findChild<QOpenGLWidget*>(QStringLiteral("canvasWidget"));
+        auto* tree = window.findChild<QTreeView*>(QStringLiteral("workspaceTree"));
+        QVERIFY(canvas != nullptr && tree != nullptr);
+        QTest::qWait(50);
+        if (!canvas->isValid() || canvas->grabFramebuffer().isNull()) {
+            QSKIP("no OpenGL 3.3 context on this platform");
+        }
+        auto* newPage = window.findChild<QAction*>(QStringLiteral("actionNewPage"));
+        newPage->trigger(); // a second page to switch to
+        QVERIFY(window.openPage(*page));
+        canvas->setFocus();
+        QTest::qWait(100); // let pending frames present
+
+        // Counted in canvas paints: frameSwapped also fires when only the window (e.g. the
+        // tree) is presented.
+        auto* canvasWidget = static_cast<ui::CanvasWidget*>(canvas);
+        const std::uint64_t before = canvasWidget->paintCount();
+        tree->setFocus(); // the canvas loses focus
+        const QModelIndex notebook = tree->model()->index(0, 0);
+        tree->setCurrentIndex(notebook); // selecting a notebook opens nothing
+        tree->collapse(notebook);
+        tree->expand(notebook);
+        QTest::mouseMove(tree->viewport(), tree->visualRect(notebook).center());
+        canvas->setFocus(); // and gets it back
+        QTest::qWait(100);
+        QCOMPARE(canvasWidget->paintCount(), before);
+
+        auto* nextPage = window.findChild<QAction*>(QStringLiteral("actionNextPage"));
+        nextPage->trigger(); // switching pages draws the new page
+        QTest::qWait(100);
+        QVERIFY(canvasWidget->paintCount() > before);
     }
 
     // The eraser's reach is shown as the platform cursor (no OpenGL needed): it follows the

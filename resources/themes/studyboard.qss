@@ -110,3 +110,78 @@ QLabel#canvasHud {
     font-family: "Consolas", "Menlo", "DejaVu Sans Mono", monospace;
     font-size: 9pt;
 }
+
+/* Navigation panel (Workspace → Notebook → Section → Page). */
+QWidget#navigationPanel {
+    background: @surface@;
+}
+QLabel#workspaceTitle {
+    color: @textPrimary@;
+    font-weight: 600;
+}
+QToolButton#newItemButton {
+    padding: 2px 8px;
+    border: 1px solid @border@;
+}
+QToolButton#newItemButton::menu-indicator {
+    image: none;
+    width: 0px;
+}
+QTreeView#workspaceTree {
+    background: @surface@;
+    color: @textPrimary@;
+    border: none;
+    outline: 0;
+    show-decoration-selected: 0;
+}
+QTreeView#workspaceTree::item {
+    padding: 3px 2px;
+    border-radius: @radiusSmall@px;
+}
+QTreeView#workspaceTree::item:hover {
+    background: @hover@;
+}
+QTreeView#workspaceTree::item:selected {
+    background: @selected@;
+    color: @selectedText@;
+}
+QSplitter#shellSplitter::handle {
+    background: @border@;
+}
+QSplitter#shellSplitter::handle:horizontal {
+    width: 1px;
+}
+
+/* Inline rename in the tree. */
+QTreeView#workspaceTree QLineEdit {
+    background: @background@;
+    color: @textPrimary@;
+    border: 1px solid @borderStrong@;
+    border-radius: @radiusSmall@px;
+    padding: 0px 3px;
+}
+
+/* Welcome screen buttons. */
+QPushButton#welcomeNewWorkspace,
+QPushButton#welcomeOpenWorkspace {
+    background: @surface@;
+    color: @textPrimary@;
+    border: 1px solid @borderStrong@;
+    border-radius: @radiusSmall@px;
+    padding: 6px 16px;
+}
+QPushButton#welcomeNewWorkspace:hover,
+QPushButton#welcomeOpenWorkspace:hover {
+    background: @hover@;
+}
+QPushButton#welcomeRecentItem {
+    background: transparent;
+    color: @textSecondary@;
+    border: none;
+    padding: 3px 10px;
+}
+QPushButton#welcomeRecentItem:hover {
+    background: @hover@;
+    color: @textPrimary@;
+    border-radius: @radiusSmall@px;
+}

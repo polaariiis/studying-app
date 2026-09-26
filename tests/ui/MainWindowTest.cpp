@@ -49,12 +49,23 @@ private Q_SLOTS:
         QVERIFY(QTest::qWaitForWindowExposed(&window));
 
         QCOMPARE(window.windowTitle(), QStringLiteral("StudyBoard"));
-        QVERIFY(window.findChild<QMenu*>(QStringLiteral("menuFile")) != nullptr);
-        QVERIFY(window.findChild<QMenu*>(QStringLiteral("menuView")) != nullptr);
-        QVERIFY(window.findChild<QMenu*>(QStringLiteral("menuHelp")) != nullptr);
+        for (const char* menu :
+             {"menuFile", "menuEdit", "menuNotebook", "menuTools", "menuView", "menuHelp"}) {
+            QVERIFY2(window.findChild<QMenu*>(QString::fromLatin1(menu)) != nullptr, menu);
+        }
         QVERIFY(window.findChild<QToolBar*>(QStringLiteral("mainToolBar")) != nullptr);
         QVERIFY(window.centralWidget() != nullptr);
-        QCOMPARE(window.centralWidget()->objectName(), QStringLiteral("placeholder"));
+        // Without a workspace the welcome screen is shown; this window cannot open one.
+        auto* welcome = window.findChild<QWidget*>(QStringLiteral("placeholder"));
+        QVERIFY(welcome != nullptr && welcome->isVisible());
+        QVERIFY(!window.hasWorkspace());
+        auto* openWorkspace = window.findChild<QAction*>(QStringLiteral("actionOpenWorkspace"));
+        QVERIFY(openWorkspace != nullptr && !openWorkspace->isEnabled());
+        // Canvas and structure actions need an open page.
+        for (const char* name : {"actionUndo", "actionNewPage", "actionToolPen", "actionZoomIn"}) {
+            auto* action = window.findChild<QAction*>(QString::fromLatin1(name));
+            QVERIFY2(action != nullptr && !action->isEnabled(), name);
+        }
     }
 
     void themeManagerSwitchesPalette() {
