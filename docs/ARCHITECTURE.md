@@ -2,8 +2,9 @@
 
 > Status: **Final baseline.** Phase 1 (foundation & build skeleton), Phase 2 (document
 > model, patches, commands, undo/redo, app icon, design-token foundation), Phase 3
-> (SQLite persistence, assets, workspace directory and locking) and Phase 4 (canvas
-> engine, OpenGL 3.3 renderer, pen/select/eraser/pan/zoom, backgrounds) are implemented;
+> (SQLite persistence, assets, workspace directory and locking), Phase 4 (canvas
+> engine, OpenGL 3.3 renderer, pen/select/eraser/pan/zoom, backgrounds) and Phase 5
+> (application shell: workspaces, navigation tree, page management) are implemented;
 > §3.2 lists exactly what exists. Everything else describes the target design and is built
 > phase by phase (see [ROADMAP.md](ROADMAP.md)).
 > This document is the entry point. Details live in the companion documents:
@@ -299,21 +300,21 @@ Ownership rules:
   Wintab pressure, macOS tablet proximity, Wayland tablet protocol), called by the adapter.
 * `canvas` defines the event value types and consumes them; tests construct them directly.
 
-### 3.2 Implementation status (end of Phase 4)
+### 3.2 Implementation status (end of Phase 5)
 
 | Module | Content |
 |---|---|
 | `core` | `Vec2`/`DVec2`, `Rect`/`DRect`, `Color`, `Uuid` + `UuidV7Generator`, `Id<Tag>` + entity id aliases, `Error`/`Result` (incl. `Conflict`), `Clock`/`SystemClock`, `IdGenerator`, logging facade *(Phase 1)*; `FractionalIndex` *(Phase 2)*; `Affine2`, segment/rectangle predicates (`Geometry.hpp`), `Profiler` + `STUDYAPP_PROFILE_SCOPE` *(Phase 4)* |
-| `document` | `Workspace` (hierarchy, invariants, atomic `apply`), records, `Element` + payloads, `Patch`/`Change`, commands, `UndoStack`, `Editor` *(Phase 2)*; `localBounds`/`worldBounds` *(Phase 3)*; `localToWorld`, commands `deleteElements`, `moveElements`, `setPageFormat` *(Phase 4)* |
+| `document` | `Workspace` (hierarchy, invariants, atomic `apply`), records, `Element` + payloads, `Patch`/`Change`, commands, `UndoStack`, `Editor` *(Phase 2)*; `localBounds`/`worldBounds` *(Phase 3)*; `localToWorld`, commands `deleteElements`, `moveElements`, `setPageFormat` *(Phase 4)*; `moveNotebook`, `moveSection`, `movePage` *(Phase 5)* |
 | `study` | **Module anchor only** (`moduleName()`): the target exists, compiles, links with its final dependencies and is covered by the boundary checks |
 | `render` | *(Phase 4)* `Renderer` interface, `MeshHandle`/`MeshData` (optional per-vertex colours), `DrawItem`, `RenderFrame`, `Background`, `RenderStats`; CPU tessellation (`tessellatePolyline` with round caps/joins, fills, outlines, ellipses) |
-| `canvas` | *(Phase 4)* `Camera`, input events, `DocumentPort`, `StrokeBuilder` (dedupe, One-Euro, RDP), `SpatialGrid`, `CanvasScene` (draw order, versions), `RenderCache`, `RenderBatches`, `ElementGeometry` (meshes, hit tests), `Selection`, tools (pen, select/rectangle/move, stroke eraser, pan, zoom), `CanvasController` (routing, commits, frame building, stats) |
+| `canvas` | *(Phase 4)* `Camera`, input events, `DocumentPort`, `StrokeBuilder` (dedupe, One-Euro, RDP), `SpatialGrid`, `CanvasScene` (draw order, versions), `RenderCache`, `RenderBatches`, `ElementGeometry` (meshes, hit tests), `Selection`, tools (pen, select/rectangle/move, stroke eraser, pan, zoom), `CanvasController` (routing, commits, frame building, stats); *(Phase 5)* `setView` |
 | `render_gl` | *(Phase 4)* `OpenGLRenderer` (OpenGL 3.3 core via `QOpenGLFunctions_3_3_Core`; solid + pattern programs from `resources/shaders`; generational mesh slots; GPU timer queries; context-loss release) |
 | `persistence` | *(Phase 3)* RAII SQLite wrapper (`Database`, `Statement`, `Transaction`), embedded migrations + schema v1, `CatalogStore`, `PageStore`, `WorkspaceStore` (patch-driven writes, load through `Workspace::apply`), stroke codec v1, `Sha256`, `AssetStore`, `WorkspaceFile`/`WorkspaceLayout`; `sqliteLibraryInfo()` |
-| `application` | `componentVersions()`; *(Phase 3)* `WorkspaceSession` (create/open/read-only, execute/undo/redo persisted synchronously, pending-write queue, asset import) and the `WorkspaceLocker` port; *(Phase 4)* session patch listener, `ensureStartPage` |
+| `application` | `componentVersions()`; *(Phase 3)* `WorkspaceSession` (create/open/read-only, execute/undo/redo persisted synchronously, pending-write queue, asset import) and the `WorkspaceLocker` port; *(Phase 4)* session patch listener, `ensureStartPage`; *(Phase 5)* `PageNavigator` (active page), `WorkspaceStructure` (structure edits), `WorkspaceSession::isWorkspace` |
 | `platform` | Qt adapter for the core logging facade; *(Phase 3)* `QtWorkspaceLocker` (`QLockFile`) and `os/*/ProcessInfo` |
-| `ui` | `MainWindow` (menus, toolbar, status bar, About; *(Phase 4)* tool, edit, view, page-format and debug-HUD actions, save status), `ThemeManager` + `DesignTokens` (neutral light/dark), `CanvasPlaceholder` (shown without a workspace), `applicationIcon()`; *(Phase 4)* `CanvasWidget` (`QOpenGLWidget`, HUD, pan benchmark), `CanvasInputAdapter`, `SessionDocumentPort` |
-| `app` | `main.cpp` composition root; Windows `.rc` with the executable icon; *(Phase 4)* opens/creates the default workspace (lock handling), `--workspace`, development options `--bench-generate`, `--bench-pan`, `--bench-zoom`, `--screenshot` |
+| `ui` | `MainWindow` (menus, toolbar, status bar, About; *(Phase 4)* tool, edit, view, page-format and debug-HUD actions, save status), `ThemeManager` + `DesignTokens` (neutral light/dark), `CanvasPlaceholder` (shown without a workspace), `applicationIcon()`; *(Phase 4)* `CanvasWidget` (`QOpenGLWidget`, HUD, pan benchmark), `CanvasInputAdapter`, `SessionDocumentPort`; *(Phase 5)* the shell (§3.5): `MainWindow` owning the open workspace, `NavigationPanel` + `WorkspaceTreeModel`, `ShellDialogs`, welcome screen, theme toggle icon |
+| `app` | `main.cpp` composition root; Windows `.rc` with the executable icon; *(Phase 4)* development options `--bench-generate`, `--bench-pan`, `--bench-zoom`, `--screenshot`; *(Phase 5)* chooses the start-up workspace (D35) and hands it to the window |
 
 ### 3.3 Design system foundation *(Phase 2)*
 
@@ -366,6 +367,60 @@ resources/icons/app/
 * Icon assets are UI/app concerns only; no domain module depends on them.
 
 ---
+
+### 3.5 Application shell *(Phase 5)*
+
+```
+MainWindow (ui)                      owns the open workspace; recreated per workspace:
+ ├─ WorkspaceSession (application)     document + undo history + persistence (Phase 3)
+ ├─ PageNavigator (application)        the active page (shell state, never persisted)
+ ├─ WorkspaceStructure (application)   create / rename / delete / move → commands
+ ├─ SessionDocumentPort + CanvasController (canvas)
+ ├─ NavigationPanel → WorkspaceTreeModel (ui)   Notebook → Section → Page tree
+ └─ CanvasWidget (ui, Phase 4)         kept while switching pages
+```
+
+* **Ownership.** The composition root creates `ShellServices` (clock, id generator,
+  workspace locker) and the window; the window opens, creates and closes workspaces
+  itself and owns everything that belongs to one (above). `WorkspaceContext` lets tests
+  show a session they own.
+* **One mutation path.** Structure edits (`WorkspaceStructure`), canvas edits
+  (`DocumentPort`) and undo/redo all go through `WorkspaceSession`: Command → Patch →
+  Workspace → persistence. The UI never touches records, SQL or files. New commands for
+  this phase are the moves (`moveNotebook`/`moveSection`/`movePage`: a new fractional
+  order key between the neighbours, and the new parent — one record per move).
+* **Change routing.** The session's patch listener is the single fan-out: every applied
+  patch goes to the canvas controller, the tree model and the navigator. The tree model
+  mirrors the document's shape only (ids) and updates in place: renames emit
+  `dataChanged`, structural changes become row inserts/removals/moves (a move keeps
+  expansion and selection); element and layer changes do nothing. There is no copy of
+  the hierarchy in the UI.
+* **Active page.** `PageNavigator` holds the page on the canvas; opening a page is not an
+  edit (D37). When the active page disappears (delete, undo of its creation) the
+  neighbour opens: the page that took its place, else the one before it, else the first
+  page of the notebook, else of the workspace; with nothing open, the first page that
+  appears again (e.g. by undo) opens. The tree reveals the open page when it changes or
+  moves; collapsing its section afterwards is respected. While the tree mirrors a patch,
+  its current-row changes are ignored (the navigator decides). Each page's camera is
+  remembered for the session (`CanvasController::setView`), not persisted.
+* **Undo/redo.** One history per open workspace, as since Phase 2 (D20, D25): structure
+  and canvas edits of all pages interleave in it. Undo/redo of an edit on another page
+  first shows that page (D36), so nothing changes out of sight. The history is not kept
+  across close/reopen.
+* **Lifecycle and prompts.** Start-up opens `--workspace`, else the workspace open at the
+  last quit, else (first start) the default workspace (D35); a start-up workspace that
+  fails to open is forgotten. Only a new workspace gets a start page — opening one never
+  writes to it. Opening a workspace in use
+  elsewhere offers read-only; a stale lock offers "check and continue" or read-only
+  (§11.1). Closing flushes pending writes; only if that fails does the shell ask (try
+  again / close without saving / cancel) — the P3-01 case. There is no "save changes?"
+  question anywhere: persistence is continuous. All questions go through the
+  `ShellDialogs` interface (native dialogs; scripted in tests).
+* **Deletes.** Hard deletes of the whole subtree as before (D22), undoable; notebooks,
+  sections and pages with content are confirmed first (D38).
+* **Rendering.** The shell adds no timers and no render loop. Navigation UI does not
+  repaint the canvas (focus changes no longer repaint the `QOpenGLWidget`); opening a
+  page is one frame. Measured in ROADMAP.md, Phase 5.
 
 ## 4. Directory structure
 
@@ -514,7 +569,7 @@ details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
 Threading is introduced **incrementally, when a phase actually needs it**. The module
 boundaries below are designed so that each step is additive and does not change the domain.
 
-### 10.1 Current state (Phase 1–4): single-threaded
+### 10.1 Current state (Phase 1–5): single-threaded
 
 Everything runs on the Qt GUI thread. There is no executor infrastructure, no worker
 thread, no connection pool. Phase 3 persistence is synchronous: `WorkspaceSession` writes
@@ -790,7 +845,11 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D31 | Draw-call batching (`RenderBatches`: runs of ≤ 256 consecutive same-layer elements merged into one mesh with per-vertex colours) above 1 024 visible elements, in Phase 4 rather than Phase 9 | One draw call per element only (RENDERING.md §6.3 Phase 4 plan) | Measured on the reference integrated-GPU laptop: with 10 000 visible strokes, per-element drawing took 32 ms/frame (13 ms CPU submission, 18 ms GPU for 10 000 tiny draws); batching brought it to 10 ms/frame (ROADMAP.md Phase 4 results). Consecutive runs preserve painter's order exactly |
 | D32 | Google Benchmark 1.9.1 (pinned FetchContent, `STUDYAPP_BUILD_BENCHMARKS`, built in `ci-full`) for `bench/` | Hand-rolled timing loops | Planned in TESTING.md; statistically sound repetitions; not a runtime dependency |
 | D33 | Dark theme shows paper through a display transform: HSL lightness inversion, then lifted so white paper becomes the dark canvas grey (#171717) | Plain inversion (white → pure black); storing dark colours | Stored colours never change; the lifted range matches the dark design tokens and keeps the desk/paper contrast |
-| D34 | Until page navigation (Phase 5), the app opens one default workspace (per-user app data, or `--workspace`) and shows its first page, creating a starter page as one undo step | Ask for a workspace at start-up | Keeps Phase 4 free of Phase 5 UI while making drawing persistent end to end |
+| D34 | Until page navigation (Phase 5), the app opens one default workspace (per-user app data, or `--workspace`) and shows its first page, creating a starter page as one undo step | Ask for a workspace at start-up | Keeps Phase 4 free of Phase 5 UI while making drawing persistent end to end. Superseded by D35 |
+| D35 | Start-up workspace: `--workspace` (created if missing), else the one open when the app last quit, else — only on the very first start — the default workspace in app data, created with a start page; a workspace closed on purpose starts on the welcome screen. Recent workspaces in `QSettings` | Always ask at start-up; always open the default workspace | Drawing works immediately on first start and the user returns to where they were; an explicit close is respected |
+| D36 | Undo/redo stay workspace-wide (one history, D25); undoing an edit that belongs to one page other than the open one first opens that page | Per-page histories; undo only the open page's edits | Per-page scoping would change undo semantics and needs the catalog/page split (D25); showing the page keeps undo visible and predictable |
+| D37 | The active page and each page's last camera are shell state of the session (`application::PageNavigator`, `MainWindow`), not document data: not persisted, not undoable | Store the last page/camera in the workspace | Navigation must not create edits or undo steps; persisting view state needs a schema change and is not required yet |
+| D38 | No trash in Phase 5: structure deletes stay hard deletes (undoable) and are confirmed for notebooks, sections and pages with content | Soft delete with a trash view (planned for Phase 5 in D22) | A trash needs new record fields (a schema migration) and new deletion semantics; confirmation plus undo covers accidental deletes for now |
 
 New significant decisions should be appended here (or moved to `docs/adr/` once the list
 grows) with context, alternatives and consequences.

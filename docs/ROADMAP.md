@@ -1,6 +1,6 @@
 # Roadmap
 
-> Status: **Phases 0–4 complete.** Phases are ordered by dependency; each ends
+> Status: **Phases 0–5 complete.** Phases are ordered by dependency; each ends
 > with explicit exit criteria. Durations are intentionally not given yet.
 >
 > **Rule:** functionality is implemented only in its phase, even when the architecture
@@ -14,8 +14,9 @@
 | 2 — Document model, undo/redo, app icon, design foundation | ✅ Done |
 | 3 — Persistence | ✅ Done |
 | 4 — Canvas & OpenGL MVP | ✅ Done |
-| 5 — Application shell & navigation | Next |
-| 6–9 | Planned |
+| 5 — Application shell & navigation | ✅ Done |
+| 6 — Rich canvas content | Next |
+| 7–9 | Planned |
 
 ## Phase 0 — Architecture ✅
 
@@ -278,7 +279,62 @@ Original plan:
 * **Exit:** draw → close app → reopen: ink is identical; 10k-stroke page pans at 60 fps
   on a reference integrated-GPU laptop; no GL calls outside `render_gl`.
 
-## Phase 5 — Application shell & navigation
+## Phase 5 — Application shell & navigation ✅
+
+Delivered:
+
+* `document`: `moveNotebook`, `moveSection`, `movePage` (reorder and move to another
+  parent: a new fractional key between the neighbours, one record per move).
+* `application`: `WorkspaceStructure` (create notebook/section/page with default names and
+  a first section/page, rename, delete, move — each one command through the session),
+  `PageNavigator` (active page, neighbour when it disappears, previous/next),
+  `pageChangedBy` (the page an undo/redo touches), `WorkspaceSession::isWorkspace`.
+  `canvas`: `CanvasController::setView` (return to where a page was left).
+* `ui`: `MainWindow` owns the open workspace (ARCHITECTURE.md §3.5): File (New/Open/Open
+  Recent/Close Workspace, Save, Exit), Edit (Undo/Redo, Delete, Select All), Notebook
+  (New Page/Section/Notebook, Rename, Delete, Move Up/Down, Previous/Next Page), Tools,
+  View (Navigation, Theme, zoom, page format, HUD); `NavigationPanel` +
+  `WorkspaceTreeModel` (targeted updates, inline rename, drag-and-drop reorder/move);
+  welcome screen with new/open/recent; breadcrumb and title; compact sun/moon theme
+  toggle (the recorded Phase 2 refinement); `ShellDialogs` for every question.
+* `app`: start-up workspace choice (D35); `--workspace` still creates a missing workspace.
+* No save questions: edits persist continuously; closing asks only if writes failed
+  (retry / close without saving / cancel — P3-01's closing case).
+* Independent review of the implementation (findings fixed: tree current-row changes
+  during a patch, re-expanding a collapsed section on every edit, no-op renames recorded
+  as edits, a failing start-up workspace retried at every start, recent-menu entries
+  deleted inside their own signal, a start page written when opening an empty workspace).
+* Shortcut fixes found by using the shell: Redo registered Ctrl+Y twice on Windows (Qt
+  treated it as ambiguous and Ctrl+Y did nothing); the canvas repainted on every focus
+  change and every key (now only when a key changes something).
+* Tests: `CommandsTest` (moves), `application_tests` `ShellWorkflowTest` (structure,
+  navigator, end-to-end create → edit → switch → reopen), `ui.ShellTest` (tree model with
+  `QAbstractItemModelTester` and signal counts; window workflows with real sessions,
+  locks and scripted dialogs), `ui.CanvasWidgetTest` (navigation paints no canvas frame).
+  357 CTest tests in the debug build.
+
+Measured (reference laptop, 144 Hz, Release, traced build, real OS input) — Phase 4
+behaviour is unchanged inside the shell:
+
+| Scenario | Canvas frames / cadence |
+|---|---|
+| Idle, hover, hovering the tree, selecting a notebook, collapsing/expanding, idle with the tree focused | 0 frames |
+| Opening a page from the tree | 1 frame |
+| Drawing / erasing / selection drag / pan, 10 000 strokes | median 6.9–7.0 ms (144 Hz), as in Phase 4 |
+| Pan with the whole 10 000-stroke page in view | median 7.9 ms, p99 18 ms |
+| Window resize | 1 paint per resize event (120 for 121) |
+
+Deferred (Phase 6+ or later in this plan): trash/restore (needs record fields and a
+migration, D38), page templates and thumbnails, recent pages, persisted per-page camera
+and last page (D37), per-page undo scoping (D25/D36), a "save a copy" recovery for
+failing writes (P3-01 beyond closing), cloud-folder detection (open question 2).
+
+* **Exit (met):** a user organises notes across notebooks and sections without touching
+  the file system — create, rename, reorder (menu or drag), move, delete, switch pages —
+  and every structure edit is undoable and persisted (`ShellWorkflowTest`, `ui.ShellTest`,
+  manual session in the real application).
+
+Original plan:
 
 * Notebook/section/page tree (create, rename, reorder by drag, move, trash/restore).
 * Page templates (size, background), page thumbnails (cache dir), recent pages.

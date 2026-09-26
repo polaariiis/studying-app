@@ -4,12 +4,12 @@ StudyBoard is a local-first, native desktop application for studying. It is plan
 combine handwritten and typed notes on an infinite canvas, drawing, PDF annotation,
 notebooks, and course/project/task planning, all usable without an internet connection.
 
-> **Status: early development — Phase 2 is complete.**
-> The headless document engine exists: the Workspace → Notebook → Section → Page → Layer →
-> Element model with stable ids, patch-based editing, commands and undo/redo, all covered
-> by tests. The application itself still opens a placeholder window (menus, toolbar,
-> neutral light/dark themes, StudyBoard icon); notebooks UI, drawing, the canvas,
-> planning, search and PDF support are **not implemented yet**; see the
+> **Status: early development — Phases 1–5 are complete.**
+> StudyBoard opens and creates workspaces (a folder with a SQLite database, saved
+> continuously), shows their notebooks, sections and pages in a navigation tree (create,
+> rename, reorder, move, delete — all undoable) and draws on an OpenGL canvas with pen,
+> selection, stroke eraser, pan and zoom. Rich canvas content (shapes, text, images,
+> highlighter), planning, search and PDF support are **not implemented yet**; see the
 > [roadmap](docs/ROADMAP.md).
 
 ## Technology
@@ -40,7 +40,7 @@ app (studyapp executable)
  render_gl (OpenGL) ── render ┘
 ```
 
-| Module | Responsibility | State (end of Phase 4) |
+| Module | Responsibility | State (end of Phase 5) |
 |---|---|---|
 | `core` | Geometry, UUIDv7 ids, ordering keys, colours, `Result`, clock, logging | Implemented |
 | `document` | Notebooks, sections, pages, layers, elements, patches, commands, undo/redo | Implemented (headless) |
@@ -48,9 +48,9 @@ app (studyapp executable)
 | `render` / `render_gl` | Renderer API / OpenGL 3.3 backend | Implemented: tessellation, solid + pattern programs, batching |
 | `canvas` | Camera, tools, hit testing, selection | Implemented: pen, select/move, stroke eraser, pan/zoom |
 | `persistence` | SQLite schema, stores, assets, workspace directory | Implemented: schema v1 + migrations, patch-driven stores, asset store |
-| `application` | Sessions and use cases | `WorkspaceSession` (create/open/edit/undo/close, persisted) |
+| `application` | Sessions and use cases | `WorkspaceSession` (create/open/edit/undo/close, persisted); structure edits and the active page |
 | `platform` | Qt-backed adapters, OS-specific code | Qt log sink, workspace lock (`QLockFile`) |
-| `ui` | Main window, design tokens, themes, app icon | Shell with the OpenGL canvas, tools and debug HUD |
+| `ui` | Main window, design tokens, themes, app icon | Application shell: workspaces, navigation tree, page management, the OpenGL canvas |
 
 Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), plus the
 [data model](docs/DATA_MODEL.md), [database schema](docs/DATABASE_SCHEMA.md),
@@ -117,7 +117,7 @@ cmake --workflow --preset debug
 | 2 | Document model, commands, undo/redo (headless); app icon; design foundation | ✅ |
 | 3 | SQLite persistence, assets, workspace locking | ✅ |
 | 4 | Canvas engine + OpenGL renderer (first drawing) | ✅ |
-| 5 | Navigation: notebooks, sections, pages | Next |
+| 5 | Navigation: notebooks, sections, pages | ✅ |
 | 6 | Text, shapes, images, connectors, layers | Planned |
 | 7 | Study & planning | Planned |
 | 8 | Search, PDF annotation, export | Planned |

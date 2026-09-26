@@ -146,8 +146,9 @@ Deferred (target design, not implemented yet):
   per-page `PageDocument`s loaded on demand (with per-page undo scoping) is deferred until
   page-load cost is measured with the canvas (ARCHITECTURE.md decision D25). The storage
   side is already per page (`persistence::PageStore::load(PageId)`).
-* **Trash / soft delete** (`trashed` timestamps) — Phase 5 (navigation UI). Phase 2
-  deletes are hard deletes, fully restorable by undo.
+* **Trash / soft delete** (`trashed` timestamps) — deferred beyond Phase 5 (it needs a
+  schema migration; ARCHITECTURE.md D38). Deletes are hard deletes, fully restorable by
+  undo; the shell confirms deleting notebooks, sections and pages with content.
 * **Nested sections, tags, notebook colours/icons, course links** — with the features that
   use them (Phases 5 and 7).
 
@@ -375,6 +376,7 @@ commands return `Created<Id> { Id id; Command command; }`. Ids come from the inj
 | `deleteElements` *(Phase 4)* | removes a set (any pages) as one patch; detaches connectors outside the set |
 | `moveElements` *(Phase 4)* | translates a set as one patch; connectors move their free ends and ends attached to moved elements; other connectors' cached ends follow moved targets |
 | `setPageFormat` *(Phase 4)* | changes a page's extent, size and background; empty patch if unchanged |
+| `moveNotebook`, `moveSection`, `movePage` *(Phase 5)* | reorder among siblings or move into another notebook/section; the record gets an order key strictly between its new neighbours (siblings unchanged) and the new parent; the subtree follows; empty patch if already there |
 
 Errors: `NotFound` (unknown id), `InvalidArgument` (blank name, last layer). Anything a
 command cannot know in advance is caught by `Workspace::apply`.

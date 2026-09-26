@@ -326,7 +326,8 @@ What exists (`src/canvas`), and where it differs from the sketches above.
 * **Camera** (§2) as sketched, plus `viewToDevice`/`deviceToView`, `worldToViewTransform`
   and `reset()` (zoom 1, world origin at the top-left). Positions are `DVec2` in every space.
   Bounded pages are fitted on open (32 px margin) and clamped so ≥ 48 px of the page stays
-  visible. The per-page last camera is not persisted yet (with page navigation, Phase 5).
+  visible. Since Phase 5 the shell remembers each page's camera for the session and
+  restores it with `CanvasController::setView`; it is not persisted (ARCHITECTURE.md D37).
 * **Input** (§4): `PointerEvent` (phase, device incl. the pen's eraser end, button,
   view position, pressure, modifiers, timestamp, pointer id), `WheelEvent` (angle and
   pixel deltas), `ZoomGestureEvent`, `KeyEvent` (Space, Escape, Delete). Tilt and

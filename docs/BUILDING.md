@@ -127,6 +127,11 @@ studyapp --workspace <dir> --screenshot canvas.png # save the rendered canvas an
 * macOS: `open build/debug/app/studyapp.app`
 * Linux: `build/debug/app/studyapp`
 
+On start the application opens `--workspace <dir>` (created if missing), else the
+workspace that was open when it last quit, else — on the very first start — a default
+workspace in the per-user application data folder (ARCHITECTURE.md D35). Recent
+workspaces, the theme and window layout live in the per-user `QSettings`.
+
 **Installing** (runs `windeployqt` / `macdeployqt` / Qt's Linux deployment via
 `qt_generate_deploy_app_script`, producing a self-contained tree):
 
