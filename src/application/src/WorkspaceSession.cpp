@@ -136,10 +136,10 @@ struct WorkspaceSession::Impl {
         if (patch.empty()) {
             return;
         }
+        pending.push_back(patch); // queued first: persistence order is application order
         if (listener) {
             listener(patch);
         }
-        pending.push_back(std::move(patch));
         // A failure is recorded in lastError and retried later; the edit itself stands.
         (void)writePending();
     }
@@ -262,6 +262,11 @@ Result<std::unique_ptr<WorkspaceSession>> WorkspaceSession::open(const std::file
 Result<LockStatus> WorkspaceSession::inspectLock(const std::filesystem::path& root,
                                                  WorkspaceLocker& locker) {
     return locker.inspect(persistence::WorkspaceLayout{root}.lockFile());
+}
+
+bool WorkspaceSession::isWorkspace(const std::filesystem::path& root) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(persistence::WorkspaceLayout{root}.database(), ec);
 }
 
 WorkspaceSession::WorkspaceSession(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}

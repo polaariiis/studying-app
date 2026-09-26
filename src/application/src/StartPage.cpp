@@ -1,5 +1,6 @@
 #include <studyapp/application/StartPage.hpp>
 
+#include <studyapp/application/WorkspaceStructure.hpp>
 #include <studyapp/document/Commands.hpp>
 
 #include <utility>
@@ -53,13 +54,8 @@ core::Result<core::PageId> ensureStartPage(WorkspaceSession& session, const core
     if (!section) {
         return tl::unexpected(section.error());
     }
-    const commands::PageOptions options{.extent = document::PageExtent::Infinite,
-                                        .size = {},
-                                        .background = {.color = core::Color::white(),
-                                                       .pattern = document::BackgroundPattern::Dots,
-                                                       .spacing = 24.0F},
-                                        .firstLayerName = "Layer 1"};
-    auto page = step(commands::createPage(scratch, *section, "Page 1", options, clock, ids));
+    auto page =
+        step(commands::createPage(scratch, *section, "Page 1", defaultPageOptions(), clock, ids));
     if (!page) {
         return tl::unexpected(page.error());
     }

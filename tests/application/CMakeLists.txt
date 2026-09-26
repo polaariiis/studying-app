@@ -4,6 +4,7 @@ studyapp_add_gtest(application_tests
     SOURCES
         CanvasSessionTest.cpp
         ComponentVersionsTest.cpp
+        ShellWorkflowTest.cpp
         WorkspaceSessionTest.cpp
     LIBS
         studyapp::application

@@ -67,6 +67,8 @@ public:
 
     [[nodiscard]] static core::Result<LockStatus> inspectLock(const std::filesystem::path& root,
                                                               WorkspaceLocker& locker);
+    /// True if `root` contains a StudyBoard workspace (its database), without opening it.
+    [[nodiscard]] static bool isWorkspace(const std::filesystem::path& root);
 
     /// Flushes pending writes (best effort; failures are logged) and releases the lock.
     ~WorkspaceSession();
