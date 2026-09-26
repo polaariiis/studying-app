@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -132,6 +133,9 @@ Result<Command> renameNotebook(const Workspace& workspace, core::NotebookId note
     if (auto check = validateName(title, "notebook title"); !check) {
         return tl::unexpected(check.error());
     }
+    if (current->title == title) {
+        return Command{"Rename notebook", Patch{}}; // unchanged: nothing to record
+    }
     NotebookInfo after = *current;
     after.title = std::move(title);
     after.modified = clock.now();
@@ -185,6 +189,9 @@ Result<Command> renameSection(const Workspace& workspace, core::SectionId sectio
     }
     if (auto check = validateName(title, "section title"); !check) {
         return tl::unexpected(check.error());
+    }
+    if (current->title == title) {
+        return Command{"Rename section", Patch{}};
     }
     SectionInfo after = *current;
     after.title = std::move(title);
@@ -243,6 +250,9 @@ Result<Command> renamePage(const Workspace& workspace, core::PageId page, std::s
     if (current == nullptr) {
         return tl::unexpected(notFound("page", page));
     }
+    if (current->title == title) {
+        return Command{"Rename page", Patch{}};
+    }
     PageInfo after = *current;
     after.title = std::move(title); // an empty page title is allowed ("Untitled")
     after.modified = clock.now();
@@ -257,6 +267,111 @@ Result<Command> deletePage(const Workspace& workspace, core::PageId page) {
     std::vector<AnyChange> changes;
     appendPageRemoval(workspace, *current, changes);
     return makeCommand("Delete page", std::move(changes));
+}
+
+// ---------------------------------------------------------------------------- ordering
+
+namespace {
+
+/// Order key that places `moved` at `index` among `siblings` (the destination's children,
+/// which may include `moved` itself). nullopt: it is already there (no-op).
+template <class Id, class OrderOf>
+Result<std::optional<FractionalIndex>> keyAt(std::span<const Id> siblings, Id moved,
+                                             std::size_t index, OrderOf orderOf) {
+    std::vector<Id> others;
+    others.reserve(siblings.size());
+    std::optional<std::size_t> current;
+    for (const Id id : siblings) {
+        if (id == moved) {
+            current = others.size();
+        } else {
+            others.push_back(id);
+        }
+    }
+    index = std::min(index, others.size());
+    if (current == index) {
+        return std::optional<FractionalIndex>{};
+    }
+    const std::optional<FractionalIndex> lower =
+        index > 0 ? std::optional(orderOf(others[index - 1])) : std::nullopt;
+    const std::optional<FractionalIndex> upper =
+        index < others.size() ? std::optional(orderOf(others[index])) : std::nullopt;
+    auto key = FractionalIndex::between(lower, upper);
+    if (!key) {
+        return tl::unexpected(key.error());
+    }
+    return std::optional(std::move(*key));
+}
+
+} // namespace
+
+Result<Command> moveNotebook(const Workspace& workspace, core::NotebookId notebook,
+                             std::size_t index, const core::Clock& clock) {
+    const NotebookInfo* current = workspace.findNotebook(notebook);
+    if (current == nullptr) {
+        return tl::unexpected(notFound("notebook", notebook));
+    }
+    auto key = keyAt(workspace.notebooks(), notebook, index,
+                     [&](core::NotebookId id) { return workspace.findNotebook(id)->order; });
+    if (!key) {
+        return tl::unexpected(key.error());
+    }
+    if (!*key) {
+        return Command{"Move notebook", Patch{}};
+    }
+    NotebookInfo after = *current;
+    after.order = std::move(**key);
+    after.modified = clock.now();
+    return makeCommand("Move notebook", {updated(*current, std::move(after))});
+}
+
+Result<Command> moveSection(const Workspace& workspace, core::SectionId section,
+                            core::NotebookId destination, std::size_t index,
+                            const core::Clock& clock) {
+    const SectionInfo* current = workspace.findSection(section);
+    if (current == nullptr) {
+        return tl::unexpected(notFound("section", section));
+    }
+    if (workspace.findNotebook(destination) == nullptr) {
+        return tl::unexpected(notFound("notebook", destination));
+    }
+    auto key = keyAt(workspace.sectionsOf(destination), section, index,
+                     [&](core::SectionId id) { return workspace.findSection(id)->order; });
+    if (!key) {
+        return tl::unexpected(key.error());
+    }
+    if (!*key) {
+        return Command{"Move section", Patch{}};
+    }
+    SectionInfo after = *current;
+    after.notebook = destination;
+    after.order = std::move(**key);
+    after.modified = clock.now();
+    return makeCommand("Move section", {updated(*current, std::move(after))});
+}
+
+Result<Command> movePage(const Workspace& workspace, core::PageId page, core::SectionId destination,
+                         std::size_t index, const core::Clock& clock) {
+    const PageInfo* current = workspace.findPage(page);
+    if (current == nullptr) {
+        return tl::unexpected(notFound("page", page));
+    }
+    if (workspace.findSection(destination) == nullptr) {
+        return tl::unexpected(notFound("section", destination));
+    }
+    auto key = keyAt(workspace.pagesOf(destination), page, index,
+                     [&](core::PageId id) { return workspace.findPage(id)->order; });
+    if (!key) {
+        return tl::unexpected(key.error());
+    }
+    if (!*key) {
+        return Command{"Move page", Patch{}};
+    }
+    PageInfo after = *current;
+    after.section = destination;
+    after.order = std::move(**key);
+    after.modified = clock.now();
+    return makeCommand("Move page", {updated(*current, std::move(after))});
 }
 
 // ---------------------------------------------------------------------------- layers

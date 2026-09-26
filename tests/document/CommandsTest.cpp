@@ -320,5 +320,124 @@ TEST(CommandsTest, SetPageFormatChangesExtentAndBackground) {
     EXPECT_FALSE(t.editor.execute(std::move(*rejected)).has_value()); // validated by apply
 }
 
+TEST(CommandsTest, RenamingToTheSameTitleIsANoOp) {
+    TestWorkspace t;
+    const auto notebook = t.addNotebook("N");
+    const auto section = t.addSection(notebook, "S");
+    const auto page = t.addPage(section, "");
+    t.clock.advance(1min);
+    EXPECT_TRUE(commands::renameNotebook(t.workspace, notebook, "N", t.clock)->patch.empty());
+    EXPECT_TRUE(commands::renameSection(t.workspace, section, "S", t.clock)->patch.empty());
+    EXPECT_TRUE(commands::renamePage(t.workspace, page, "", t.clock)->patch.empty());
+    EXPECT_FALSE(commands::renamePage(t.workspace, page, "P", t.clock)->patch.empty());
+}
+
+TEST(CommandsTest, MoveNotebookReordersWithoutTouchingSiblings) {
+    TestWorkspace t;
+    const auto a = t.addNotebook("A");
+    const auto b = t.addNotebook("B");
+    const auto c = t.addNotebook("C");
+    const auto order = [&] {
+        return std::vector<core::NotebookId>(t.workspace.notebooks().begin(),
+                                             t.workspace.notebooks().end());
+    };
+    const NotebookInfo beforeA = *t.workspace.findNotebook(a);
+    const NotebookInfo beforeB = *t.workspace.findNotebook(b);
+
+    auto toFront = commands::moveNotebook(t.workspace, c, 0, t.clock);
+    ASSERT_OK(toFront);
+    EXPECT_EQ(toFront->patch.size(), 1U); // only the moved record changes
+    t.run(std::move(toFront));
+    EXPECT_EQ(order(), (std::vector{c, a, b}));
+    EXPECT_EQ(*t.workspace.findNotebook(a), beforeA);
+    EXPECT_EQ(*t.workspace.findNotebook(b), beforeB);
+
+    t.run(commands::moveNotebook(t.workspace, c, 1, t.clock)); // between a and b
+    EXPECT_EQ(order(), (std::vector{a, c, b}));
+    t.run(commands::moveNotebook(t.workspace, a, 99, t.clock)); // past the end appends
+    EXPECT_EQ(order(), (std::vector{c, b, a}));
+    // Already there: an empty command.
+    EXPECT_TRUE(commands::moveNotebook(t.workspace, a, 2, t.clock)->patch.empty());
+    EXPECT_TRUE(commands::moveNotebook(t.workspace, a, 7, t.clock)->patch.empty());
+
+    ASSERT_OK(t.editor.undo());
+    ASSERT_OK(t.editor.undo());
+    EXPECT_EQ(order(), (std::vector{c, a, b}));
+    ASSERT_OK(t.workspace.validate());
+    EXPECT_EQ(commands::moveNotebook(t.workspace, core::NotebookId{}, 0, t.clock).error().code,
+              ErrorCode::NotFound);
+}
+
+TEST(CommandsTest, MoveSectionAndPageAcrossParentsTakeTheirSubtree) {
+    TestWorkspace t;
+    const auto n1 = t.addNotebook("N1");
+    const auto n2 = t.addNotebook("N2");
+    const auto s1 = t.addSection(n1, "S1");
+    const auto s2 = t.addSection(n2, "S2");
+    const auto p1 = t.addPage(s1, "P1");
+    const auto p2 = t.addPage(s1, "P2");
+    const auto layer = t.firstLayer(p1);
+    t.addElement(layer, makeStroke());
+
+    // The section goes to the other notebook (before S2), with its pages and content.
+    t.run(commands::moveSection(t.workspace, s1, n2, 0, t.clock));
+    EXPECT_TRUE(t.workspace.sectionsOf(n1).empty());
+    EXPECT_EQ(std::vector(t.workspace.sectionsOf(n2).begin(), t.workspace.sectionsOf(n2).end()),
+              (std::vector{s1, s2}));
+    EXPECT_EQ(t.workspace.findSection(s1)->notebook, n2);
+    EXPECT_EQ(t.workspace.pagesOf(s1).size(), 2U);
+    EXPECT_EQ(t.workspace.elementsOf(layer).size(), 1U);
+
+    // A page goes to the other section.
+    t.run(commands::movePage(t.workspace, p1, s2, 0, t.clock));
+    EXPECT_EQ(t.workspace.findPage(p1)->section, s2);
+    EXPECT_EQ(std::vector(t.workspace.pagesOf(s1).begin(), t.workspace.pagesOf(s1).end()),
+              (std::vector{p2}));
+    EXPECT_EQ(t.workspace.layersOf(p1).size(), 1U);
+    ASSERT_OK(t.workspace.validate());
+
+    // Within one section: reorder.
+    const auto p3 = t.addPage(s2, "P3");
+    t.run(commands::movePage(t.workspace, p3, s2, 0, t.clock));
+    EXPECT_EQ(std::vector(t.workspace.pagesOf(s2).begin(), t.workspace.pagesOf(s2).end()),
+              (std::vector{p3, p1}));
+
+    // Undo restores parents and order exactly.
+    ASSERT_OK(t.editor.undo()); // reorder
+    ASSERT_OK(t.editor.undo()); // create P3
+    ASSERT_OK(t.editor.undo()); // page move
+    ASSERT_OK(t.editor.undo()); // section move
+    EXPECT_EQ(t.workspace.findSection(s1)->notebook, n1);
+    EXPECT_EQ(std::vector(t.workspace.pagesOf(s1).begin(), t.workspace.pagesOf(s1).end()),
+              (std::vector{p1, p2}));
+    EXPECT_EQ(commands::movePage(t.workspace, p1, core::SectionId{}, 0, t.clock).error().code,
+              ErrorCode::NotFound);
+    EXPECT_EQ(commands::moveSection(t.workspace, s1, core::NotebookId{}, 0, t.clock).error().code,
+              ErrorCode::NotFound);
+}
+
+TEST(CommandsTest, RepeatedMovesKeepATotalOrder) {
+    // Moving the last page to the front over and over keeps producing keys strictly
+    // between neighbours; the order stays exactly as intended.
+    TestWorkspace t;
+    const auto section = t.addSection(t.addNotebook("N"), "S");
+    std::vector<core::PageId> expected;
+    for (int i = 0; i < 6; ++i) {
+        expected.push_back(t.addPage(section, "P" + std::to_string(i)));
+    }
+    for (int round = 0; round < 60; ++round) {
+        const core::PageId last = expected.back();
+        const std::size_t target = static_cast<std::size_t>(round % 3);
+        t.run(commands::movePage(t.workspace, last, section, target, t.clock));
+        expected.pop_back();
+        expected.insert(expected.begin() + static_cast<std::ptrdiff_t>(target), last);
+        ASSERT_EQ(
+            std::vector(t.workspace.pagesOf(section).begin(), t.workspace.pagesOf(section).end()),
+            expected)
+            << "round " << round;
+    }
+    ASSERT_OK(t.workspace.validate());
+}
+
 } // namespace
 } // namespace studyapp::document::test

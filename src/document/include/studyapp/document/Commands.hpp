@@ -9,6 +9,7 @@
 #include <studyapp/document/Records.hpp>
 #include <studyapp/document/Workspace.hpp>
 
+#include <cstddef>
 #include <span>
 #include <string>
 
@@ -23,7 +24,8 @@ namespace studyapp::document::commands {
 //
 // New records are appended after their last sibling. Ids come from the injected
 // IdGenerator and timestamps from the injected Clock, so results are deterministic under
-// test. Errors: NotFound for unknown ids, InvalidArgument for invalid input.
+// test. Errors: NotFound for unknown ids, InvalidArgument for invalid input. Renaming to
+// the current title gives an empty (no-op) command.
 
 /// Result of a creating command: the id of the new record plus the command to execute.
 template <class Id>
@@ -69,6 +71,25 @@ createPage(const Workspace& workspace, core::SectionId section, std::string titl
 [[nodiscard]] core::Result<Command> renamePage(const Workspace& workspace, core::PageId page,
                                                std::string title, const core::Clock& clock);
 [[nodiscard]] core::Result<Command> deletePage(const Workspace& workspace, core::PageId page);
+
+// ---- ordering -------------------------------------------------------------------------
+// Moves change only the record's parent, order key and modified time; the subtree moves
+// with it. `index` is the position among the destination's children once the record is
+// there (0 = first; an index past the end appends). The new order key lies strictly
+// between the neighbours' keys (core::FractionalIndex), so no sibling changes. Moving to
+// the current position gives an empty (no-op) command. Errors: NotFound for unknown ids.
+
+[[nodiscard]] core::Result<Command> moveNotebook(const Workspace& workspace,
+                                                 core::NotebookId notebook, std::size_t index,
+                                                 const core::Clock& clock);
+/// Also moves a section into another notebook.
+[[nodiscard]] core::Result<Command> moveSection(const Workspace& workspace, core::SectionId section,
+                                                core::NotebookId destination, std::size_t index,
+                                                const core::Clock& clock);
+/// Also moves a page into another section.
+[[nodiscard]] core::Result<Command> movePage(const Workspace& workspace, core::PageId page,
+                                             core::SectionId destination, std::size_t index,
+                                             const core::Clock& clock);
 
 // ---- layers ---------------------------------------------------------------------------
 [[nodiscard]] core::Result<Created<core::LayerId>> createLayer(const Workspace& workspace,
