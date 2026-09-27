@@ -34,6 +34,18 @@ public:
     void destroyMesh(render::MeshHandle handle) override {
         destroyed += meshes.erase(handle.index);
     }
+    render::TextureHandle createTexture(const render::ImageData& image) override {
+        if (image.empty()) {
+            return {};
+        }
+        const render::TextureHandle handle{.index = nextIndex_++, .generation = 1};
+        textures[handle.index] = {image.width, image.height};
+        ++texturesCreated;
+        return handle;
+    }
+    void destroyTexture(render::TextureHandle handle) override {
+        texturesDestroyed += textures.erase(handle.index);
+    }
     void render(const render::RenderFrame& frame) override {
         lastContent.assign(frame.content.begin(), frame.content.end());
         lastOverlay.assign(frame.overlay.begin(), frame.overlay.end());
@@ -43,10 +55,14 @@ public:
     render::RenderStats lastFrameStats() const noexcept override { return {}; }
     void releaseAll() noexcept override {
         meshes.clear();
+        textures.clear();
         initialized_ = false;
     }
 
     std::map<std::uint32_t, render::MeshData> meshes;
+    std::map<std::uint32_t, std::pair<int, int>> textures; ///< live textures: width, height
+    std::size_t texturesCreated = 0;
+    std::size_t texturesDestroyed = 0;
     std::vector<render::DrawItem> lastContent;
     std::vector<render::DrawItem> lastOverlay;
     render::Background lastBackground{};

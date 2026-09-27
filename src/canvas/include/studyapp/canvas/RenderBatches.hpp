@@ -17,7 +17,13 @@ namespace studyapp::canvas {
 /// docs/ROADMAP.md Phase 4 results).
 ///
 /// The page's draw order (visible layers only) is cut into runs of at most `kBatchSize`
-/// consecutive elements of one layer. Each run becomes one mesh: the members' cached
+/// consecutive elements of one layer. Where a run ends is decided by the elements
+/// themselves, not by their position (content-defined chunking): a run ends before an
+/// element whose id hashes to a boundary, once the run has kMinBatchSize members, or when
+/// it is full. So inserting or removing elements in the middle of the page (a partial
+/// erase, a paste) changes only the runs around the edit instead of shifting every later
+/// run boundary (measured: a partial erase across a dense 10 000-stroke page rebuilt every
+/// later run, ≈ 36 ms, with fixed-size runs). Each run becomes one mesh: the members' cached
 /// meshes transformed into the run's space (world minus the first member's position, so
 /// floats only span the run) with per-vertex colours. Because runs are consecutive in
 /// draw order and drawn in order, painter's order is exactly the same as drawing every
@@ -30,6 +36,9 @@ namespace studyapp::canvas {
 class RenderBatches {
 public:
     static constexpr std::size_t kBatchSize = 256;
+    static constexpr std::size_t kMinBatchSize = 32;
+    /// One element in this many starts a run (average run ≈ this long, capped by kBatchSize).
+    static constexpr std::uint64_t kBoundaryModulus = 128;
 
     struct Batch {
         std::vector<core::ElementId> members{}; ///< consecutive in draw order
@@ -40,6 +49,9 @@ public:
         std::uint64_t signature = 0;
         render::MeshHandle gpu{};
         std::size_t triangles = 0;
+        /// A text box or image: a run of its own that the controller draws as a texture,
+        /// so painter's order holds without merging textures into meshes.
+        bool textured = false;
     };
 
     /// Brings the batches up to date with the scene (cheap when nothing changed: the

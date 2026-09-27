@@ -3,6 +3,8 @@
 // edits through the session, undo across pages, locks, no save questions. Runs on the
 // offscreen platform (the canvas has no OpenGL there; everything else is real).
 
+#include "PlannerPanel.hpp"
+#include "SessionImageSource.hpp"
 #include "WorkspaceTreeModel.hpp"
 
 #include <studyapp/application/PageNavigator.hpp>
@@ -10,6 +12,8 @@
 #include <studyapp/application/WorkspaceStructure.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/document/Editor.hpp>
+#include <studyapp/persistence/Database.hpp>
+#include <studyapp/platform/QtTextLayout.hpp>
 #include <studyapp/platform/QtWorkspaceLocker.hpp>
 #include <studyapp/testing/ManualClock.hpp>
 #include <studyapp/testing/SequentialIds.hpp>
@@ -20,18 +24,31 @@
 #include <QAbstractItemModelTester>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QCursor>
 #include <QDir>
 #include <QFile>
+#include <QImage>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
 #include <QMimeData>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextEdit>
+#include <QTimer>
+#include <QToolButton>
 #include <QTreeView>
+#include <QTreeWidget>
 
+#include <cmath>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 using namespace studyapp;
@@ -103,11 +120,15 @@ class ScriptedDialogs final : public ui::ShellDialogs {
 public:
     std::optional<std::filesystem::path> newWorkspace;
     std::optional<std::filesystem::path> openWorkspace;
+    std::optional<std::filesystem::path> insertImage;
     bool openReadOnly = true;
     StaleLockChoice staleLock = StaleLockChoice::Recover;
     bool confirmDeletes = true;
     UnsavedChoice unsaved = UnsavedChoice::Cancel;
+    /// Called when asked about unsaved changes (e.g. to repair the fault before Retry).
+    std::function<void()> onUnsavedQuestion;
     int questions = 0;
+    int unsavedQuestions = 0;
     int deleteQuestions = 0;
     QStringList errors;
 
@@ -118,6 +139,10 @@ public:
     std::optional<std::filesystem::path> chooseWorkspaceToOpen(QWidget*) override {
         ++questions;
         return openWorkspace;
+    }
+    std::optional<std::filesystem::path> chooseImageToInsert(QWidget*) override {
+        ++questions;
+        return insertImage;
     }
     bool confirmOpenReadOnly(QWidget*, const QString&) override {
         ++questions;
@@ -132,12 +157,39 @@ public:
         ++deleteQuestions;
         return confirmDeletes;
     }
+    /// Answers for askText, first to last; cancelled when none is left.
+    QStringList texts;
+    std::optional<QString> askText(QWidget*, const QString&, const QString&,
+                                   const QString&) override {
+        ++questions;
+        if (texts.isEmpty()) {
+            return std::nullopt;
+        }
+        return texts.takeFirst();
+    }
     UnsavedChoice askUnsavedChanges(QWidget*, std::size_t, const QString&) override {
         ++questions;
-        return unsaved;
+        ++unsavedQuestions;
+        const UnsavedChoice answer = unsaved;
+        if (onUnsavedQuestion) {
+            onUnsavedQuestion();
+        }
+        return answer;
     }
     void showError(QWidget*, const QString& summary, const QString&) override { errors << summary; }
 };
+
+/// Makes every element insert fail (a trigger created from a second connection), or
+/// removes that fault again — as the persistence tests inject write failures.
+void injectWriteFailure(const std::filesystem::path& workspace, bool on) {
+    auto db =
+        persistence::Database::open(workspace / "workspace.db", persistence::OpenMode::ReadWrite);
+    QVERIFY(db.has_value());
+    const auto done = db->execute(on ? "CREATE TRIGGER inject_failure BEFORE INSERT ON element "
+                                       "BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;"
+                                     : "DROP TRIGGER inject_failure");
+    QVERIFY(done.has_value());
+}
 
 std::vector<QString> childTitles(const QAbstractItemModel& model, const QModelIndex& parent = {}) {
     std::vector<QString> titles;
@@ -172,6 +224,7 @@ private:
         platform::QtWorkspaceLocker locker;
         std::unique_ptr<QSettings> settings;
         ui::ThemeManager themes;
+        platform::QtTextLayout textLayout;
         ScriptedDialogs* dialogs = nullptr;
         std::unique_ptr<ui::MainWindow> window;
 
@@ -184,6 +237,7 @@ private:
             window = std::make_unique<ui::MainWindow>(
                 themes, *settings, ui::ShellServices{.clock = clock, .ids = ids, .locker = locker},
                 std::move(scripted));
+            window->setTextLayout(&textLayout);
             window->resize(1000, 700);
             window->show();
             // Every workflow runs with the model contract checked (row signals, indexes).
@@ -696,6 +750,757 @@ private Q_SLOTS:
         QVERIFY(newButton != nullptr && newButton->isVisible());
         QVERIFY(newButton->mapTo(welcome, QPoint(0, 0)).y() >=
                 subtitle->mapTo(welcome, QPoint(0, subtitle->height())).y());
+    }
+
+    void failedWritesAreNeverClosedOverSilently() {
+        Shell shell(settings(QStringLiteral("unsaved")));
+        const auto path = freshPath(QStringLiteral("Unsaved"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const core::PageId page = *shell.window->activePage();
+        injectWriteFailure(path, true);
+        const auto kept = shell.draw(page); // in memory, not in the database
+        QCOMPARE(shell.window->session()->pendingWriteCount(), std::size_t{1});
+        QTRY_VERIFY(shell.window->findChild<QLabel*>(QStringLiteral("saveStatusLabel"))
+                        ->text()
+                        .startsWith(QStringLiteral("Not saved")));
+
+        // Cancel: the workspace stays open with the change; quitting is refused too.
+        shell.dialogs->unsaved = ui::ShellDialogs::UnsavedChoice::Cancel;
+        QVERIFY(!shell.window->closeWorkspace());
+        QVERIFY(shell.window->hasWorkspace());
+        QVERIFY(!shell.window->close());
+        QVERIFY(shell.window->hasWorkspace());
+        QCOMPARE(shell.dialogs->unsavedQuestions, 2);
+
+        // Retry after the cause is gone: written, then closed.
+        shell.dialogs->unsaved = ui::ShellDialogs::UnsavedChoice::Retry;
+        shell.dialogs->onUnsavedQuestion = [&] {
+            injectWriteFailure(path, false);
+        };
+        QVERIFY(shell.window->closeWorkspace());
+        QCOMPARE(shell.dialogs->unsavedQuestions, 3);
+        shell.dialogs->onUnsavedQuestion = {};
+        QVERIFY(shell.window->openWorkspace(path));
+        QVERIFY(shell.ws().findElement(kept) != nullptr); // it reached the database
+
+        // Close without saving: the user's explicit choice; the change is gone.
+        injectWriteFailure(path, true);
+        const auto lost = shell.draw(page);
+        shell.dialogs->unsaved = ui::ShellDialogs::UnsavedChoice::Discard;
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(!shell.window->hasWorkspace());
+        injectWriteFailure(path, false);
+        QVERIFY(shell.window->openWorkspace(path));
+        QCOMPARE(shell.ws().findElement(lost), nullptr);
+        QVERIFY(shell.ws().findElement(kept) != nullptr);
+    }
+
+    // Phase 6, step 1: the pen style (ink, width) is tool state of the shell — it decides new
+    // strokes, is stored with each stroke in the document, and is remembered per user.
+    void penStyleDecidesNewStrokesAndIsRemembered() {
+        const QString name = QStringLiteral("penstyle");
+        const auto path = freshPath(QStringLiteral("Pen"));
+        const auto drawOnCanvas = [](ui::MainWindow& window, QPoint from, QPoint to) {
+            auto* canvas = window.findChild<QWidget*>(QStringLiteral("canvasWidget"));
+            QTest::mousePress(canvas, Qt::LeftButton, {}, from);
+            for (int i = 1; i <= 8; ++i) {
+                QTest::mouseMove(canvas, from + (to - from) * i / 8, 2);
+            }
+            QTest::mouseRelease(canvas, Qt::LeftButton, {}, to);
+        };
+        const auto lastStroke = [](const document::Workspace& ws, core::PageId page) {
+            const auto elements = ws.elementsOf(ws.layersOf(page).front());
+            return std::get<document::Stroke>(ws.findElement(elements.back())->payload);
+        };
+        {
+            Shell shell(settings(name));
+            QVERIFY(shell.window->createWorkspace(path));
+            // Defaults: black, medium, both shown as checked.
+            QVERIFY(shell.action("actionPenColor_black")->isChecked());
+            QVERIFY(shell.action("actionPenWidth_medium")->isChecked());
+            const auto undoBefore = shell.window->session()->history().undoCount();
+            shell.action("actionToolEraser")->trigger();
+            shell.action("actionPenColor_blue")->trigger(); // also switches back to the pen
+            QVERIFY(shell.action("actionToolPen")->isChecked());
+            shell.action("actionPenWidth_thick")->trigger();
+            QVERIFY(shell.action("actionPenColor_blue")->isChecked());
+            QVERIFY(!shell.action("actionPenColor_black")->isChecked());
+            // Choosing a style is not an edit.
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore);
+
+            drawOnCanvas(*shell.window, {120, 120}, {320, 160});
+            const document::Stroke stroke = lastStroke(shell.ws(), *shell.window->activePage());
+            QCOMPARE(stroke.brush, document::Brush::Pen);
+            QCOMPARE(stroke.color, core::Color::fromRgba(0x2F, 0x5F, 0xA8));
+            QCOMPARE(stroke.baseWidth, 4.0F);
+            QVERIFY(shell.window->close());
+        }
+        {
+            // A new window remembers the style; a stroke drawn with it and the one before
+            // survive reopening with their own styles.
+            Shell shell(settings(name));
+            QVERIFY(shell.action("actionPenColor_blue")->isChecked());
+            QVERIFY(shell.action("actionPenWidth_thick")->isChecked());
+            QVERIFY(shell.window->openWorkspace(path));
+            shell.action("actionPenColor_red")->trigger();
+            drawOnCanvas(*shell.window, {120, 260}, {320, 300});
+            const core::PageId page = *shell.window->activePage();
+            QCOMPARE(lastStroke(shell.ws(), page).color, core::Color::fromRgba(0xB3, 0x36, 0x2F));
+            QVERIFY(shell.window->closeWorkspace());
+            QVERIFY(shell.window->openWorkspace(path));
+            const auto elements = shell.ws().elementsOf(shell.ws().layersOf(page).front());
+            QCOMPARE(elements.size(), std::size_t{2});
+            QCOMPARE(std::get<document::Stroke>(shell.ws().findElement(elements[0])->payload).color,
+                     core::Color::fromRgba(0x2F, 0x5F, 0xA8));
+            QCOMPARE(std::get<document::Stroke>(shell.ws().findElement(elements[1])->payload).color,
+                     core::Color::fromRgba(0xB3, 0x36, 0x2F));
+        }
+    }
+
+    // Phase 6, step 2: the highlighter is a tool of its own with its own remembered style;
+    // the style button follows the ink tool chosen last; neither choice is an edit.
+    void highlighterIsAToolWithItsOwnStyle() {
+        const QString name = QStringLiteral("highlighter");
+        const auto path = freshPath(QStringLiteral("Highlight"));
+        const auto drawOnCanvas = [](ui::MainWindow& window, QPoint from, QPoint to) {
+            auto* canvas = window.findChild<QWidget*>(QStringLiteral("canvasWidget"));
+            QTest::mousePress(canvas, Qt::LeftButton, {}, from);
+            for (int i = 1; i <= 8; ++i) {
+                QTest::mouseMove(canvas, from + (to - from) * i / 8, 2);
+            }
+            QTest::mouseRelease(canvas, Qt::LeftButton, {}, to);
+        };
+        const auto strokes = [](const document::Workspace& ws, core::PageId page) {
+            std::vector<document::Stroke> out;
+            for (const core::ElementId id : ws.elementsOf(ws.layersOf(page).front())) {
+                out.push_back(std::get<document::Stroke>(ws.findElement(id)->payload));
+            }
+            return out;
+        };
+        const core::Color green = core::Color::fromRgba(0x8C, 0xCF, 0x7E, 0x73);
+        const core::Color pink = core::Color::fromRgba(0xEE, 0x9D, 0xB6, 0x73);
+        {
+            Shell shell(settings(name));
+            QVERIFY(shell.window->createWorkspace(path));
+            auto* style = shell.window->findChild<QToolButton*>(QStringLiteral("inkStyleButton"));
+            auto* penMenu = shell.window->findChild<QMenu*>(QStringLiteral("menuPenStyle"));
+            auto* highlighterMenu =
+                shell.window->findChild<QMenu*>(QStringLiteral("menuHighlighterStyle"));
+            QVERIFY(style != nullptr && penMenu != nullptr && highlighterMenu != nullptr);
+            // Tools has both style menus under their own names; the toolbar button only
+            // borrows them.
+            auto* tools = shell.window->findChild<QMenu*>(QStringLiteral("menuTools"));
+            QVERIFY(tools->actions().contains(penMenu->menuAction()));
+            QVERIFY(tools->actions().contains(highlighterMenu->menuAction()));
+            QCOMPARE(penMenu->menuAction()->menu(), penMenu);
+            QCOMPARE(highlighterMenu->menuAction()->menu(), highlighterMenu);
+            QCOMPARE(penMenu->menuAction()->text(), QStringLiteral("Pen St&yle"));
+            QCOMPARE(highlighterMenu->menuAction()->text(), QStringLiteral("Highlighter Sty&le"));
+            // Defaults: the pen is active; the highlighter is yellow, medium.
+            QVERIFY(shell.action("actionToolPen")->isChecked());
+            QVERIFY(shell.action("actionHighlighterColor_yellow")->isChecked());
+            QVERIFY(shell.action("actionHighlighterWidth_medium")->isChecked());
+            QCOMPARE(style->menu(), penMenu);
+            QVERIFY(style->toolTip().startsWith(QStringLiteral("Pen style")));
+            const auto undoBefore = shell.window->session()->history().undoCount();
+
+            // Choosing the tool shows its style and its cursor; nothing is edited.
+            shell.action("actionToolHighlighter")->trigger();
+            QVERIFY(shell.action("actionToolHighlighter")->isChecked());
+            QVERIFY(!shell.action("actionToolPen")->isChecked());
+            QCOMPARE(style->menu(), highlighterMenu);
+            QVERIFY(style->toolTip().startsWith(QStringLiteral("Highlighter style: Yellow")));
+            auto* canvas = shell.window->findChild<QWidget*>(QStringLiteral("canvasWidget"));
+            QCOMPARE(canvas->cursor().shape(), Qt::BitmapCursor);
+            shell.action("actionHighlighterColor_green")->trigger();
+            shell.action("actionHighlighterWidth_thick")->trigger();
+            QVERIFY(style->toolTip().startsWith(QStringLiteral("Highlighter style: Green")));
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore);
+
+            drawOnCanvas(*shell.window, {120, 120}, {420, 140});
+            const core::PageId page = *shell.window->activePage();
+            QCOMPARE(strokes(shell.ws(), page).back().brush, document::Brush::Highlighter);
+            QCOMPARE(strokes(shell.ws(), page).back().color, green);
+            QCOMPARE(strokes(shell.ws(), page).back().baseWidth, 22.0F);
+
+            // Back to the pen: its own style is still there; the menus kept their entries.
+            shell.action("actionToolPen")->trigger();
+            QCOMPARE(style->menu(), penMenu);
+            QCOMPARE(penMenu->menuAction()->menu(), penMenu);
+            QCOMPARE(highlighterMenu->menuAction()->menu(), highlighterMenu);
+            QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+            drawOnCanvas(*shell.window, {120, 220}, {420, 240});
+            QCOMPARE(strokes(shell.ws(), page).back().brush, document::Brush::Pen);
+            QCOMPARE(strokes(shell.ws(), page).back().color, core::Color::black());
+            QCOMPARE(strokes(shell.ws(), page).back().baseWidth, 2.0F);
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 2);
+
+            // A highlighter ink chosen from the menu means highlighting next.
+            shell.action("actionHighlighterColor_pink")->trigger();
+            QVERIFY(shell.action("actionToolHighlighter")->isChecked());
+            // Undo takes back the pen stroke only; the highlighter stroke is unchanged.
+            shell.action("actionUndo")->trigger();
+            QCOMPARE(strokes(shell.ws(), page).size(), std::size_t{1});
+            QCOMPARE(strokes(shell.ws(), page).front().color, green);
+            shell.action("actionRedo")->trigger();
+            QCOMPARE(strokes(shell.ws(), page).size(), std::size_t{2});
+            QVERIFY(shell.window->close());
+        }
+        {
+            // Both styles are remembered; the strokes reopen as drawn.
+            Shell shell(settings(name));
+            QVERIFY(shell.action("actionHighlighterColor_pink")->isChecked());
+            QVERIFY(shell.action("actionHighlighterWidth_thick")->isChecked());
+            QVERIFY(shell.action("actionPenColor_black")->isChecked());
+            QVERIFY(shell.action("actionPenWidth_medium")->isChecked());
+            QVERIFY(shell.window->openWorkspace(path));
+            const auto reopened = strokes(shell.ws(), *shell.window->activePage());
+            QCOMPARE(reopened.size(), std::size_t{2});
+            QCOMPARE(reopened[0].brush, document::Brush::Highlighter);
+            QCOMPARE(reopened[0].color, green);
+            QCOMPARE(reopened[1].brush, document::Brush::Pen);
+            shell.action("actionToolHighlighter")->trigger();
+            drawOnCanvas(*shell.window, {120, 320}, {420, 340});
+            QCOMPARE(strokes(shell.ws(), *shell.window->activePage()).back().color, pink);
+        }
+    }
+
+    // Phase 6, step 3: the eraser erases partially by default (vector pieces remain) or
+    // whole strokes; the mode is remembered per user and choosing it selects the eraser.
+    void eraserModesThroughTheShell() {
+        const QString name = QStringLiteral("erasermode");
+        const auto path = freshPath(QStringLiteral("Erase"));
+        const auto drag = [](ui::MainWindow& window, QPoint from, QPoint to) {
+            auto* canvas = window.findChild<QWidget*>(QStringLiteral("canvasWidget"));
+            QTest::mousePress(canvas, Qt::LeftButton, {}, from);
+            for (int i = 1; i <= 8; ++i) {
+                QTest::mouseMove(canvas, from + (to - from) * i / 8, 2);
+            }
+            QTest::mouseRelease(canvas, Qt::LeftButton, {}, to);
+        };
+        const auto inkCount = [](const Shell& shell) {
+            const auto page = *shell.window->activePage();
+            return shell.ws().elementsOf(shell.ws().layersOf(page).front()).size();
+        };
+        {
+            Shell shell(settings(name));
+            QVERIFY(shell.window->createWorkspace(path));
+            QVERIFY(shell.action("actionEraserPartial")->isChecked());
+            drag(*shell.window, {120, 150}, {420, 150});
+            shell.action("actionToolEraser")->trigger();
+            drag(*shell.window, {270, 110}, {270, 190});
+            QCOMPARE(inkCount(shell), std::size_t{2}); // cut in two
+            shell.action("actionEraserWholeStrokes")->trigger();
+            QVERIFY(shell.action("actionToolEraser")->isChecked());
+            drag(*shell.window, {150, 110}, {150, 190});
+            QCOMPARE(inkCount(shell), std::size_t{1}); // the left piece, whole
+            QVERIFY(shell.window->close());
+        }
+        {
+            Shell shell(settings(name));
+            QVERIFY(shell.action("actionEraserWholeStrokes")->isChecked());
+        }
+    }
+
+    // Phase 6, step 4: shapes through the shell — kind, ink, width and fill are tool state
+    // remembered per user; each drag is one shape, one undo step.
+    void shapesThroughTheShell() {
+        const QString name = QStringLiteral("shapes");
+        const auto path = freshPath(QStringLiteral("Shapes"));
+        const auto drag = [](ui::MainWindow& window, QPoint from, QPoint to) {
+            auto* canvas = window.findChild<QWidget*>(QStringLiteral("canvasWidget"));
+            QTest::mousePress(canvas, Qt::LeftButton, {}, from);
+            for (int i = 1; i <= 6; ++i) {
+                QTest::mouseMove(canvas, from + (to - from) * i / 6, 2);
+            }
+            QTest::mouseRelease(canvas, Qt::LeftButton, {}, to);
+        };
+        const auto shapes = [](const Shell& shell) {
+            std::vector<document::Shape> out;
+            const auto page = *shell.window->activePage();
+            for (const auto id : shell.ws().elementsOf(shell.ws().layersOf(page).front())) {
+                out.push_back(std::get<document::Shape>(shell.ws().findElement(id)->payload));
+            }
+            return out;
+        };
+        {
+            Shell shell(settings(name));
+            QVERIFY(shell.window->createWorkspace(path));
+            auto* style = shell.window->findChild<QToolButton*>(QStringLiteral("inkStyleButton"));
+            const auto undoBefore = shell.window->session()->history().undoCount();
+            shell.action("actionShapeKind_arrow")->trigger(); // also selects the shape tool
+            QVERIFY(shell.action("actionToolShape")->isChecked());
+            QVERIFY(style->toolTip().startsWith(QStringLiteral("Shape style: Arrow")));
+            shell.action("actionShapeColor_blue")->trigger();
+            shell.action("actionShapeWidth_thick")->trigger();
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore);
+            drag(*shell.window, {150, 150}, {350, 250});
+            shell.action("actionShapeKind_ellipse")->trigger();
+            shell.action("actionShapeFill")->trigger();
+            drag(*shell.window, {150, 300}, {350, 400});
+            const auto made = shapes(shell);
+            QCOMPARE(made.size(), std::size_t{2});
+            QCOMPARE(made[0].kind, document::ShapeKind::Arrow);
+            QCOMPARE(*made[0].strokeColor, core::Color::fromRgba(0x2F, 0x5F, 0xA8));
+            QCOMPARE(made[0].strokeWidth, 4.0F);
+            QCOMPARE(made[1].kind, document::ShapeKind::Ellipse);
+            QVERIFY(made[1].fillColor.has_value());
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 2);
+            shell.action("actionUndo")->trigger();
+            QCOMPARE(shapes(shell).size(), std::size_t{1});
+            QVERIFY(shell.window->close());
+        }
+        {
+            Shell shell(settings(name));
+            QVERIFY(shell.action("actionShapeKind_ellipse")->isChecked());
+            QVERIFY(shell.action("actionShapeFill")->isChecked());
+            QVERIFY(shell.action("actionShapeColor_blue")->isChecked());
+            QVERIFY(shell.window->openWorkspace(path));
+            QCOMPARE(shapes(shell).size(), std::size_t{1});
+            QCOMPARE(shapes(shell)[0].kind, document::ShapeKind::Arrow);
+        }
+    }
+
+    // Phase 6, step 5: text boxes are typed into a plain-text editor over the canvas; the
+    // editor keeps letters and its own undo from the window's shortcuts; finishing writes
+    // one command with the text as UTF-8.
+    void textThroughTheShell() {
+        Shell shell(settings(QStringLiteral("text")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Text"))));
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        const auto boxes = [&] {
+            std::vector<document::TextBox> out;
+            const auto page = *shell.window->activePage();
+            for (const auto id : shell.ws().elementsOf(shell.ws().layersOf(page).front())) {
+                out.push_back(std::get<document::TextBox>(shell.ws().findElement(id)->payload));
+            }
+            return out;
+        };
+        const auto undoBefore = shell.window->session()->history().undoCount();
+        shell.action("actionToolText")->trigger();
+        auto* canvas = shell.window->findChild<QWidget*>(QStringLiteral("canvasWidget"));
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, {200, 200});
+        auto* editor = shell.window->findChild<QTextEdit*>(QStringLiteral("textEditor"));
+        QVERIFY(editor != nullptr);
+        QVERIFY(editor->isVisible());
+        QTRY_VERIFY(editor->hasFocus());
+        // Letters are text, not tool shortcuts; Ctrl+Z is the editor's, not the document's.
+        QTest::keyClicks(editor, QStringLiteral("Pm"));
+        QVERIFY(shell.action("actionToolText")->isChecked());
+        QCOMPARE(editor->toPlainText(), QStringLiteral("Pm"));
+        QTest::keyClick(editor, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(shell.window->session()->history().undoCount(), undoBefore);
+        QVERIFY(boxes().empty());
+        editor->setPlainText(QString::fromUtf8("Pm\nW\xC3\xB6rld \xE2\x9C\x93"));
+        QTest::keyClick(editor, Qt::Key_Escape); // finishes (and writes) the edit
+        QVERIFY(!editor->isVisible());
+        const auto made = boxes();
+        QCOMPARE(made.size(), std::size_t{1});
+        QCOMPARE(made[0].text, std::string("Pm\nW\xC3\xB6rld \xE2\x9C\x93"));
+        QVERIFY(made[0].size.y > 30.0F); // two lines, laid out by the Qt text layout
+        QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 1);
+        // Editing it again: clicking the box opens the editor with its text.
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, {220, 210});
+        QVERIFY(editor->isVisible());
+        QCOMPARE(editor->toPlainText(), QString::fromUtf8("Pm\nW\xC3\xB6rld \xE2\x9C\x93"));
+        editor->setPlainText(QStringLiteral("changed"));
+        canvas->setFocus(); // focus leaving the editor finishes it too
+        QTRY_VERIFY(!editor->isVisible());
+        QCOMPARE(boxes().at(0).text, std::string("changed"));
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(boxes().at(0).text, std::string("Pm\nW\xC3\xB6rld \xE2\x9C\x93"));
+    }
+
+    // Text being typed is written, not dropped, when the page changes or the workspace
+    // closes from the keyboard (the focus never leaves the editor then); a popup such as the
+    // editor's own context menu does not end the edit.
+    void typedTextIsKeptWhenThePageChangesOrTheWorkspaceCloses() {
+        Shell shell(settings(QStringLiteral("textkeep")));
+        const auto path = freshPath(QStringLiteral("TextKeep"));
+        QVERIFY(shell.window->createWorkspace(path));
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        const auto first = *shell.window->activePage();
+        shell.action("actionNewPage")->trigger();
+        const auto second = *shell.window->activePage();
+        QVERIFY(first != second);
+        const auto texts = [&](core::PageId page) {
+            std::vector<std::string> out;
+            for (const auto id : shell.ws().elementsOf(shell.ws().layersOf(page).front())) {
+                out.push_back(
+                    std::get<document::TextBox>(shell.ws().findElement(id)->payload).text);
+            }
+            return out;
+        };
+        auto* canvas = shell.window->findChild<QWidget*>(QStringLiteral("canvasWidget"));
+        QVERIFY(canvas != nullptr);
+        shell.action("actionToolText")->trigger();
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, {200, 200});
+        auto* editor = shell.window->findChild<QTextEdit*>(QStringLiteral("textEditor"));
+        QVERIFY(editor != nullptr);
+        QTRY_VERIFY(editor->hasFocus());
+        QTest::keyClicks(editor, QStringLiteral("kept"));
+        QFocusEvent popup(QEvent::FocusOut, Qt::PopupFocusReason); // a context menu opens
+        QCoreApplication::sendEvent(editor, &popup);
+        QVERIFY(editor->isVisible());
+        // A right or middle click in the editor (which the editor does not take, so it
+        // reaches the canvas behind it) is not a canvas click: editing goes on.
+        QTimer::singleShot(150, editor, [] {
+            if (QWidget* menu = QApplication::activePopupWidget()) {
+                menu->close(); // the editor's context menu, if the platform opened one
+            }
+        });
+        QTest::mouseClick(editor->viewport(), Qt::RightButton, {}, {5, 5});
+        QTest::mouseClick(editor->viewport(), Qt::MiddleButton, {}, {5, 5});
+        QTest::qWait(250);
+        QVERIFY(editor->isVisible());
+        QTRY_VERIFY(editor->hasFocus());
+        QVERIFY(texts(second).empty());
+        QVERIFY(texts(second).empty());
+        shell.action("actionPreviousPage")->trigger(); // Ctrl+PgUp
+        QCOMPARE(*shell.window->activePage(), first);
+        QVERIFY(!editor->isVisible());
+        QCOMPARE(texts(second), std::vector<std::string>{"kept"});
+
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, {300, 300});
+        QTRY_VERIFY(editor->isVisible() && editor->hasFocus());
+        QTest::keyClicks(editor, QStringLiteral("closing"));
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        QCOMPARE(texts(first), std::vector<std::string>{"closing"});
+        QCOMPARE(texts(second), std::vector<std::string>{"kept"});
+    }
+
+    // Phase 6, step 6: Insert Image imports the file into the workspace's content-addressed
+    // store (once per content) and adds one selected image element; files that are not
+    // images are refused with a message.
+    void insertImageThroughTheShell() {
+        Shell shell(settings(QStringLiteral("images")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Images"))));
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("red.png"));
+        QVERIFY(red.save(png));
+        const auto images = [&] {
+            std::vector<document::Image> out;
+            const auto page = *shell.window->activePage();
+            for (const auto id : shell.ws().elementsOf(shell.ws().layersOf(page).front())) {
+                out.push_back(std::get<document::Image>(shell.ws().findElement(id)->payload));
+            }
+            return out;
+        };
+        const auto undoBefore = shell.window->session()->history().undoCount();
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        shell.action("actionInsertImage")->trigger(); // the same file again
+        const auto made = images();
+        QCOMPARE(made.size(), std::size_t{2});
+        // At most one world unit per pixel (smaller when the view is small), aspect kept.
+        QVERIFY(made[0].size.x > 0.0F && made[0].size.x <= 64.0F);
+        QVERIFY(std::abs(made[0].size.x / made[0].size.y - 2.0F) < 1e-3F);
+        QCOMPARE(made[0].asset, made[1].asset); // one stored copy
+        QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 2);
+        QVERIFY(shell.action("actionToolSelect")->isChecked());
+        auto stored = shell.window->session()->assetPath(made[0].asset);
+        QVERIFY(stored.has_value());
+        QVERIFY(std::filesystem::exists(*stored));
+        // Not an image: refused, nothing written.
+        const QString text = dir_.filePath(QStringLiteral("notes.txt"));
+        {
+            QFile file(text);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("not an image");
+        }
+        shell.dialogs->insertImage = toPath(text);
+        shell.dialogs->errors.clear();
+        shell.action("actionInsertImage")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 1);
+        QCOMPARE(images().size(), std::size_t{2});
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(images().size(), std::size_t{1});
+    }
+
+    // Phase 7: the planner beside the canvas. Courses and tasks are created and edited
+    // through the panel as one undoable, persisted command each; Today and Page show them;
+    // canvas edits do not rebuild the planner; everything is there after reopening.
+    void plannerThroughTheShell() {
+        Shell shell(settings(QStringLiteral("planner")));
+        const auto path = freshPath(QStringLiteral("Planner"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const study::FixedOffsetZone zone{std::chrono::minutes{120}};
+        shell.window->setTimeZone(&zone);
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(panel != nullptr);
+        QVERIFY(!panel->isVisible()); // off by default: the canvas comes first
+        shell.action("actionPlanner")->trigger();
+        QVERIFY(panel->isVisible());
+        const auto child = [&]<class T>(T*, const char* name) {
+            auto* found = panel->findChild<T*>(QString::fromLatin1(name));
+            if (found == nullptr) {
+                qFatal("no planner widget %s", name);
+            }
+            return found;
+        };
+        const auto settle = [&] {
+            QCoreApplication::processEvents(); // the deferred refresh
+            panel->refreshNow();
+        };
+        const auto titlesIn = [&](QTreeWidget* tree) {
+            QStringList out;
+            for (QTreeWidgetItemIterator it(tree); *it != nullptr; ++it) {
+                if (!(*it)->data(0, Qt::UserRole).toString().isEmpty()) {
+                    out << (*it)->text(0);
+                }
+            }
+            return out;
+        };
+        const auto& ws = shell.ws();
+        const auto steps = [&] {
+            return shell.window->session()->history().undoCount();
+        };
+
+        // A course from the Tasks view's New menu (one step), then a task in it.
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        shell.dialogs->texts = {QStringLiteral("Biology")};
+        const auto before = steps();
+        child(static_cast<QAction*>(nullptr), "actionPlannerNewCourse")->trigger();
+        QCOMPARE(ws.courseCount(), std::size_t{1});
+        QCOMPARE(steps(), before + 1);
+        settle();
+        auto* scope = child(static_cast<QComboBox*>(nullptr), "plannerScope");
+        QCOMPARE(scope->currentText(), QStringLiteral("Biology"));
+        auto* add = child(static_cast<QLineEdit*>(nullptr), "plannerTaskAdd");
+        add->setFocus();
+        QTest::keyClicks(add, QStringLiteral("Read chapter 3"));
+        QTest::keyClick(add, Qt::Key_Return);
+        settle();
+        QCOMPARE(ws.taskCount(), std::size_t{1});
+        const core::TaskId task = ws.topLevelTasks()[0];
+        QVERIFY(ws.findTask(task)->course.has_value()); // in the chosen course
+        auto* tasks = child(static_cast<QTreeWidget*>(nullptr), "plannerTasks");
+        QCOMPARE(titlesIn(tasks), QStringList{QStringLiteral("Read chapter 3")});
+        QCOMPARE(panel->selectedTask(), task); // the new task is selected for editing
+        auto* editor = child(static_cast<QWidget*>(nullptr), "plannerTaskEditor");
+        QVERIFY(editor->isVisible());
+
+        // Editing: the title, then a due date (today) — each one step.
+        auto* title = child(static_cast<QLineEdit*>(nullptr), "plannerTaskTitle");
+        title->setText(QStringLiteral("Read chapter 3 and 4"));
+        Q_EMIT title->editingFinished();
+        QCOMPARE(ws.findTask(task)->title, std::string("Read chapter 3 and 4"));
+        child(static_cast<QCheckBox*>(nullptr), "plannerTaskHasDue")->click();
+        QCOMPARE(ws.findTask(task)->dueDate, study::localDate(shell.clock.now(), zone));
+        panel->showView(ui::PlannerPanel::View::Today);
+        settle();
+        auto* agenda = child(static_cast<QTreeWidget*>(nullptr), "plannerAgenda");
+        QCOMPARE(titlesIn(agenda), QStringList{QStringLiteral("Read chapter 3 and 4")});
+        QCOMPARE(agenda->topLevelItem(0)->text(0), QStringLiteral("Today"));
+
+        // Ticking it off in the agenda completes it; Undo reopens it.
+        QTreeWidgetItem* row = agenda->topLevelItem(0)->child(0);
+        row->setCheckState(0, Qt::Checked);
+        QCOMPARE(ws.findTask(task)->status, study::TaskStatus::Done);
+        QCOMPARE(shell.window->session()->history().nextUndo()->label, "Complete task");
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(ws.findTask(task)->status, study::TaskStatus::Todo);
+
+        // The open page: tags by name (created as needed) and a task linked to it.
+        const auto page = *shell.window->activePage();
+        panel->showView(ui::PlannerPanel::View::Page);
+        settle();
+        auto* tags = child(static_cast<QLineEdit*>(nullptr), "plannerPageTags");
+        tags->setText(QStringLiteral("Exam, reading"));
+        Q_EMIT tags->editingFinished();
+        QCOMPARE(ws.findPage(page)->tags.size(), std::size_t{2});
+        auto* pageAdd = child(static_cast<QLineEdit*>(nullptr), "plannerPageAdd");
+        pageAdd->setFocus();
+        QTest::keyClicks(pageAdd, QStringLiteral("Summarise cells"));
+        QTest::keyClick(pageAdd, Qt::Key_Return);
+        settle();
+        QCOMPARE(ws.tasksLinkedTo(page).size(), std::size_t{1});
+        QCOMPARE(titlesIn(child(static_cast<QTreeWidget*>(nullptr), "plannerBacklinks")),
+                 QStringList{QStringLiteral("Summarise cells")});
+
+        // Letters typed in a planner list are its search, not tool shortcuts.
+        auto* backlinks = child(static_cast<QTreeWidget*>(nullptr), "plannerBacklinks");
+        backlinks->setFocus();
+        QTest::keyClick(backlinks, Qt::Key_E);
+        QVERIFY(shell.action("actionToolPen")->isChecked());
+
+        // A canvas edit does not rebuild the planner.
+        const int refreshes = panel->refreshCount();
+        auto stroke = document::commands::createElement(
+            ws, ws.layersOf(page).front(),
+            {.payload =
+                 document::Stroke{.points = document::makeStrokePoints({{0, 0, 1}, {9, 9, 1}})}},
+            shell.ids);
+        QVERIFY(stroke.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(stroke->command)).has_value());
+        QCoreApplication::processEvents();
+        QCOMPARE(panel->refreshCount(), refreshes);
+
+        // Tags being typed when the page changes are the left page's.
+        tags->setFocus();
+        tags->selectAll();
+        QTest::keyClicks(tags, QStringLiteral("Lab"));
+        shell.action("actionNewPage")->trigger();
+        const auto second = *shell.window->activePage();
+        QVERIFY(second != page);
+        QCOMPARE(ws.findPage(page)->tags.size(), std::size_t{1});
+        QCOMPARE(ws.findTag(ws.findPage(page)->tags[0])->name, std::string("Lab"));
+        QVERIFY(ws.findPage(second)->tags.empty());
+        settle();
+        QVERIFY(tags->text().isEmpty()); // now the new page's (none)
+
+        // A title being typed when the workspace closes is saved.
+        panel->selectTask(task);
+        title->setFocus();
+        title->selectAll();
+        QTest::keyClicks(title, QStringLiteral("Final title"));
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        QCOMPARE(shell.ws().findTask(task)->title, std::string("Final title"));
+
+        // Everything is in the workspace after reopening.
+        const document::Workspace saved = shell.ws();
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        QVERIFY(shell.ws() == saved);
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        settle();
+        QCOMPARE(scope->currentText(), QStringLiteral("Biology")); // the same records
+        QCOMPARE(titlesIn(tasks).size(), 1);
+        scope->setCurrentIndex(0); // All tasks
+        Q_EMIT scope->activated(0);
+        QCOMPARE(titlesIn(tasks).size(), 2);
+    }
+
+    // Decoded images wait for the canvas to collect them; ones it never collects (the page
+    // changed or the zoom asked for another size meanwhile) are kept only within a budget,
+    // and a dropped one is decoded again when asked for.
+    void uncollectedImageDecodesAreBounded() {
+        Shell shell(settings(QStringLiteral("decodes")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Decodes"))));
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("decode.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        const auto page = *shell.window->activePage();
+        const auto asset =
+            std::get<document::Image>(
+                shell.ws()
+                    .findElement(shell.ws().elementsOf(shell.ws().layersOf(page)[0])[0])
+                    ->payload)
+                .asset;
+        constexpr std::size_t kOne = 64 * 32 * 4; // one decode: 64 × 32 RGBA
+        ui::SessionImageSource source(*shell.window->session(), kOne + kOne / 2);
+        QVERIFY(!source.load(asset, 64).has_value()); // decoding
+        QVERIFY(!source.load(asset, 64).has_value()); // still: not started twice
+        source.waitForDecodes();
+        QCOMPARE(source.uncollectedBytes(), kOne);
+        QVERIFY(!source.load(asset, 128).has_value()); // another size, never collected
+        source.waitForDecodes();
+        QCOMPARE(source.uncollectedBytes(), kOne);    // over the budget: the oldest went
+        QVERIFY(!source.load(asset, 64).has_value()); // dropped: decoded again
+        source.waitForDecodes();
+        const auto pixels = source.load(asset, 64);
+        QVERIFY(pixels.has_value());
+        QCOMPARE(pixels->width, 64);
+        QCOMPARE(pixels->height, 32);
+        QCOMPARE(source.uncollectedBytes(), std::size_t{0}); // collecting the 64 dropped the 128
+        QVERIFY(!source.load(asset, 128).has_value());
+        QVERIFY(source.load(core::AssetId{shell.ids.next()}, 64)->empty()); // unknown asset
+    }
+
+    // Phase 6, step 9: Edit ▸ Cut/Copy/Paste (Ctrl+X/C/V on the canvas) duplicate elements
+    // through the canvas clipboard as one undo step each; inside the text editor the same
+    // keys are the editor's own.
+    void copyAndPasteThroughTheShell() {
+        Shell shell(settings(QStringLiteral("clipboard")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Clipboard"))));
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        const auto elements = [&] {
+            const auto page = *shell.window->activePage();
+            const auto ids = shell.ws().elementsOf(shell.ws().layersOf(page).front());
+            return std::vector<core::ElementId>(ids.begin(), ids.end());
+        };
+        auto* canvas = shell.window->findChild<QWidget*>(QStringLiteral("canvasWidget"));
+        QVERIFY(canvas != nullptr);
+        shell.action("actionToolText")->trigger();
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, {200, 200});
+        auto* editor = shell.window->findChild<QTextEdit*>(QStringLiteral("textEditor"));
+        QVERIFY(editor != nullptr);
+        QTRY_VERIFY(editor->hasFocus());
+        QTest::keyClicks(editor, QStringLiteral("copy me"));
+        QTest::keyClick(editor, Qt::Key_Escape);
+        QCOMPARE(elements().size(), std::size_t{1});
+
+        shell.action("actionToolSelect")->trigger();
+        canvas->setFocus();
+        QTest::keyClick(canvas, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(canvas, Qt::Key_C, Qt::ControlModifier);
+        const auto undoBefore = shell.window->session()->history().undoCount();
+        QTest::keyClick(canvas, Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(elements().size(), std::size_t{2});
+        QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 1);
+        QVERIFY(shell.action("actionToolSelect")->isChecked());
+        const auto made = elements();
+        QVERIFY(made[0] != made[1]);
+        QCOMPARE(std::get<document::TextBox>(shell.ws().findElement(made[1])->payload).text,
+                 std::string("copy me"));
+        // Cut through the menu action: the pasted copy (selected) goes, as one step.
+        shell.action("actionCut")->trigger();
+        QCOMPARE(elements().size(), std::size_t{1});
+        QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 2);
+        shell.action("actionPaste")->trigger();
+        QCOMPARE(elements().size(), std::size_t{2});
+
+        // In the text editor Ctrl+A, Ctrl+C and Ctrl+V edit the text, not the page.
+        shell.action("actionToolText")->trigger();
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, {600, 500});
+        QTRY_VERIFY(editor->hasFocus());
+        QTest::keyClicks(editor, QStringLiteral("ab"));
+        QTest::keyClick(editor, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(editor, Qt::Key_C, Qt::ControlModifier);
+        QTest::keyClick(editor, Qt::Key_End, Qt::ControlModifier);
+        QTest::keyClick(editor, Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(editor->toPlainText(), QStringLiteral("abab"));
+        QCOMPARE(elements().size(), std::size_t{2});
+        QTest::keyClick(editor, Qt::Key_Escape);
+        QCOMPARE(elements().size(), std::size_t{3});
+    }
+
+    // Single-key tool shortcuts belong to the canvas: typed into the navigation tree the
+    // letters are its keyboard search and leave the tool alone (Phase 5 audit, LOW).
+    void toolLettersDoNotFireWhileTheTreeHasFocus() {
+        Shell shell(settings(QStringLiteral("letters")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Letters"))));
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        shell.tree()->setFocus();
+        QVERIFY(shell.tree()->hasFocus());
+        QTest::keyClick(shell.tree(), Qt::Key_E);
+        QTest::keyClick(shell.tree(), Qt::Key_M);
+        QVERIFY(shell.action("actionToolPen")->isChecked());
+        // With the canvas focused the same keys choose tools.
+        auto* canvas = shell.window->findChild<QWidget*>(QStringLiteral("canvasWidget"));
+        canvas->setFocus();
+        QTest::keyClick(canvas, Qt::Key_M);
+        QVERIFY(shell.action("actionToolHighlighter")->isChecked());
+        QTest::keyClick(canvas, Qt::Key_P);
+        QVERIFY(shell.action("actionToolPen")->isChecked());
+        // Chords still work from the tree (e.g. Ctrl+Z is not a letter for the search).
+        (void)shell.draw(*shell.window->activePage());
+        const auto undo = shell.window->session()->history().undoCount();
+        shell.tree()->setFocus();
+        QTest::keyClick(shell.tree(), Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(shell.window->session()->history().undoCount(), undo - 1);
     }
 
     void navigationCanBeHidden() {

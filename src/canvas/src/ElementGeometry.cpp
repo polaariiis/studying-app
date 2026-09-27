@@ -4,7 +4,9 @@
 #include <studyapp/render/Tessellation.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 
 namespace studyapp::canvas {
@@ -21,6 +23,18 @@ using document::ShapeKind;
 using document::Stroke;
 using document::TextBox;
 
+/// Arrowhead of an arrow shape `length` long drawn `width` wide: its length along the
+/// shaft and half its width. Grows with the line width, never longer than 60 % of the
+/// arrow.
+struct ArrowHead {
+    float length;
+    float halfWidth;
+};
+ArrowHead arrowHead(float length, float width) noexcept {
+    const float head = std::min(std::max(3.5F * width, 8.0F), 0.6F * length);
+    return {head, head * 0.5F};
+}
+
 /// Neutral frame for kinds whose content is drawn from Phase 6 on.
 constexpr core::Color kPlaceholderColor = core::Color::fromRgba(0xA3, 0xA3, 0xA3);
 constexpr float kPlaceholderHalfWidth = 0.75F;
@@ -32,18 +46,6 @@ DVec2 toDouble(const core::Vec2& v) noexcept {
 /// Scale factor of a transform for lengths (geometric mean of the axis scales).
 double lengthScale(const core::Affine2& t) noexcept {
     return std::sqrt(std::abs(t.determinant()));
-}
-
-std::vector<render::WidthPoint> strokeWidthPoints(const Stroke& stroke) {
-    std::vector<render::WidthPoint> points;
-    if (!stroke.points) {
-        return points;
-    }
-    points.reserve(stroke.points->size());
-    for (const auto& p : *stroke.points) {
-        points.push_back({{p.x, p.y}, strokeRadius(stroke, p.pressure)});
-    }
-    return points;
 }
 
 std::vector<render::WidthPoint> closedOutline(std::span<const core::Vec2> polygon, float radius) {
@@ -92,12 +94,17 @@ bool polylineWithin(std::size_t count, PointAt pointAt, RadiusAt radiusAt, const
         const double reach = radiusAt(0) + extra;
         return core::distanceSquaredToSegment(pointAt(0), a, b) <= reach * reach;
     }
+    const DRect query = DRect::fromPoints(a, b);
+    DVec2 previous = pointAt(0);
     for (std::size_t i = 0; i + 1 < count; ++i) {
+        const DVec2 next = pointAt(i + 1);
         const double reach = std::max(radiusAt(i), radiusAt(i + 1)) + extra;
-        if (core::distanceSquaredBetweenSegments(pointAt(i), pointAt(i + 1), a, b) <=
-            reach * reach) {
+        // Most segments of a long stroke are far away: a box test first.
+        if (DRect::fromPoints(previous, next).intersects(query.expanded(reach)) &&
+            core::distanceSquaredBetweenSegments(previous, next, a, b) <= reach * reach) {
             return true;
         }
+        previous = next;
     }
     return false;
 }
@@ -121,8 +128,58 @@ bool strokeWithin(const Element& element, const Stroke& stroke, const DVec2& a, 
 } // namespace
 
 float strokeRadius(const Stroke& stroke, float pressure) noexcept {
+    if (stroke.brush == document::Brush::Highlighter) {
+        return stroke.baseWidth * 0.5F; // an even band: pressure is recorded, not applied
+    }
     const float p = std::isfinite(pressure) ? std::clamp(pressure, 0.0F, 1.0F) : 1.0F;
     return stroke.baseWidth * 0.5F * (0.3F + 0.7F * p);
+}
+
+render::MeshData tessellateStrokePoints(const Stroke& stroke,
+                                        std::span<const document::StrokePoint> points,
+                                        float pixelsPerUnit) {
+    std::vector<render::WidthPoint> widthPoints;
+    widthPoints.reserve(points.size());
+    for (const auto& p : points) {
+        widthPoints.push_back({{p.x, p.y}, strokeRadius(stroke, p.pressure)});
+    }
+    return render::tessellatePolyline(widthPoints, {.pixelsPerUnit = pixelsPerUnit});
+}
+
+core::DVec2 attachPoint(const Element& target, const DVec2& towards) {
+    const DRect box = visualBounds(target);
+    const DVec2 centre = box.center();
+    const DVec2 d = towards - centre;
+    if (box.isEmpty() || (d.x == 0.0 && d.y == 0.0)) {
+        return centre;
+    }
+    // Where the ray from the centre towards `towards` leaves the box.
+    const DVec2 half = box.size() * 0.5;
+    const double tx = d.x != 0.0 ? half.x / std::abs(d.x) : std::numeric_limits<double>::infinity();
+    const double ty = d.y != 0.0 ? half.y / std::abs(d.y) : std::numeric_limits<double>::infinity();
+    return centre + d * std::min(tx, ty);
+}
+
+core::DRect visualBounds(const Element& element) {
+    if (const auto* connector = std::get_if<Connector>(&element.payload)) {
+        const double length = (connector->end.position - connector->start.position).length();
+        const double head =
+            length > 0.0 ? static_cast<double>(
+                               arrowHead(static_cast<float>(length), connector->width).halfWidth)
+                         : 0.0;
+        return document::worldBounds(element).expanded(head);
+    }
+    const DRect bounds = document::worldBounds(element);
+    const auto* shape = std::get_if<Shape>(&element.payload);
+    if (shape == nullptr || bounds.isEmpty() || !shape->strokeColor) {
+        return bounds;
+    }
+    double reach = static_cast<double>(shape->strokeWidth) * 0.5;
+    if (shape->kind == ShapeKind::Arrow) {
+        reach = std::max(
+            reach, static_cast<double>(arrowHead(shape->size.x, shape->strokeWidth).halfWidth));
+    }
+    return bounds.expanded(reach * lengthScale(document::localToWorld(element.transform)));
 }
 
 core::Affine2 meshToWorld(const Element& element) noexcept {
@@ -138,9 +195,12 @@ std::vector<MeshPart> buildElementMeshes(const Element& element, float pixelsPer
         [&](const auto& payload) -> std::vector<MeshPart> {
             using T = std::decay_t<decltype(payload)>;
             if constexpr (std::is_same_v<T, Stroke>) {
-                const auto points = strokeWidthPoints(payload);
-                return {MeshPart{.mesh = render::tessellatePolyline(points, options),
-                                 .color = payload.color}};
+                if (!payload.points) {
+                    return {MeshPart{.mesh = {}, .color = payload.color}};
+                }
+                return {MeshPart{
+                    .mesh = tessellateStrokePoints(payload, *payload.points, pixelsPerUnit),
+                    .color = payload.color}};
             } else if constexpr (std::is_same_v<T, Shape>) {
                 std::vector<MeshPart> parts;
                 const float radius = payload.strokeWidth * 0.5F;
@@ -151,6 +211,24 @@ std::vector<MeshPart> buildElementMeshes(const Element& element, float pixelsPer
                         parts.push_back(
                             {render::tessellatePolyline(line, options), *payload.strokeColor});
                     }
+                    return parts;
+                }
+                if (payload.kind == ShapeKind::Arrow) {
+                    // Along +x (the element rotation gives the direction): a shaft that
+                    // ends inside a filled head, one mesh (a part covers a pixel once).
+                    if (!payload.strokeColor || radius <= 0.0F || payload.size.x <= 0.0F) {
+                        return parts;
+                    }
+                    const float length = payload.size.x;
+                    const ArrowHead head = arrowHead(length, payload.strokeWidth);
+                    const std::vector<render::WidthPoint> shaft{
+                        {{0.0F, 0.0F}, radius}, {{length - head.length * 0.5F, 0.0F}, radius}};
+                    render::MeshData mesh = render::tessellatePolyline(shaft, options);
+                    const std::array<core::Vec2, 3> tip{
+                        core::Vec2{length, 0.0F}, core::Vec2{length - head.length, -head.halfWidth},
+                        core::Vec2{length - head.length, head.halfWidth}};
+                    render::appendMesh(mesh, render::tessellateConvexFill(tip));
+                    parts.push_back({std::move(mesh), *payload.strokeColor});
                     return parts;
                 }
                 const auto polygon = shapePolygon(payload, options);
@@ -164,13 +242,28 @@ std::vector<MeshPart> buildElementMeshes(const Element& element, float pixelsPer
                 }
                 return parts;
             } else if constexpr (std::is_same_v<T, Connector>) {
+                // A straight line from start to end with an arrowhead at the end (the
+                // schema's default end cap), in the space of meshToWorld (start at 0).
                 const DVec2 end = payload.end.position - payload.start.position;
                 const float radius = payload.width * 0.5F;
-                const std::vector<render::WidthPoint> line{
-                    {{0.0F, 0.0F}, radius},
-                    {{static_cast<float>(end.x), static_cast<float>(end.y)}, radius}};
-                return {MeshPart{.mesh = render::tessellatePolyline(line, options),
-                                 .color = payload.color}};
+                const auto length = static_cast<float>(end.length());
+                const core::Vec2 tip{static_cast<float>(end.x), static_cast<float>(end.y)};
+                if (!(length > 0.0F)) {
+                    const std::vector<render::WidthPoint> dot{{{0.0F, 0.0F}, radius}};
+                    return {MeshPart{.mesh = render::tessellatePolyline(dot, options),
+                                     .color = payload.color}};
+                }
+                const ArrowHead head = arrowHead(length, payload.width);
+                const core::Vec2 u = tip / length;
+                const core::Vec2 n{-u.y, u.x};
+                const core::Vec2 base = tip - u * head.length;
+                const std::vector<render::WidthPoint> shaft{
+                    {{0.0F, 0.0F}, radius}, {tip - u * (head.length * 0.5F), radius}};
+                render::MeshData mesh = render::tessellatePolyline(shaft, options);
+                const std::array<core::Vec2, 3> triangle{tip, base + n * head.halfWidth,
+                                                         base - n * head.halfWidth};
+                render::appendMesh(mesh, render::tessellateConvexFill(triangle));
+                return {MeshPart{.mesh = std::move(mesh), .color = payload.color}};
             } else if constexpr (std::is_same_v<T, TextBox>) {
                 return placeholderFrame(payload.size, false);
             } else {
@@ -205,6 +298,16 @@ bool hitTest(const Element& element, const DVec2& world, double toleranceWorld) 
                     if (payload.kind == ShapeKind::Line) {
                         return core::distanceSquaredToSegment(
                                    local, {0.0, 0.0}, toDouble(payload.size)) <= reach * reach;
+                    }
+                    if (payload.kind == ShapeKind::Arrow) {
+                        const double length = static_cast<double>(payload.size.x);
+                        const ArrowHead head = arrowHead(payload.size.x, payload.strokeWidth);
+                        const double headReach = static_cast<double>(head.halfWidth) + tolerance;
+                        return core::distanceSquaredToSegment(local, {0.0, 0.0}, {length, 0.0}) <=
+                                   reach * reach ||
+                               core::distanceSquaredToSegment(
+                                   local, {length - static_cast<double>(head.length), 0.0},
+                                   {length, 0.0}) <= headReach * headReach;
                     }
                     if (payload.kind == ShapeKind::Ellipse) {
                         const DVec2 c = box.center();

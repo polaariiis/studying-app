@@ -11,7 +11,9 @@
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/document/Element.hpp>
+#include <studyapp/platform/QtTextLayout.hpp>
 #include <studyapp/platform/QtWorkspaceLocker.hpp>
+#include <studyapp/render_gl/OpenGLRenderer.hpp>
 #include <studyapp/testing/ManualClock.hpp>
 #include <studyapp/testing/SequentialIds.hpp>
 #include <studyapp/ui/MainWindow.hpp>
@@ -23,14 +25,20 @@
 #include <QDir>
 #include <QImage>
 #include <QLabel>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
+#include <QOpenGLFramebufferObject>
 #include <QOpenGLWidget>
 #include <QPixmap>
 #include <QSettings>
+#include <QSurfaceFormat>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTreeView>
 #include <QWheelEvent>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -416,6 +424,361 @@ private Q_SLOTS:
         nextPage->trigger(); // switching pages draws the new page
         QTest::qWait(100);
         QVERIFY(canvasWidget->paintCount() > before);
+    }
+
+    // Phase 6, step 1: ink is rendered in the chosen pen style (colour, width).
+    void inkIsDrawnInTheChosenStyle() {
+        QTemporaryDir dir;
+        const auto root = toPath(dir.filePath(QStringLiteral("ws")));
+        testing::ManualClock clock;
+        testing::SequentialIds ids;
+        platform::QtWorkspaceLocker locker;
+        auto created = application::WorkspaceSession::create(root, "Ink", {clock, ids, locker});
+        QVERIFY(created.has_value());
+        auto& session = **created;
+        auto page = application::ensureStartPage(session, clock, ids);
+        QVERIFY(page.has_value());
+        QSettings settings(dir.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+        ui::ThemeManager themes;
+        ui::MainWindow window(
+            themes, settings,
+            ui::WorkspaceContext{.session = session, .ids = ids, .clock = clock, .page = *page});
+        window.resize(900, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* canvas = window.findChild<QOpenGLWidget*>(QStringLiteral("canvasWidget"));
+        QVERIFY(canvas != nullptr);
+        QTest::qWait(50);
+        if (!canvas->isValid() || canvas->grabFramebuffer().isNull()) {
+            QSKIP("no OpenGL 3.3 context on this platform");
+        }
+        window.findChild<QAction*>(QStringLiteral("actionPenColor_blue"))->trigger();
+        window.findChild<QAction*>(QStringLiteral("actionPenWidth_thick"))->trigger();
+        drag(canvas, {100, 210}, {400, 210});
+        canvas->update();
+        QTest::qWait(30);
+        const QImage image = canvas->grabFramebuffer();
+        const qreal dpr = canvas->devicePixelRatioF();
+        const QColor ink = image.pixelColor((QPointF(250, 210) * dpr).toPoint());
+        QVERIFY2(ink.blue() > ink.red() + 40 && ink.blue() > ink.green() + 20,
+                 qPrintable(ink.name()));
+        // Thick: several device pixels tall (1.2 is "fine"; 4 world units at zoom 1).
+        const QColor edge = image.pixelColor((QPointF(250, 211.5) * dpr).toPoint());
+        QVERIFY2(edge.blue() > edge.red() + 20, qPrintable(edge.name()));
+    }
+
+    // Phase 6, step 2: the highlighter is broad, translucent ink. A stroke is even where it
+    // overlaps itself (joins, caps, a stroke doubling back): each stroke covers a pixel
+    // once. Separate strokes build up where they cross, and ink under them stays visible.
+    // Checked drawn element by element and through batches (many visible elements).
+    void highlighterIsEvenTranslucentAndBuildsUpAcrossStrokes() {
+        QTemporaryDir dir;
+        const auto root = toPath(dir.filePath(QStringLiteral("ws")));
+        testing::ManualClock clock;
+        testing::SequentialIds ids;
+        platform::QtWorkspaceLocker locker;
+        auto created = application::WorkspaceSession::create(root, "Mark", {clock, ids, locker});
+        QVERIFY(created.has_value());
+        auto& session = **created;
+        auto page = application::ensureStartPage(session, clock, ids);
+        QVERIFY(page.has_value());
+        { // blank paper, so sampled pixels are either ink or paper
+            const document::PageInfo& info = *session.workspace().findPage(*page);
+            document::commands::PageFormat format{
+                .extent = info.extent, .size = info.size, .background = info.background};
+            format.background.pattern = document::BackgroundPattern::None;
+            auto command =
+                document::commands::setPageFormat(session.workspace(), *page, format, clock);
+            QVERIFY(command.has_value());
+            QVERIFY(session.execute(std::move(*command)).has_value());
+        }
+        QSettings settings(dir.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+        ui::ThemeManager themes;
+        ui::MainWindow window(
+            themes, settings,
+            ui::WorkspaceContext{.session = session, .ids = ids, .clock = clock, .page = *page});
+        window.resize(900, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* canvas = window.findChild<QOpenGLWidget*>(QStringLiteral("canvasWidget"));
+        QVERIFY(canvas != nullptr);
+        QTest::qWait(50);
+        if (!canvas->isValid() || canvas->grabFramebuffer().isNull()) {
+            QSKIP("no OpenGL 3.3 context on this platform");
+        }
+
+        // A thick black pen line, then highlighter strokes (default: yellow, 14 px at zoom 1).
+        window.findChild<QAction*>(QStringLiteral("actionPenWidth_thick"))->trigger();
+        drag(canvas, {300, 120}, {300, 300});
+        window.findChild<QAction*>(QStringLiteral("actionToolHighlighter"))->trigger();
+        // One stroke that runs right and doubles back over itself.
+        QTest::mousePress(canvas, Qt::LeftButton, {}, {100, 200});
+        for (int i = 1; i <= 16; ++i) {
+            QTest::mouseMove(canvas, QPoint(100 + 25 * i, 200), 2);
+        }
+        for (int i = 1; i <= 12; ++i) {
+            QTest::mouseMove(canvas, QPoint(500 - 25 * i, 200), 2);
+        }
+        QTest::mouseRelease(canvas, Qt::LeftButton, {}, {200, 200});
+        // A second stroke crossing the first.
+        drag(canvas, {420, 140}, {420, 260});
+        QCOMPARE(strokesOn(session.workspace(), *page).size(), std::size_t{3});
+
+        const auto check = [&](const QString& mode) {
+            canvas->update();
+            QTest::qWait(30);
+            const QImage image = canvas->grabFramebuffer();
+            const qreal dpr = canvas->devicePixelRatioF();
+            const auto at = [&](qreal x, qreal y) {
+                return image.pixelColor(QPointF(x * dpr, y * dpr).toPoint());
+            };
+            const auto near = [](const QColor& a, const QColor& b) {
+                return std::max({std::abs(a.red() - b.red()), std::abs(a.green() - b.green()),
+                                 std::abs(a.blue() - b.blue())}) <= 3;
+            };
+            const QColor paper = at(150, 260);
+            const QColor once = at(150, 200); // the forward pass only
+            // Translucent yellow on white: light, warm, clearly not opaque yellow (#F2C94C).
+            QVERIFY2(once != paper, qPrintable(mode));
+            QVERIFY2(once.red() > 200 && once.green() > 180 && once.blue() < once.red() - 40,
+                     qPrintable(QStringLiteral("%1: %2").arg(mode, once.name())));
+            QVERIFY2(once.blue() > 120,
+                     qPrintable(QStringLiteral("%1: %2").arg(mode, once.name())));
+            // Even along the stroke, at its joins and where it runs over itself again.
+            for (const qreal x : {125.0, 137.0, 175.0, 250.0, 275.0, 350.0, 375.0, 480.0}) {
+                const QColor c = at(x, 200);
+                QVERIFY2(near(c, once), qPrintable(QStringLiteral("%1: x=%2 %3 vs %4")
+                                                       .arg(mode)
+                                                       .arg(x)
+                                                       .arg(c.name(), once.name())));
+            }
+            // Broad: 14 px tall, centred on the stroke; not wider than that.
+            QVERIFY2(near(at(150, 205), once), qPrintable(mode));
+            QVERIFY2(near(at(150, 195), once), qPrintable(mode));
+            QVERIFY2(near(at(150, 212), paper), qPrintable(mode));
+            // The pen line under the highlighter stays dark and visible.
+            const QColor inkUnder = at(300, 200);
+            QVERIFY2(inkUnder.value() < 140, qPrintable(inkUnder.name()));
+            QVERIFY2(inkUnder.red() > inkUnder.blue() + 20, qPrintable(inkUnder.name())); // tinted
+            // Two strokes build up where they cross.
+            const QColor twice = at(420, 200);
+            QVERIFY2(
+                twice.blue() < once.blue() - 20,
+                qPrintable(QStringLiteral("%1: %2 vs %3").arg(mode, twice.name(), once.name())));
+        };
+        check(QStringLiteral("per element"));
+
+        // Enough visible elements to be drawn through batches (strokes share batch meshes).
+        const core::LayerId layer = session.workspace().layersOf(*page).front();
+        for (int i = 0; i < 1045; ++i) {
+            auto dot = document::commands::createElement(
+                session.workspace(), layer,
+                {.transform = {.position = {20.0 + 4.0 * (i % 19), 330.0 + 4.0 * (i / 19)}},
+                 .payload = document::Stroke{.baseWidth = 1.0F,
+                                             .points = document::makeStrokePoints({{0, 0, 1}})}},
+                ids);
+            QVERIFY(dot.has_value());
+            QVERIFY(session.execute(std::move(dot->command)).has_value());
+        }
+        window.findChild<QAction*>(QStringLiteral("actionDebugHud"))->setChecked(true);
+        auto* hud = canvas->findChild<QLabel*>(QStringLiteral("canvasHud"));
+        QVERIFY(hud != nullptr);
+        canvas->update();
+        QTRY_VERIFY_WITH_TIMEOUT(hud->text().contains(QStringLiteral("batched")), 5000);
+        window.findChild<QAction*>(QStringLiteral("actionDebugHud"))->setChecked(false);
+        check(QStringLiteral("batched"));
+    }
+
+    // Phase 6, step 5: text boxes are drawn from a raster of their text (a texture), in
+    // their place, dark on light paper; nothing is drawn outside the text.
+    void textBoxesAreDrawnAsText() {
+        QTemporaryDir dir;
+        const auto root = toPath(dir.filePath(QStringLiteral("ws")));
+        testing::ManualClock clock;
+        testing::SequentialIds ids;
+        platform::QtWorkspaceLocker locker;
+        auto created = application::WorkspaceSession::create(root, "Text", {clock, ids, locker});
+        QVERIFY(created.has_value());
+        auto& session = **created;
+        auto page = application::ensureStartPage(session, clock, ids);
+        QVERIFY(page.has_value());
+        { // blank paper
+            const document::PageInfo& info = *session.workspace().findPage(*page);
+            document::commands::PageFormat format{
+                .extent = info.extent, .size = info.size, .background = info.background};
+            format.background.pattern = document::BackgroundPattern::None;
+            auto command =
+                document::commands::setPageFormat(session.workspace(), *page, format, clock);
+            QVERIFY(command.has_value());
+            QVERIFY(session.execute(std::move(*command)).has_value());
+        }
+        auto box = document::commands::createElement(
+            session.workspace(), session.workspace().layersOf(*page).front(),
+            {.transform = {.position = {100, 100}},
+             .payload = document::TextBox{.size = {300, 60}, .text = "MMMMMMMM WWWWWWWW"}},
+            ids);
+        QVERIFY(box.has_value());
+        QVERIFY(session.execute(std::move(box->command)).has_value());
+        QSettings settings(dir.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+        ui::ThemeManager themes;
+        platform::QtTextLayout layout;
+        ui::MainWindow window(
+            themes, settings,
+            ui::WorkspaceContext{.session = session, .ids = ids, .clock = clock, .page = *page});
+        window.setTextLayout(&layout);
+        window.resize(900, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* canvas = window.findChild<QOpenGLWidget*>(QStringLiteral("canvasWidget"));
+        QVERIFY(canvas != nullptr);
+        QTest::qWait(50);
+        if (!canvas->isValid() || canvas->grabFramebuffer().isNull()) {
+            QSKIP("no OpenGL 3.3 context on this platform");
+        }
+        canvas->update();
+        QTest::qWait(30);
+        const QImage image = canvas->grabFramebuffer();
+        const qreal dpr = canvas->devicePixelRatioF();
+        int dark = 0;
+        int darkOutside = 0;
+        for (int y = 90; y < 180; ++y) {
+            for (int x = 90; x < 420; ++x) {
+                const QColor c = image.pixelColor((QPointF(x, y) * dpr).toPoint());
+                if (c.value() < 100) {
+                    const bool inside = x >= 100 && x < 400 && y >= 100 && y < 160;
+                    (inside ? dark : darkOutside) += 1;
+                }
+            }
+        }
+        QVERIFY2(dark > 200, qPrintable(QString::number(dark))); // glyphs are there
+        QCOMPARE(darkOutside, 0);
+    }
+
+    // Phase 6, step 6: an image element shows its asset's pixels (a texture decoded from the
+    // workspace's asset file) in its box; a missing asset shows the neutral frame.
+    void imagesAreDrawnFromTheirAssets() {
+        QTemporaryDir dir;
+        const auto root = toPath(dir.filePath(QStringLiteral("ws")));
+        testing::ManualClock clock;
+        testing::SequentialIds ids;
+        platform::QtWorkspaceLocker locker;
+        auto created = application::WorkspaceSession::create(root, "Images", {clock, ids, locker});
+        QVERIFY(created.has_value());
+        auto& session = **created;
+        auto page = application::ensureStartPage(session, clock, ids);
+        QVERIFY(page.has_value());
+        QImage blue(40, 20, QImage::Format_RGB32);
+        blue.fill(QColor(30, 60, 200));
+        const QString png = dir.filePath(QStringLiteral("blue.png"));
+        QVERIFY(blue.save(png));
+        auto asset = session.importAsset(toPath(png), "image/png");
+        QVERIFY(asset.has_value());
+        const core::LayerId layer = session.workspace().layersOf(*page).front();
+        auto image = document::commands::createElement(
+            session.workspace(), layer,
+            {.transform = {.position = {100, 100}},
+             .payload = document::Image{.asset = *asset, .size = {200, 100}}},
+            ids);
+        QVERIFY(image.has_value());
+        QVERIFY(session.execute(std::move(image->command)).has_value());
+        QSettings settings(dir.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+        ui::ThemeManager themes;
+        ui::MainWindow window(
+            themes, settings,
+            ui::WorkspaceContext{.session = session, .ids = ids, .clock = clock, .page = *page});
+        window.resize(900, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* canvas = window.findChild<QOpenGLWidget*>(QStringLiteral("canvasWidget"));
+        QVERIFY(canvas != nullptr);
+        QTest::qWait(50);
+        if (!canvas->isValid() || canvas->grabFramebuffer().isNull()) {
+            QSKIP("no OpenGL 3.3 context on this platform");
+        }
+        // Decoded off the GUI thread: the frame is shown first, the pixels a frame later.
+        const qreal dpr = canvas->devicePixelRatioF();
+        const auto inside = [&] {
+            return canvas->grabFramebuffer().pixelColor((QPointF(200, 150) * dpr).toPoint());
+        };
+        QTRY_VERIFY2_WITH_TIMEOUT(inside().blue() > 150 && inside().red() < 90,
+                                  qPrintable(inside().name()), 3000);
+        const QImage frame = canvas->grabFramebuffer();
+        const QColor outside = frame.pixelColor((QPointF(200, 220) * dpr).toPoint());
+        QVERIFY2(outside.blue() < 150 || outside.red() > 150, qPrintable(outside.name()));
+    }
+
+    // One mesh handle updated between plain data and batch data (per-vertex part numbers):
+    // the part attribute buffer is created, dropped and created again, and each draw uses
+    // the data it was last given. Two overlapping translucent squares are blended twice
+    // as two parts, once as one plain mesh.
+    void meshesSwitchBetweenPlainAndPartNumberedData() {
+        QSurfaceFormat format;
+        format.setVersion(3, 3);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        QOffscreenSurface surface;
+        surface.setFormat(format);
+        surface.create();
+        QOpenGLContext context;
+        context.setFormat(format);
+        if (!surface.isValid() || !context.create() || !context.makeCurrent(&surface) ||
+            std::pair(context.format().majorVersion(), context.format().minorVersion()) <
+                std::pair(3, 3)) {
+            QSKIP("no OpenGL 3.3 context on this platform");
+        }
+        QOpenGLFramebufferObjectFormat target;
+        target.setAttachment(QOpenGLFramebufferObject::CombinedDepthStencil);
+        constexpr int kSide = 64;
+        QOpenGLFramebufferObject fbo(kSide, kSide, target);
+        QVERIFY(fbo.isValid() && fbo.bind());
+        {
+            render_gl::OpenGLRenderer renderer;
+            QVERIFY(renderer.initialize().has_value());
+            renderer.resize(kSide, kSide);
+            const auto squares = [](bool parted) {
+                render::MeshData mesh;
+                for (std::uint32_t k = 0; k < 2; ++k) {
+                    const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
+                    mesh.vertices.insert(mesh.vertices.end(),
+                                         {{-16, -16}, {16, -16}, {16, 16}, {-16, 16}});
+                    mesh.indices.insert(mesh.indices.end(),
+                                        {base, base + 1, base + 2, base, base + 2, base + 3});
+                    if (parted) {
+                        mesh.parts.insert(mesh.parts.end(), 4, k);
+                    }
+                }
+                mesh.bounds = core::Rect{{-16, -16}, {16, 16}};
+                return mesh;
+            };
+            render::RenderFrame frame;
+            frame.viewportSize = {kSide, kSide};
+            frame.background.deskColor = core::Color::white();
+            frame.background.paperColor = core::Color::white();
+            const auto centre = [&](render::MeshHandle mesh) {
+                const std::array<render::DrawItem, 1> items{
+                    render::DrawItem{.mesh = mesh, .color = core::Color{0, 0, 0, 128}}};
+                frame.content = items;
+                renderer.render(frame);
+                return fbo.toImage().pixelColor(kSide / 2, kSide / 2).value();
+            };
+            const render::MeshHandle mesh = renderer.createMesh(squares(false));
+            QVERIFY(mesh.isValid());
+            const int once = centre(mesh);
+            QVERIFY2(once > 110 && once < 145, qPrintable(QString::number(once)));
+            renderer.updateMesh(mesh, squares(true)); // plain → parts: blended twice
+            const int twice = centre(mesh);
+            QVERIFY2(twice > 45 && twice < 80, qPrintable(QString::number(twice)));
+            renderer.updateMesh(mesh, squares(false)); // parts → plain: once again
+            QCOMPARE(centre(mesh), once);
+            renderer.updateMesh(mesh, squares(true));
+            QCOMPARE(centre(mesh), twice);
+            renderer.releaseAll();
+        }
+        fbo.release();
+        context.doneCurrent();
     }
 
     // The eraser's reach is shown as the platform cursor (no OpenGL needed): it follows the

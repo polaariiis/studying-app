@@ -10,6 +10,7 @@ studyapp_add_module(persistence
         include/studyapp/persistence/Sha256.hpp
         include/studyapp/persistence/SqliteLibrary.hpp
         include/studyapp/persistence/StrokeCodec.hpp
+        include/studyapp/persistence/StudyStore.hpp
         include/studyapp/persistence/Transaction.hpp
         include/studyapp/persistence/WorkspaceFile.hpp
         include/studyapp/persistence/WorkspaceLayout.hpp
@@ -28,6 +29,7 @@ studyapp_add_module(persistence
         src/SqliteLibrary.cpp
         src/StoreSupport.hpp
         src/StrokeCodec.cpp
+        src/StudyStore.cpp
         src/Transaction.cpp
         src/Utf8Path.hpp
         src/WorkspaceFile.cpp

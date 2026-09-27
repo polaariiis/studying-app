@@ -497,7 +497,10 @@ Implemented in Phase 3 (`src/persistence/include/studyapp/persistence/`):
 | `WorkspaceFile`, `WorkspaceLayout` | Workspace directory: create/open (read-write or read-only), backup, integrity check, temporary cleanup |
 | `encodeStrokePoints` / `decodeStrokePoints` | Stroke codec v1 (DATA_MODEL.md §8) |
 
-`StudyStore`, `SettingsStore` and `SearchIndex` arrive with their phases (7, 5, 8).
+`StudyStore` and `SearchIndex` arrive with their phases (7, 8). `SettingsStore` (the
+workspace-scoped `setting` table) is not implemented yet: the Phase 5 shell only needed
+per-machine settings, which live in `QSettings` (ARCHITECTURE.md §11); the table exists in
+schema v1 and stays empty until a workspace-scoped setting is needed.
 
 ## 8. Migrations & versioning
 
@@ -562,9 +565,14 @@ as 16-byte BLOBs (never row ids); `FractionalIndex` values are stored verbatim i
 | `Element` header | `element`: `kind` = `ElementKind`, transform columns, `locked`; `page_id` is derived in SQL from the layer (`(SELECT page_id FROM layer WHERE id = ?)`) and kept in step when a layer moves; `min_x … max_y` = `document::worldBounds()` |
 | `Stroke` | `stroke`: `brush`, `color`, `base_width`, `point_count`, `point_format` = 1, `points` (codec v1, bit-exact) |
 | `TextBox` | `text_box`: `width`, `height`, `sizing` = 2 (fixed), `content` = `{"v":1,"text":"…"}` (built and read with SQLite's JSON functions), `plain_text` = the text |
-| `Shape` | `shape`: `shape_kind` 0–2, `width`, `height`, nullable `stroke_color` / `fill_color`, `stroke_width` |
+| `Shape` | `shape`: `shape_kind` 0–2 and, since Phase 6, 6 = arrow (no schema change: the column has no CHECK; 3–5 stay reserved for the planned triangle/polygon/polyline and a row with them fails the load), `width`, `height`, nullable `stroke_color` / `fill_color`, `stroke_width` |
 | `Image` | `image`: `asset_id` (→ `asset`, `ON DELETE RESTRICT`), `width`, `height` |
 | `Connector` | `connector`: `start_*` / `end_*` positions, nullable `*_element_id`, `color`, `width` |
+| `PageInfo::tags` *(Phase 7)* | `page_tag` rows (written after the page row; only the difference on updates) |
+| `study::Course` *(Phase 7)* | `course`: all columns; dates as `YYYY-MM-DD`, `archived_at` |
+| `study::Project` *(Phase 7)* | `project`: all columns (`status` 0–4, nullable `course_id`, dates, `completed_at`) |
+| `study::Task` *(Phase 7)* | `task`: `status` 0–3, `priority` 0–3, nullable `course_id` / `project_id` / `parent_id`, `due_date` (`YYYY-MM-DD`, floating), `due_time_minutes`, `scheduled_start` / `scheduled_end` (UTC ms, both or neither), `estimate_minutes`, `completed_at`; `recurrence` stays NULL; `linkedPages` / `tags` as `task_page` / `task_tag` rows (only the difference is written on updates) |
+| `study::Tag` *(Phase 7)* | `tag`: `name` (unique `COLLATE NOCASE`), nullable `color`, `created_at` |
 
 Columns without a model field (colours and icons of notebooks, course links, crop, caps,
 routing, labels, `bg_asset_id`, …) are written with their schema defaults on insert and
@@ -573,6 +581,13 @@ exist only in the database: element timestamps come from the injected clock at w
 time, and `content_version` is incremented once per patch for every page whose layers or
 elements changed. `page.updated_at` is the model's `modified` and is *not* bumped by
 content edits, so the loaded model equals the saved one.
+
+**Phase 7 (no migration).** Schema v1 already had every planning table; the study records
+are loaded by `StudyStore::load()` and created in the same loading patch — tags and courses
+first, then the hierarchy (pages with their tags), projects, and tasks last (top-level tasks
+before subtasks), so references always point backwards. A task using `recurrence`, a half time
+block, an invalid date or `page_tag` rows of unknown pages fail the load (Unsupported /
+ParseError); references to missing records fail through `Workspace::apply`.
 
 **Loading = applying.** `WorkspaceStore::load()` reads the catalog, then each page's
 layers and elements (`PageStore::load(PageId)` — the unit a later on-demand loader will

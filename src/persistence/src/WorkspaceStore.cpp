@@ -51,8 +51,21 @@ Result<document::Workspace> WorkspaceStore::load() {
         return forward(catalog);
     }
 
+    auto study = study_.load();
+    if (!study) {
+        return forward(study);
+    }
+
     // Parents before children; within a page, connectors after the elements they attach to.
+    // Study records: tags and courses before the pages and projects that reference them;
+    // tasks last (they link to pages), top-level tasks before subtasks.
     document::Patch patch;
+    for (auto& tag : study->tags) {
+        patch.add(document::created(std::move(tag)));
+    }
+    for (auto& course : study->courses) {
+        patch.add(document::created(std::move(course)));
+    }
     for (auto& notebook : catalog->notebooks) {
         patch.add(document::created(std::move(notebook)));
     }
@@ -71,7 +84,15 @@ Result<document::Workspace> WorkspaceStore::load() {
         pages.push_back(std::move(*content));
     }
     for (auto& page : catalog->pages) {
+        if (const auto tags = study->pageTags.find(page.id); tags != study->pageTags.end()) {
+            page.tags = std::move(tags->second);
+            study->pageTags.erase(tags);
+        }
         patch.add(document::created(std::move(page)));
+    }
+    if (!study->pageTags.empty()) {
+        return makeError(ErrorCode::ParseError,
+                         "invalid workspace data: page_tag rows for pages that do not exist");
     }
     for (auto& content : pages) {
         layerCount += content.layers.size();
@@ -86,6 +107,14 @@ Result<document::Workspace> WorkspaceStore::load() {
         for (auto& element : content.elements) {
             patch.add(document::created(std::move(element)));
         }
+    }
+    for (auto& project : study->projects) {
+        patch.add(document::created(std::move(project)));
+    }
+    std::stable_partition(study->tasks.begin(), study->tasks.end(),
+                          [](const study::Task& task) { return !task.parent; });
+    for (auto& task : study->tasks) {
+        patch.add(document::created(std::move(task)));
     }
 
     for (const auto& [table, loaded] :
@@ -142,8 +171,16 @@ Result<void> WorkspaceStore::write(const document::Patch& patch) {
                         }
                     }
                     return pages_.apply(*transaction, change);
-                } else {
+                } else if constexpr (std::is_same_v<Change, document::PageChange>) {
+                    if (auto written = catalog_.apply(*transaction, change); !written) {
+                        return written;
+                    }
+                    return study_.applyPageTags(*transaction, change);
+                } else if constexpr (std::is_same_v<Change, document::NotebookChange> ||
+                                     std::is_same_v<Change, document::SectionChange>) {
                     return catalog_.apply(*transaction, change);
+                } else {
+                    return study_.apply(*transaction, change);
                 }
             },
             changes[i]);

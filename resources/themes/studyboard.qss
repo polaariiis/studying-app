@@ -36,6 +36,10 @@ QMenu::item {
     border-radius: @radiusSmall@px;
     color: @textPrimary@;
 }
+QMenu::item:checked {
+    background: @selected@;
+    color: @selectedText@;
+}
 QMenu::item:selected {
     background: @hover@;
 }
@@ -46,6 +50,12 @@ QMenu::separator {
     height: 1px;
     background: @border@;
     margin: 4px 6px;
+}
+
+QTextEdit#textEditor {
+    background: @surface@;
+    color: @textPrimary@;
+    border: 1px solid @borderStrong@;
 }
 
 QToolBar {

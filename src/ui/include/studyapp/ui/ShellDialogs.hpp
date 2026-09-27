@@ -32,6 +32,8 @@ public:
     virtual std::optional<std::filesystem::path> chooseNewWorkspace(QWidget* parent) = 0;
     /// An existing workspace directory; nullopt: cancelled.
     virtual std::optional<std::filesystem::path> chooseWorkspaceToOpen(QWidget* parent) = 0;
+    /// An image file to insert on the canvas; nullopt: cancelled.
+    virtual std::optional<std::filesystem::path> chooseImageToInsert(QWidget* parent) = 0;
 
     /// The workspace is open in another process: open it read-only instead?
     virtual bool confirmOpenReadOnly(QWidget* parent, const QString& details) = 0;
@@ -58,6 +60,10 @@ public:
 
     /// An operation failed: `summary` for the user, `details` for diagnosis.
     virtual void showError(QWidget* parent, const QString& summary, const QString& details) = 0;
+
+    /// A line of text (e.g. a new course name), starting from `text`; nullopt: cancelled.
+    virtual std::optional<QString> askText(QWidget* parent, const QString& title,
+                                           const QString& label, const QString& text) = 0;
 };
 
 /// Native file dialogs and message boxes.

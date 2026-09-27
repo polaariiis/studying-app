@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace studyapp::document::commands {
 
@@ -130,6 +131,64 @@ struct NewElement {
 [[nodiscard]] core::Result<Command> moveElements(const Workspace& workspace,
                                                  std::span<const core::ElementId> elements,
                                                  core::DVec2 worldDelta);
+
+/// Pastes copies of `elements` (in painter order, e.g. a copied selection) on top of
+/// `layer` as one undoable edit ("Paste"). Every copy gets a new id and keeps the order it
+/// is given in; `offset` translates the copies (connector ends included). A connector end
+/// attached to an element that is copied too is attached to that element's copy; an end
+/// attached to anything else is detached where it is. Images keep referencing their asset
+/// (the stored file is shared, not copied). Returns the new ids in the given order. The
+/// workspace validates the copies when the patch is applied.
+/// Errors: InvalidArgument for an empty list, a repeated id or a non-finite offset;
+/// NotFound for an unknown layer.
+[[nodiscard]] core::Result<Created<std::vector<core::ElementId>>>
+pasteElements(const Workspace& workspace, core::LayerId layer, std::span<const Element> elements,
+              core::DVec2 offset, core::IdGenerator& ids);
+
+/// Resizes a box element (shape, image, text box) or a line/arrow shape as one undoable
+/// edit (selection handles): the element gets `transform` and payload size `size` (for a
+/// text box the caller gives the laid-out height). The ends of connectors attached to it
+/// are mapped from its old world bounds to the new ones (same relative place on the box).
+/// Unchanged geometry gives an empty command. Errors: NotFound for an unknown id,
+/// InvalidArgument for other kinds or non-finite / negative sizes.
+[[nodiscard]] core::Result<Command> resizeElement(const Workspace& workspace,
+                                                  core::ElementId element, Transform transform,
+                                                  core::Vec2 size);
+
+/// Sets a connector's ends (position and attachment) and keeps its style, as one undoable
+/// edit (the connector tool's endpoint drag). The workspace checks the attachments (a
+/// non-connector element on the same page). Unchanged ends give an empty command.
+/// Errors: NotFound for an unknown id, InvalidArgument for an element that is not a
+/// connector or a non-finite position.
+[[nodiscard]] core::Result<Command> setConnectorEnds(const Workspace& workspace,
+                                                     core::ElementId connector, ConnectorEnd start,
+                                                     ConnectorEnd end);
+
+/// Replaces a text box's text and size as one undoable edit (the text tool, docs/CANVAS.md
+/// §9). Unchanged text and size give an empty (no-op) command. Errors: NotFound for an
+/// unknown id, InvalidArgument for an element that is not a text box.
+[[nodiscard]] core::Result<Command> editText(const Workspace& workspace, core::ElementId element,
+                                             std::string text, core::Vec2 size);
+
+/// What is left of a stroke after partial erasing: runs of its points (element-local, as
+/// stored). No pieces: the stroke is erased completely.
+struct StrokePieces {
+    core::ElementId stroke;
+    std::vector<StrokePoints> pieces;
+};
+
+/// Replaces strokes by pieces of themselves as one undoable edit (the partial eraser,
+/// docs/CANVAS.md §5.2). Every piece keeps the stroke's brush, colour, width, transform,
+/// layer and lock state and takes the stroke's place in the draw order: the first piece
+/// keeps the stroke's id (an update, so attached connectors stay attached), further pieces
+/// are new elements ordered right after it, before the stroke's next sibling. A stroke
+/// without pieces is removed (connectors attached to it are detached). The workspace
+/// validates the pieces when the patch is applied.
+/// Errors: InvalidArgument for an empty list, a repeated stroke, an element that is not a
+/// stroke or an empty piece; NotFound for unknown ids.
+[[nodiscard]] core::Result<Command> splitStrokes(const Workspace& workspace,
+                                                 std::span<const StrokePieces> strokes,
+                                                 core::IdGenerator& ids);
 
 // ---- page format -----------------------------------------------------------------------
 struct PageFormat {

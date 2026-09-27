@@ -6,8 +6,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace studyapp::document::test {
@@ -261,6 +263,300 @@ TEST(CommandsTest, DeleteElementsRemovesASetInOnePatchAndDetachesConnectors) {
     EXPECT_EQ(commands::deleteElements(t.workspace, {}).error().code, ErrorCode::InvalidArgument);
     const std::vector<core::ElementId> unknown{core::ElementId{t.ids.next()}};
     EXPECT_EQ(commands::deleteElements(t.workspace, unknown).error().code, ErrorCode::NotFound);
+}
+
+TEST(CommandsTest, SplitStrokesKeepStyleAndDrawOrderInOneUndoableEdit) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    Stroke styled = makeStroke({{0, 0, 1}, {50, 0, 1}, {100, 0, 0.5F}});
+    styled.brush = Brush::Highlighter;
+    styled.color = core::Color::fromRgba(0xF2, 0xC9, 0x4C, 0x73);
+    styled.baseWidth = 14.0F;
+    const auto before = t.addElement(layer, makeStroke());
+    const auto cut = t.addElement(layer, styled, {.position = {5, 6}});
+    const auto after = t.addElement(layer, makeStroke());
+    const auto gone = t.addElement(layer, makeStroke());
+    const auto link = t.addElement(layer, makeConnector(cut, gone));
+    const Workspace original = t.workspace;
+    const auto undoBefore = t.editor.history().undoCount();
+
+    const std::vector<commands::StrokePieces> splits{
+        {.stroke = cut,
+         .pieces = {makeStrokePoints({{0, 0, 1}, {20, 0, 1}}),
+                    makeStrokePoints({{60, 0, 1}, {80, 0, 0.6F}}),
+                    makeStrokePoints({{90, 0, 0.55F}, {100, 0, 0.5F}})}},
+        {.stroke = gone, .pieces = {}},
+    };
+    auto command = commands::splitStrokes(t.workspace, splits, t.ids);
+    ASSERT_OK(command);
+    EXPECT_EQ(command->label, "Erase");
+    t.run(std::move(command));
+    EXPECT_EQ(t.editor.history().undoCount(), undoBefore + 1);
+    ASSERT_OK(t.workspace.validate());
+
+    // Draw order: before, cut (first piece, same id), two new pieces, after, link.
+    const auto order = t.workspace.elementsOf(layer);
+    ASSERT_EQ(order.size(), 6U);
+    EXPECT_EQ(order[0], before);
+    EXPECT_EQ(order[1], cut);
+    EXPECT_EQ(order[4], after);
+    EXPECT_EQ(order[5], link);
+    for (std::size_t i = 1; i <= 3; ++i) {
+        const Element& piece = *t.workspace.findElement(order[i]);
+        const auto& stroke = std::get<Stroke>(piece.payload);
+        EXPECT_EQ(stroke.brush, Brush::Highlighter);
+        EXPECT_EQ(stroke.color, styled.color);
+        EXPECT_FLOAT_EQ(stroke.baseWidth, 14.0F);
+        EXPECT_EQ(piece.transform.position, (core::DVec2{5, 6}));
+        EXPECT_EQ(*stroke.points, *splits[0].pieces[i - 1]);
+    }
+    EXPECT_EQ(t.workspace.findElement(gone), nullptr);
+    // The kept id stays attached; the erased one is detached.
+    const auto& connector = std::get<Connector>(t.workspace.findElement(link)->payload);
+    EXPECT_EQ(connector.start.attachedTo, cut);
+    EXPECT_FALSE(connector.end.attachedTo.has_value());
+
+    ASSERT_OK(t.editor.undo());
+    EXPECT_TRUE(t.workspace == original);
+    ASSERT_OK(t.editor.redo());
+    EXPECT_EQ(t.workspace.elementsOf(layer).size(), 6U);
+
+    // Errors change nothing.
+    EXPECT_EQ(commands::splitStrokes(t.workspace, {}, t.ids).error().code,
+              ErrorCode::InvalidArgument);
+    const std::vector<commands::StrokePieces> twice{{.stroke = cut}, {.stroke = cut}};
+    EXPECT_EQ(commands::splitStrokes(t.workspace, twice, t.ids).error().code,
+              ErrorCode::InvalidArgument);
+    const std::vector<commands::StrokePieces> notStroke{{.stroke = link}};
+    EXPECT_EQ(commands::splitStrokes(t.workspace, notStroke, t.ids).error().code,
+              ErrorCode::InvalidArgument);
+    const std::vector<commands::StrokePieces> emptyPiece{
+        {.stroke = cut, .pieces = {makeStrokePoints({})}}};
+    EXPECT_EQ(commands::splitStrokes(t.workspace, emptyPiece, t.ids).error().code,
+              ErrorCode::InvalidArgument);
+    const std::vector<commands::StrokePieces> unknown{{.stroke = core::ElementId{t.ids.next()}}};
+    EXPECT_EQ(commands::splitStrokes(t.workspace, unknown, t.ids).error().code,
+              ErrorCode::NotFound);
+}
+
+TEST(CommandsTest, ShapeKindsAreValidated) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto arrow =
+        t.addElement(layer, Shape{.kind = ShapeKind::Arrow, .size = {50, 0}}, {.rotation = 0.5F});
+    EXPECT_EQ(std::get<Shape>(t.workspace.findElement(arrow)->payload).kind, ShapeKind::Arrow);
+    // Reserved values (triangle, polygon, polyline) are not shapes the model knows yet.
+    auto reserved = commands::createElement(
+        t.workspace, layer, {.payload = Shape{.kind = static_cast<ShapeKind>(4), .size = {10, 10}}},
+        t.ids);
+    ASSERT_OK(reserved);
+    EXPECT_EQ(t.editor.execute(std::move(reserved->command)).error().code,
+              ErrorCode::InvalidArgument);
+}
+
+TEST(CommandsTest, EditTextReplacesTextAndSizeInOneUndoableEdit) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto box = t.addElement(layer, TextBox{.size = {100, 20}, .text = "old"});
+    const auto undoBefore = t.editor.history().undoCount();
+    t.run(commands::editText(t.workspace, box, "new\ntext", {100, 40}));
+    EXPECT_EQ(t.editor.history().undoCount(), undoBefore + 1);
+    const auto& edited = std::get<TextBox>(t.workspace.findElement(box)->payload);
+    EXPECT_EQ(edited.text, "new\ntext");
+    EXPECT_EQ(edited.size, (core::Vec2{100, 40}));
+    ASSERT_OK(t.editor.undo());
+    EXPECT_EQ(std::get<TextBox>(t.workspace.findElement(box)->payload).text, "old");
+    auto same = commands::editText(t.workspace, box, "old", {100, 20});
+    ASSERT_OK(same);
+    EXPECT_TRUE(same->patch.empty());
+    const auto stroke = t.addElement(layer, makeStroke());
+    EXPECT_EQ(commands::editText(t.workspace, stroke, "x", {1, 1}).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(
+        commands::editText(t.workspace, core::ElementId{t.ids.next()}, "x", {1, 1}).error().code,
+        ErrorCode::NotFound);
+}
+
+TEST(CommandsTest, TheConnectorIndexAndSetConnectorEnds) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto a = t.addElement(layer, makeStroke());
+    const auto b = t.addElement(layer, makeStroke());
+    const auto link = t.addElement(layer, makeConnector(a, b));
+    ASSERT_EQ(t.workspace.connectorsAttachedTo(a).size(), 1U);
+    EXPECT_EQ(t.workspace.connectorsAttachedTo(a)[0], link);
+    EXPECT_TRUE(t.workspace.connectorsAttachedTo(link).empty());
+    // Re-attach the end to nothing: the index follows; undo restores it.
+    t.run(commands::setConnectorEnds(t.workspace, link, {.position = {0, 0}, .attachedTo = a},
+                                     {.position = {50, 50}, .attachedTo = std::nullopt}));
+    EXPECT_TRUE(t.workspace.connectorsAttachedTo(b).empty());
+    ASSERT_OK(t.workspace.validate());
+    ASSERT_OK(t.editor.undo());
+    EXPECT_EQ(t.workspace.connectorsAttachedTo(b).size(), 1U);
+    ASSERT_OK(t.workspace.validate());
+    // A connector may not attach to a connector; unchanged ends are a no-op; errors.
+    auto self = commands::setConnectorEnds(t.workspace, link, {.position = {}, .attachedTo = link},
+                                           {.position = {}, .attachedTo = b});
+    ASSERT_OK(self);
+    EXPECT_FALSE(t.editor.execute(std::move(*self)).has_value());
+    const auto& current = std::get<Connector>(t.workspace.findElement(link)->payload);
+    auto same = commands::setConnectorEnds(t.workspace, link, current.start, current.end);
+    ASSERT_OK(same);
+    EXPECT_TRUE(same->patch.empty());
+    EXPECT_EQ(commands::setConnectorEnds(t.workspace, a, {}, {}).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(commands::setConnectorEnds(t.workspace, link,
+                                         {.position = {std::nan(""), 0}, .attachedTo = {}}, {})
+                  .error()
+                  .code,
+              ErrorCode::InvalidArgument);
+    // Deleting a attached element removes it from the index.
+    t.run(commands::deleteElement(t.workspace, b));
+    EXPECT_TRUE(t.workspace.connectorsAttachedTo(b).empty());
+    ASSERT_OK(t.workspace.validate());
+}
+
+TEST(CommandsTest, PasteElementsCopiesWithNewIdsAndReattachesConnectors) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto rect = t.addElement(layer, Shape{.size = {100, 50}, .strokeColor = std::nullopt},
+                                   {.position = {0, 0}});
+    const core::AssetId asset{t.ids.next()};
+    const auto image =
+        t.addElement(layer, Image{.asset = asset, .size = {4, 3}}, {.position = {200, 0}});
+    const auto outside = t.addElement(layer, makeStroke());
+    const auto inner =
+        t.addElement(layer, Connector{.start = {.position = {100, 25}, .attachedTo = rect},
+                                      .end = {.position = {200, 1}, .attachedTo = image}});
+    const auto dangling =
+        t.addElement(layer, Connector{.start = {.position = {100, 25}, .attachedTo = rect},
+                                      .end = {.position = {300, 25}, .attachedTo = outside}});
+    std::vector<Element> source;
+    for (const core::ElementId id : {rect, image, inner, dangling}) {
+        source.push_back(*t.workspace.findElement(id));
+    }
+    const Workspace original = t.workspace;
+
+    // Onto another page: one undo step, new ids, the given order, the offset applied.
+    const auto target = t.addPath();
+    const auto undoBefore = t.editor.history().undoCount();
+    const std::vector<core::ElementId> copies =
+        t.run(commands::pasteElements(t.workspace, target, source, {10, 20}, t.ids));
+    ASSERT_EQ(copies.size(), 4U);
+    EXPECT_EQ(t.editor.history().undoCount(), undoBefore + 1);
+    EXPECT_EQ(t.editor.history().nextUndo()->label, "Paste");
+    const auto order = t.workspace.elementsOf(target);
+    EXPECT_TRUE(std::equal(order.begin(), order.end(), copies.begin(), copies.end()));
+    for (std::size_t i = 0; i < copies.size(); ++i) {
+        EXPECT_NE(copies[i], source[i].id);
+        EXPECT_EQ(t.workspace.findElement(copies[i])->layer, target);
+    }
+    EXPECT_EQ(t.workspace.findElement(copies[0])->transform.position, (core::DVec2{10, 20}));
+    EXPECT_EQ(std::get<Shape>(t.workspace.findElement(copies[0])->payload),
+              std::get<Shape>(source[0].payload));
+    EXPECT_EQ(std::get<Image>(t.workspace.findElement(copies[1])->payload).asset, asset); // shared
+    // A connector between copied elements joins their copies; an end on anything else is
+    // detached where it is (offset with the copy).
+    const auto& joined = std::get<Connector>(t.workspace.findElement(copies[2])->payload);
+    EXPECT_EQ(joined.start.attachedTo, copies[0]);
+    EXPECT_EQ(joined.end.attachedTo, copies[1]);
+    EXPECT_EQ(joined.start.position, (core::DVec2{110, 45}));
+    const auto& loose = std::get<Connector>(t.workspace.findElement(copies[3])->payload);
+    EXPECT_EQ(loose.start.attachedTo, copies[0]);
+    EXPECT_FALSE(loose.end.attachedTo.has_value());
+    EXPECT_EQ(loose.end.position, (core::DVec2{310, 45}));
+    EXPECT_EQ(t.workspace.connectorsAttachedTo(copies[0]).size(), 2U);
+    EXPECT_EQ(t.workspace.connectorsAttachedTo(rect).size(), 2U); // the originals are untouched
+    ASSERT_OK(t.workspace.validate());
+
+    // Undo removes every copy; redo brings back the same ids.
+    ASSERT_OK(t.editor.undo());
+    EXPECT_TRUE(t.workspace.elementsOf(target).empty());
+    ASSERT_OK(t.editor.redo());
+    const auto redone = t.workspace.elementsOf(target);
+    EXPECT_TRUE(std::equal(redone.begin(), redone.end(), copies.begin(), copies.end()));
+
+    // Onto the source layer: above everything that is there.
+    const std::vector<core::ElementId> again =
+        t.run(commands::pasteElements(t.workspace, layer, source, {}, t.ids));
+    const auto layerOrder = t.workspace.elementsOf(layer);
+    ASSERT_EQ(layerOrder.size(), 9U);
+    EXPECT_TRUE(std::equal(layerOrder.begin() + 5, layerOrder.end(), again.begin(), again.end()));
+    EXPECT_TRUE(std::equal(original.elementsOf(layer).begin(), original.elementsOf(layer).end(),
+                           layerOrder.begin(), layerOrder.begin() + 5));
+
+    EXPECT_EQ(commands::pasteElements(t.workspace, layer, {}, {}, t.ids).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(commands::pasteElements(t.workspace, core::LayerId{t.ids.next()}, source, {}, t.ids)
+                  .error()
+                  .code,
+              ErrorCode::NotFound);
+    const std::vector<Element> twice{source[0], source[0]};
+    EXPECT_EQ(commands::pasteElements(t.workspace, layer, twice, {}, t.ids).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(commands::pasteElements(t.workspace, layer, source,
+                                      {std::numeric_limits<double>::quiet_NaN(), 0}, t.ids)
+                  .error()
+                  .code,
+              ErrorCode::InvalidArgument);
+}
+
+TEST(CommandsTest, PasteElementsAttachesAConnectorDrawnBelowItsTarget) {
+    // A connector re-attached to an element drawn after it lies below that element; its
+    // copy still joins the element's copy (the patch creates connectors last).
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto link =
+        t.addElement(layer, Connector{.start = {.position = {0, 0}}, .end = {.position = {50, 0}}});
+    const auto rect = t.addElement(layer, Shape{.size = {20, 20}}, {.position = {50, -10}});
+    t.run(commands::setConnectorEnds(t.workspace, link, {.position = {0, 0}},
+                                     {.position = {50, 0}, .attachedTo = rect}));
+    const std::vector<Element> source{*t.workspace.findElement(link),
+                                      *t.workspace.findElement(rect)};
+
+    const std::vector<core::ElementId> copies =
+        t.run(commands::pasteElements(t.workspace, layer, source, {5, 5}, t.ids));
+    ASSERT_EQ(copies.size(), 2U);
+    const auto order = t.workspace.elementsOf(layer);
+    ASSERT_EQ(order.size(), 4U);
+    EXPECT_EQ(order[2], copies[0]); // the painter order is kept
+    EXPECT_EQ(order[3], copies[1]);
+    EXPECT_EQ(std::get<Connector>(t.workspace.findElement(copies[0])->payload).end.attachedTo,
+              copies[1]);
+    ASSERT_OK(t.workspace.validate());
+    ASSERT_OK(t.editor.undo());
+    EXPECT_EQ(t.workspace.elementsOf(layer).size(), 2U);
+    ASSERT_OK(t.editor.redo());
+    EXPECT_EQ(t.workspace.connectorsAttachedTo(copies[1]).size(), 1U);
+    ASSERT_OK(t.workspace.validate());
+}
+
+TEST(CommandsTest, ResizeElementMapsAttachedConnectorEnds) {
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto rect = t.addElement(layer, Shape{.size = {100, 50}, .strokeColor = std::nullopt},
+                                   {.position = {0, 0}});
+    const auto other = t.addElement(layer, makeStroke());
+    const auto link =
+        t.addElement(layer, Connector{.start = {.position = {100, 25}, .attachedTo = rect},
+                                      .end = {.position = {300, 25}, .attachedTo = other}});
+    const auto undoBefore = t.editor.history().undoCount();
+    t.run(commands::resizeElement(t.workspace, rect, {.position = {0, 0}}, {200, 100}));
+    EXPECT_EQ(t.editor.history().undoCount(), undoBefore + 1);
+    EXPECT_EQ(std::get<Shape>(t.workspace.findElement(rect)->payload).size, (core::Vec2{200, 100}));
+    const auto& connector = std::get<Connector>(t.workspace.findElement(link)->payload);
+    EXPECT_EQ(connector.start.position, (core::DVec2{200, 50})); // still at the right edge's middle
+    EXPECT_EQ(connector.end.position, (core::DVec2{300, 25}));   // the other end untouched
+    ASSERT_OK(t.editor.undo());
+    EXPECT_EQ(std::get<Connector>(t.workspace.findElement(link)->payload).start.position,
+              (core::DVec2{100, 25}));
+    auto same = commands::resizeElement(t.workspace, rect, {.position = {0, 0}}, {100, 50});
+    ASSERT_OK(same);
+    EXPECT_TRUE(same->patch.empty());
+    EXPECT_EQ(commands::resizeElement(t.workspace, other, {}, {1, 1}).error().code,
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(commands::resizeElement(t.workspace, rect, {}, {-1, 1}).error().code,
+              ErrorCode::InvalidArgument);
 }
 
 TEST(CommandsTest, MoveElementsTranslatesAndConnectorEndsFollow) {

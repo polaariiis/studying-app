@@ -76,11 +76,21 @@ struct TextBox {
     [[nodiscard]] friend bool operator==(const TextBox&, const TextBox&) = default;
 };
 
+/// Stored values (docs/DATABASE_SCHEMA.md `shape.shape_kind`); 3–5 are reserved for
+/// triangle, polygon and polyline. Lines and arrows run from the local origin along +x for
+/// `size.x` (their direction is the element's rotation); `size.y` is 0.
 enum class ShapeKind : std::uint8_t {
-    Rectangle,
-    Ellipse,
-    Line
+    Rectangle = 0,
+    Ellipse = 1,
+    Line = 2,
+    Arrow = 6, ///< a line with an arrowhead at its end
 };
+
+/// Whether `kind` is one of the kinds above (for values read from storage).
+[[nodiscard]] constexpr bool isKnownShapeKind(ShapeKind kind) noexcept {
+    return kind == ShapeKind::Rectangle || kind == ShapeKind::Ellipse || kind == ShapeKind::Line ||
+           kind == ShapeKind::Arrow;
+}
 
 struct Shape {
     ShapeKind kind = ShapeKind::Rectangle;

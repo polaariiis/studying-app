@@ -3,11 +3,13 @@
 #include "CanvasInputAdapter.hpp"
 
 #include <studyapp/canvas/CanvasController.hpp>
+#include <studyapp/canvas/TextLayout.hpp>
 #include <studyapp/core/FrameTimings.hpp>
 #include <studyapp/core/Log.hpp>
 #include <studyapp/render_gl/OpenGLRenderer.hpp>
 
 #include <QFocusEvent>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
@@ -18,6 +20,9 @@
 #include <QScreen>
 #include <QSurfaceFormat>
 #include <QTabletEvent>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextEdit>
 #include <QTimer>
 #include <QWheelEvent>
 #include <QWindow>
@@ -55,9 +60,12 @@ Qt::CursorShape toQtCursor(canvas::CursorShape shape) noexcept {
     switch (shape) {
     case canvas::CursorShape::Arrow:
         return Qt::ArrowCursor;
+    case canvas::CursorShape::IBeam:
+        return Qt::IBeamCursor;
     case canvas::CursorShape::Crosshair:
     case canvas::CursorShape::ZoomIn:
-    case canvas::CursorShape::EraserRing: // an image cursor (CanvasWidget::eraserCursor)
+    case canvas::CursorShape::EraserRing: // image cursors (CanvasWidget::imageCursor)
+    case canvas::CursorShape::Highlighter:
         return Qt::CrossCursor;
     case canvas::CursorShape::OpenHand:
         return Qt::OpenHandCursor;
@@ -89,6 +97,8 @@ CanvasWidget::CanvasWidget(canvas::CanvasController& controller, QWidget* parent
                             ? qEnvironmentVariableIntValue("STUDYAPP_MSAA_SAMPLES")
                             : 4;
     format.setSamples(std::max(samples, 0));
+    // Depth orders content parts so each covers a pixel once (translucent ink stays even).
+    format.setDepthBufferSize(24);
     format.setStencilBufferSize(8);
     setFormat(format);
 
@@ -111,11 +121,105 @@ CanvasWidget::CanvasWidget(canvas::CanvasController& controller, QWidget* parent
     // keeps arriving this runs at the display rate (the swap waits for vsync); when it
     // stops, nothing is drawn.
     controller_->setRedrawCallback([this] { onRedrawRequested(); });
+    controller_->setTextEditHandler([this] { syncTextEditor(); });
     connect(this, &QOpenGLWidget::frameSwapped, this, &CanvasWidget::onFrameSwapped);
     refreshCursor();
 }
 
+// ---------------------------------------------------------------------------- text editor
+
+void CanvasWidget::syncTextEditor() {
+    const auto& edit = controller_->textEdit();
+    if (!edit) {
+        if (textEditor_ != nullptr && textEditor_->isVisible() && !finishingText_) {
+            textEditor_->hide(); // ended by the canvas (page switch, undo): nothing to write
+            setFocus(Qt::OtherFocusReason);
+        }
+        return;
+    }
+    if (textEditor_ == nullptr) {
+        textEditor_ = new QTextEdit(this);
+        textEditor_->setObjectName(QStringLiteral("textEditor"));
+        textEditor_->setAcceptRichText(false); // plain text only, also when pasting
+        textEditor_->setFrameShape(QFrame::NoFrame);
+        textEditor_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        textEditor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        textEditor_->setLineWrapMode(QTextEdit::WidgetWidth);
+        textEditor_->installEventFilter(this);
+        connect(textEditor_, &QTextEdit::textChanged, this, &CanvasWidget::positionTextEditor);
+    }
+    textEditor_->setPlainText(QString::fromStdString(edit->text));
+    positionTextEditor();
+    textEditor_->show();
+    textEditor_->setFocus(Qt::OtherFocusReason);
+    textEditor_->moveCursor(QTextCursor::End);
+}
+
+void CanvasWidget::positionTextEditor() {
+    const auto& edit = controller_->textEdit();
+    if (textEditor_ == nullptr || !edit) {
+        return;
+    }
+    // The same font and wrapping width as the canvas raster (platform::QtTextLayout),
+    // scaled to the current zoom; rotation is not shown while editing.
+    const canvas::Camera& camera = controller_->camera();
+    const double zoom = camera.zoom();
+    QFont font = QGuiApplication::font();
+    font.setPixelSize(std::max(1, static_cast<int>(std::lround(canvas::kTextSize * zoom))));
+    if (textEditor_->font() != font) {
+        textEditor_->setFont(font);
+    }
+    const double padding = canvas::kTextPadding * zoom;
+    if (textEditor_->document()->documentMargin() != padding) {
+        textEditor_->document()->setDocumentMargin(padding); // the box's padding, zoomed
+    }
+    const std::string text = textEditor_->toPlainText().toStdString();
+    const double height = controller_->textHeightFor(text, edit->width) * zoom;
+    const core::DVec2 topLeft = camera.worldToView(edit->position);
+    textEditor_->setGeometry(static_cast<int>(std::floor(topLeft.x)),
+                             static_cast<int>(std::floor(topLeft.y)),
+                             static_cast<int>(std::ceil(edit->width * zoom)) + 1,
+                             static_cast<int>(std::ceil(height)) + 1);
+}
+
+void CanvasWidget::finishTextEditing() {
+    if (textEditor_ == nullptr || !textEditor_->isVisible() || finishingText_) {
+        return;
+    }
+    finishingText_ = true;
+    const std::string text = textEditor_->toPlainText().toStdString(); // UTF-8
+    textEditor_->hide();
+    (void)controller_->finishTextEdit(text); // failures are reported by the controller
+    finishingText_ = false;
+    setFocus(Qt::OtherFocusReason);
+}
+
+bool CanvasWidget::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == textEditor_) {
+        if (event->type() == QEvent::FocusOut) {
+            // A popup (the editor's context menu, a menu of the window) keeps the edit; the
+            // shell finishes it before a menu command changes the page or closes.
+            if (static_cast<QFocusEvent*>(event)->reason() != Qt::PopupFocusReason) {
+                finishTextEditing();
+            }
+        } else if (event->type() == QEvent::KeyPress) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            const bool commit = key->key() == Qt::Key_Escape ||
+                                ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) &&
+                                 key->modifiers().testFlag(Qt::ControlModifier));
+            if (commit) {
+                finishTextEditing();
+                return true;
+            }
+        }
+    }
+    return QOpenGLWidget::eventFilter(watched, event);
+}
+
 void CanvasWidget::onRedrawRequested() {
+    if (textEditor_ != nullptr && textEditor_->isVisible()) {
+        positionTextEditor(); // follows zoom and pan while editing
+    }
     if (!requestPending_) {
         requestPending_ = true;
         requestedAtMs_ = static_cast<double>(clock_.nsecsElapsed()) / 1e6;
@@ -404,22 +508,24 @@ void CanvasWidget::updateHud() {
 
 void CanvasWidget::refreshCursor() {
     const canvas::CursorShape shape = controller_->cursor();
-    if (shape == canvas::CursorShape::EraserRing) {
-        setCursor(eraserCursor());
+    if (shape == canvas::CursorShape::EraserRing || shape == canvas::CursorShape::Highlighter) {
+        setCursor(imageCursor(shape));
     } else {
         setCursor(toQtCursor(shape));
     }
 }
 
-const QCursor& CanvasWidget::eraserCursor() {
+const QCursor& CanvasWidget::imageCursor(canvas::CursorShape shape) {
+    const bool eraser = shape == canvas::CursorShape::EraserRing;
+    ImageCursor& cache = eraser ? eraserCursor_ : highlighterCursor_;
     const double dpr = devicePixelRatioF();
-    const core::Color color = controller_->colors().eraser;
+    const core::Color color = controller_->colors().eraser; // the neutral tool-cursor colour
     const QRgb rgb = qRgba(color.r, color.g, color.b, color.a);
-    if (eraserCursorDpr_ == dpr && eraserCursorColor_ == rgb) {
-        return eraserCursor_;
+    if (cache.dpr == dpr && cache.color == rgb) {
+        return cache.cursor;
     }
-    // The ring as a cursor image, drawn at the screen's pixel density. A thin contrasting
-    // halo keeps it visible on ink and on both paper themes.
+    // Drawn at the screen's pixel density. A thin contrasting halo keeps the line art
+    // visible on ink and on both paper themes.
     const double radius = canvas::kEraserRadiusViewPx;
     const int size = 2 * static_cast<int>(std::ceil(radius + 2.0)) + 1; // odd: exact centre
     QPixmap pixmap(
@@ -427,26 +533,48 @@ const QCursor& CanvasWidget::eraserCursor() {
     pixmap.setDevicePixelRatio(dpr);
     pixmap.fill(Qt::transparent);
     {
-        const QColor ring(rgb);
+        const QColor line(rgb);
         const QColor halo =
-            ring.lightnessF() < 0.5 ? QColor(255, 255, 255, 170) : QColor(0, 0, 0, 170);
+            line.lightnessF() < 0.5 ? QColor(255, 255, 255, 170) : QColor(0, 0, 0, 170);
         QPainter painter(&pixmap);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setBrush(Qt::NoBrush);
         const QPointF centre(size / 2.0, size / 2.0);
-        painter.setPen(QPen(halo, 3.0));
-        painter.drawEllipse(centre, radius, radius);
-        painter.setPen(QPen(ring, 1.25));
-        painter.drawEllipse(centre, radius, radius);
+        for (const auto& [colour, width] : {std::pair{halo, 3.0}, std::pair{line, 1.25}}) {
+            painter.setPen(QPen(colour, width, Qt::SolidLine, Qt::FlatCap));
+            if (eraser) {
+                // The ring: the eraser's reach around the pointer.
+                painter.drawEllipse(centre, radius, radius);
+            } else {
+                // A small cross at the pointer and a broad nib below it: the highlighter.
+                // The centre stays clear so the ink under the pointer is visible.
+                const double arm = 4.5;
+                const double gap = 1.5;
+                painter.drawLine(centre + QPointF(-arm, 0), centre + QPointF(-gap, 0));
+                painter.drawLine(centre + QPointF(gap, 0), centre + QPointF(arm, 0));
+                painter.drawLine(centre + QPointF(0, -arm), centre + QPointF(0, -gap));
+                painter.drawLine(centre + QPointF(0, gap), centre + QPointF(0, arm));
+                painter.drawRect(QRectF(centre + QPointF(3.0, 5.0), QSizeF(6.0, 3.0)));
+            }
+        }
     }
-    // Hot spot in device-independent pixels: the ring's centre is the eraser's centre.
-    eraserCursor_ = QCursor(pixmap, size / 2, size / 2);
-    eraserCursorDpr_ = dpr;
-    eraserCursorColor_ = rgb;
-    return eraserCursor_;
+    // Hot spot in device-independent pixels: the image's centre is the tool's position.
+    cache = {.cursor = QCursor(pixmap, size / 2, size / 2), .dpr = dpr, .color = rgb};
+    return cache.cursor;
+}
+
+bool CanvasWidget::isOverTextEditor(const QPointF& position) const {
+    return textEditor_ != nullptr && textEditor_->isVisible() &&
+           textEditor_->geometry().contains(position.toPoint());
 }
 
 void CanvasWidget::mousePressEvent(QMouseEvent* event) {
+    if (isOverTextEditor(event->position())) {
+        // A press the editor did not take (right or middle button) reached the canvas: it
+        // is still the editor's (its context menu), not a canvas click that ends the edit.
+        event->ignore();
+        return;
+    }
     setFocus(Qt::MouseFocusReason);
     if (const auto pointer = toPointerEvent(*event)) {
         pointerDown_ = true;
@@ -478,6 +606,10 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void CanvasWidget::tabletEvent(QTabletEvent* event) {
+    if (!pointerDown_ && isOverTextEditor(event->position())) {
+        event->ignore(); // the pen in the text editor: Qt sends it the mouse events
+        return;
+    }
     if (const auto pointer = toPointerEvent(*event)) {
         if (pointer->phase == canvas::PointerPhase::Down) {
             setFocus(Qt::MouseFocusReason);

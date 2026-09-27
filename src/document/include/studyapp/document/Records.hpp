@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace studyapp::document {
 
@@ -82,6 +83,7 @@ struct PageInfo {
     PageExtent extent = PageExtent::Infinite;
     core::DVec2 size{}; ///< used when `extent == Bounded`; both components > 0
     PageBackground background{};
+    std::vector<core::TagId> tags; ///< sorted, unique, existing tags (Phase 7)
     core::Timestamp created{};
     core::Timestamp modified{};
 

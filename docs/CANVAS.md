@@ -236,8 +236,17 @@ few ms ahead) is a later latency optimisation.
 ### 5.2 Eraser
 
 * **Stroke eraser**: removes any stroke whose geometry the eraser path touches.
-* **Partial eraser**: splits strokes where the eraser circle covers points, producing a
-  patch that deletes the original and creates the surviving pieces (new ids).
+* **Partial eraser** *(implemented in Phase 6, step 3; the default mode)*: cuts the ink
+  the eraser covers out of strokes, as vectors. Each pointer step is a capsule (the step's
+  segment, eraser radius); a stroke segment is cut exactly where its centre line comes
+  within capsule radius + ink radius (`canvas::StrokeEraser`, element-local coordinates),
+  so the remaining ink ends at the eraser's edge; surviving points stay bit-exact, cut
+  ends get interpolated pressure. Pieces shorter than max(stroke width, 1.5 view px) are
+  dropped (no stray dots); a dot is erased whole. The patch
+  (`commands::splitStrokes`) keeps the first piece under the stroke's id (an update:
+  attached connectors stay attached, fewer id changes than delete + create) and inserts
+  further pieces right after it in the draw order; fully erased strokes are removed.
+  Style, transform, layer and lock state are kept.
 * The eraser accumulates affected elements during the gesture (preview hides them) and
   commits a single patch on pen-up → one undo step.
 
@@ -265,9 +274,11 @@ containment of element geometry (sampled points for strokes).
 * `Selection` = set of `ElementId`s + cached combined world bounds; UI-only state, not
   persisted, cleared on page switch, pruned when a patch deletes selected elements.
 * Transform handles are drawn in **view space** (constant pixel size) as overlays.
-* During a drag the canvas applies a preview transform to the selected elements' draw
-  items; on release it commits `commands::transformElements` (and connector updates) as
-  one patch.
+* During a drag the canvas draws a preview of the new geometry; on release it commits one
+  command (`moveElements`, `resizeElement` or `setConnectorEnds`, each including the
+  attached connector updates) as one patch. *(Phase 6, step 8: see §13 "Selection
+  handles"; rotation is not implemented.)*
+* Cut, copy and paste *(Phase 6, step 9)*: see §13 "Clipboard".
 * Snapping (grid, other elements' edges/centres, angle increments) is a later addition,
   implemented as a pure function over candidate geometry.
 
@@ -288,8 +299,47 @@ hit testing; locked layers are drawn but not hit-testable by editing tools.
   UI converts the Qt document to `document::RichText` and commits `commands::editText`.
   This is the pragmatic approach used by several canvas apps; a fully in-canvas editor is a
   possible later upgrade, isolated behind the Text tool.
+* **Implemented (Phase 6, step 5)**: plain UTF-8 text in one style (the application font at
+  `kTextSize` = 16 px per world unit, black, `kTextPadding` 4; content JSON v1 unchanged).
+  `canvas::TextLayout` (height for a width, rasterise) is implemented by
+  `platform::QtTextLayout` on `QTextDocument` and handed to the window by the composition
+  root. Text tool (key T): a click edits the box under it or starts a new box 240 wide, a
+  drag sets the width. The edit lives in `CanvasController::textEdit()` and in a `QTextEdit`
+  overlay (plain text only, same font and wrap width, scaled to the zoom, following pan and
+  zoom); the box is hidden on the canvas meanwhile. Escape, Ctrl+Enter or focus leaving the
+  editor finish it (a popup — the editor's context menu, a window menu — does not; the
+  shell finishes the edit before it changes the page or closes the workspace, so text typed
+  before Ctrl+PgUp/PgDn, Ctrl+N or closing is written, not dropped): one command (`createElement`, `commands::editText`, or `deleteElement`
+  when cleared; blank new boxes are not created; unchanged text writes nothing); the height
+  comes from the layout. The editor takes letters, Delete and Ctrl+Z (its own undo) through
+  `ShortcutOverride`, so no tool shortcut or document undo fires while typing. Display: a
+  texture per box (`render::createTexture`, drawn on the unit quad), rasterised when its
+  content changes (at once) or when the zoom crosses a √2 step (at most 1 Mpx of
+  refinements per frame; the old raster is stretched meanwhile and another frame is
+  requested), never above 4096 px per side; textures are released with their element or
+  page. Text boxes are runs of their own in batches, so painter's order holds. Rotation is
+  not shown while editing; resizing is step 8.
 
 ## 10. Documents and images
+
+* **Implemented (Phase 6, step 6)**: Edit ▸ Insert Image… (Ctrl+Shift+I) checks the file
+  with QImageReader, imports it through `WorkspaceSession::importAsset` (content-addressed:
+  the same content is stored once and reused) and inserts one selected `Image` element
+  (`CanvasController::insertImage`: one world unit per pixel, scaled down to 60 % of the
+  view, centred). Pixels come from `canvas::ImageSource`, implemented by
+  `ui::SessionImageSource`: the asset path is looked up on the GUI thread, the file is
+  decoded on a small thread pool (QImageReader, EXIF orientation, downscaled while
+  decoding); a load that is not ready returns nullopt and the source asks the canvas for a
+  frame when it is. Decoded images the canvas never collects (the page or the zoom changed
+  while decoding) are kept within 256 MB, oldest dropped first (decoded again if asked
+  for). The canvas keeps **one texture per asset** (shared by every element showing it)
+  at the resolution the view needs, rounded up to a power of two and at most 4096 px
+  (2 Mpx of refinements per frame; the coarser texture is stretched meanwhile); zooming
+  out keeps the finer texture; least recently drawn textures are released beyond
+  256 MB and all of them on a page switch. Missing, corrupted or unsupported assets are
+  drawn as the neutral frame and not retried. Images are runs of their own in batches.
+  (ARCHITECTURE planned the decoder in `platform`; `ui` may not depend on `platform`, so
+  it lives next to `SessionDocumentPort`.)
 
 * Images: decoded off-thread by `ImageDecoder` (Qt), uploaded as mip-mapped textures;
   very large images are downscaled to a level appropriate for the current zoom.
@@ -335,8 +385,10 @@ What exists (`src/canvas`), and where it differs from the sketches above.
   touchpad pixel scrolling pans; Ctrl+wheel always zooms; pinch zooms; middle button or
   Space+drag pans with any tool.
 * **Document access**: tools get a `DocumentPort` (decision D30) instead of an `Editor`;
-  the owner reports every applied patch to `CanvasController::onDocumentChanged`.
-  One gesture commits at most one command. Read-only ports refuse edits in the tools.
+  the owner reports every applied patch to `CanvasController::onDocumentChanged`, which asks
+  for a frame only if the patch changes what the canvas shows (elements, layers, the open
+  page's format or background): planner edits — tasks, tags, page tags — cost no frame
+  (Phase 7). One gesture commits at most one command. Read-only ports refuse edits in the tools.
 * **Pen** (§5.1): dedupe < 0.5 view px → One-Euro (min cutoff 2 Hz, β 0.02 per view px/s,
   derivative cutoff 1 Hz; missing timestamps assume 120 Hz) → on pen-up the last raw
   sample is appended (no end lag) → RDP with ε = 0.25 view px that also keeps points whose
@@ -344,8 +396,101 @@ What exists (`src/canvas`), and where it differs from the sketches above.
   zoom at stroke start; stored geometry is world units (points relative to the first
   point, which becomes the element position). Width = `baseWidth` × (0.3 + 0.7 ×
   pressure); mice report pressure 1. Strokes start only inside a bounded page.
-* **Eraser** (§5.2): the stroke eraser only (8 view px radius, whole strokes, one patch
-  on release). The partial eraser is Phase 6. Its reach is shown by
+* **Tool settings** *(Phase 6, step 1)*: `canvas::ToolSettings` (the pen's and the
+  highlighter's brush, colour and width) is tool state owned by the controller and sanitized
+  there (width 0.25–64 world units, never fully transparent). It decides new strokes only: each
+  stroke stores its own brush, colour and width in the document, so changing the settings
+  never changes content, is not an edit, and rendering reads only the document. A stroke
+  keeps the style it started with. The shell offers a short list of muted inks and three
+  widths (`inkPalette()`, `penWidthPresets()` in DesignTokens) in one toolbar button and
+  Tools ▸ Pen Style, and remembers the choice per user (QSettings), across workspaces.
+* **Highlighter** *(Phase 6, step 2)*: `ToolKind::Highlighter` is the pen tool with its
+  own settings (`ToolSettings::highlighter`, default `kDefaultHighlighter`: yellow at 45 %
+  opacity, 14 units) and cursor (`CursorShape::Highlighter`, a platform cursor image like
+  the eraser ring). Its strokes are ordinary strokes with `document::Brush::Highlighter`
+  and a translucent colour; brush, colour (with alpha) and width are stored per stroke, so
+  they reopen as drawn without any tool state, and no schema change was needed (the brush
+  column already had the value). The highlighter ignores pressure — an even band
+  (`strokeRadius`), while the recorded pressure is kept in the points; the pen's pressure
+  response is unchanged. Rendering is the normal stroke path: translucency comes from the
+  stored alpha, and the renderer's single-coverage rule (RENDERING.md §6.5) keeps a stroke
+  even where it overlaps itself; separate strokes build up where they cross, and ink under
+  a highlighter stays visible (normal alpha blending, drawn in document order — a
+  highlighter drawn *under* later ink is covered by it). The shell adds a Highlighter tool
+  (key M) and Tools ▸ Highlighter Style (four light inks, Fine/Medium/Thick = 8/14/22);
+  the toolbar's one style button shows the style of the ink tool chosen last. Choosing a
+  tool or a style is never an edit and rebuilds no geometry; a style change repaints
+  nothing (a tool change requests one frame, as before, e.g. for a cancelled gesture).
+* **Shapes** *(Phase 6, step 4)*: `ToolKind::Shape` drags out a line, arrow, rectangle
+  or ellipse (`canvas::shapeFromDrag`, `ToolSettings::shape`: kind, outline colour and
+  width, optional fill = the outline colour at 20 %). Boxes are stored with their top-left
+  corner as position; lines and arrows with the press point as position, their length
+  along local +x and their direction as the element rotation (`Shape::size` stays
+  non-negative). Shift makes boxes square and snaps lines to 45°; drags shorter than
+  3 view px create nothing. `ShapeKind::Arrow` (stored value 6, no migration) draws a
+  shaft and a filled head (3.5 × width, ≥ 8, ≤ 60 % of the length) as one mesh. The
+  preview is built from the dragged geometry each step (a few triangles, two scratch
+  meshes) and never enters the document; release commits one `createElement`. The scene
+  indexes `visualBounds()` (document bounds plus half the outline and the arrowhead), so
+  culling, selection frames and spatial queries include the ink outside the box. Shell:
+  Shape tool (key S) and Tools ▸ Shape Style (kinds, the pen inks, widths, Fill),
+  remembered per user; the style button follows pen, highlighter or shape, whichever was
+  chosen last.
+* **Connectors** *(Phase 6, step 7)*: `ToolKind::Connector` (key C) drags a straight
+  connector with an arrowhead at its end (the schema's default end cap), in the shape
+  style's colour and width. An end pressed or released on an element (not a connector,
+  not locked; boxes anywhere inside, ink near it) attaches to it, at the point where the
+  line towards the other end leaves the element's visual bounds (`attachPoint`); elsewhere
+  the end is free. Pressing within 6 view px of an end of an existing connector drags that
+  end (`commands::setConnectorEnds`: detach, re-attach; the fixed attached end is re-aimed).
+  Routing stays simple: when an element moves, `moveElements` translates the attached
+  ends by the same delta, finding the connectors through the workspace's attachment index
+  (`Workspace::connectorsAttachedTo`, element → connectors) instead of scanning the page,
+  so a move costs O(moved + attached). During a move preview the attached connectors are
+  drawn with their ends following the offset; they are found once when the move starts.
+  Deleting an element detaches its connectors (the connector stays).
+* **Selection handles** *(Phase 6, step 8)*: a single selected, unlocked element on an
+  editable workspace shows handles (`canvas::handlesFor`, 7 view px squares, grabbed within
+  6 view px; handles win over hit testing of what lies below): rectangles, ellipses and
+  images 8 (corners and edges), text boxes left and right (the width; the height follows
+  the text layout), lines, arrows and connectors their two ends. Rotated or scaled
+  elements and strokes have none. `dragHandle` is pure geometry: the opposite corner or
+  edge stays (dragging past it flips the box), images keep their aspect ratio on corners
+  (Shift frees it; for shapes Shift keeps it), line ends snap to 45° with Shift, sizes never
+  drop below 4 view px. The drag draws the element at its new geometry (shapes
+  tessellated per frame, text and images stretch their texture) and writes nothing;
+  release commits `commands::resizeElement` (connector ends attached to the element keep
+  their relative place on its bounds) or, for a connector end, `setConnectorEnds` with the
+  end re-attached to whatever it is dropped on. Limitation: attached connectors are
+  redrawn at their new ends on release, not during the drag.
+* **Clipboard** *(Phase 6, step 9; D41)*: Edit ▸ Cut/Copy/Paste (Ctrl+X/C/V while the
+  canvas has focus; the text editor keeps those keys for its text). Copy stores the
+  selected elements' values in painter order in the controller's clipboard, which belongs
+  to the open workspace (not the system clipboard) and survives page switches. Paste is one
+  `commands::pasteElements` command onto the page's target layer: new ids, the copied
+  order on top of the layer, connector ends between copied elements re-attached to the
+  copies through a temporary old → new id map, ends on anything else detached in place,
+  images referencing the same asset (no second stored file). The copies are selected and
+  the Select tool is chosen. Placement: on the source page each paste is 16 view px further
+  down and right (after a cut the first paste is in place), on another page the copies keep
+  their coordinates; they are centred in the view instead if that would put them out of
+  sight (on another page: not entirely in view). Cut
+  is copy + delete (one command, labelled "Cut"). Read-only workspaces copy but do not cut or paste.
+  Measured (release, `BM_CopyPaste`, 10 000-stroke page): 1 014 strokes copy in 1.4 ms and
+  paste in 2.5 ms (command, apply, scene), the frame after tessellates them in 18.6 ms; the
+  whole page copies in 7.8 ms, pastes in 26 ms, and its next frame takes 177 ms (the
+  first-frame cost of 10 000 new strokes, Phase 9).
+* **Single-key tool shortcuts** (P, M, S, T, C, V, E, H, Z) are window shortcuts, except while
+  the navigation tree has focus: there plain typing is the tree's keyboard search
+  (`NavigationPanel` takes those keys through `ShortcutOverride`). Text fields already
+  take them the same way; chords (Ctrl+Z, …) work everywhere.
+* **Eraser** (§5.2): 8 view px radius, one patch on release. *(Phase 6, step 3)*
+  `ToolSettings::eraser` chooses `EraserMode::Partial` (default) or `WholeStroke` (the
+  Phase 4 stroke eraser); Tools ▸ Eraser in the shell, remembered per user. Candidates
+  come from the scene's spatial grid for each step's bounds; a candidate is only copied
+  into the gesture's working state (`Preview::partial`, keyed by id) once it is actually
+  cut. Cut strokes are hidden and drawn from their pieces in their place (one preview
+  mesh per stroke, re-tessellated only when that stroke changed in the step). Its reach is shown by
   `CursorShape::EraserRing`, which the UI turns into a platform cursor image: a ring drawn
   by the renderer trailed the pointer by the one to two frames every composited window
   presents late (≈ 15–45 px at 2 000 px/s, measured), stayed behind when the pointer left

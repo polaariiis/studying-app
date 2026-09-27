@@ -8,7 +8,7 @@
 #include <studyapp/document/Workspace.hpp>
 #include <studyapp/persistence/SqliteLibrary.hpp>
 #include <studyapp/render/Tessellation.hpp>
-#include <studyapp/study/Module.hpp>
+#include <studyapp/study/Records.hpp>
 
 #include <gtest/gtest.h>
 
@@ -20,7 +20,7 @@ namespace {
 TEST(ModuleLinkTest, QtFreeModulesLinkWithoutQt) {
     const document::Workspace workspace(document::WorkspaceInfo{.name = "link test"});
     EXPECT_EQ(workspace.notebookCount(), 0U);
-    EXPECT_EQ(study::moduleName(), "study");
+    EXPECT_EQ(study::foldTagName("Exam"), "exam");
     const std::vector<render::WidthPoint> dot{{.position = {0.0F, 0.0F}, .radius = 1.0F}};
     EXPECT_FALSE(render::tessellatePolyline(dot).empty());
     canvas::Camera camera;

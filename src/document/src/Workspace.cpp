@@ -26,9 +26,17 @@ constexpr std::string_view recordName() {
         return "page";
     } else if constexpr (std::is_same_v<Record, Layer>) {
         return "layer";
-    } else {
-        static_assert(std::is_same_v<Record, Element>);
+    } else if constexpr (std::is_same_v<Record, Element>) {
         return "element";
+    } else if constexpr (std::is_same_v<Record, study::Course>) {
+        return "course";
+    } else if constexpr (std::is_same_v<Record, study::Project>) {
+        return "project";
+    } else if constexpr (std::is_same_v<Record, study::Task>) {
+        return "task";
+    } else {
+        static_assert(std::is_same_v<Record, study::Tag>);
+        return "tag";
     }
 }
 
@@ -46,6 +54,114 @@ const core::FractionalIndex& orderKey(const Layer& r) noexcept {
 }
 const core::FractionalIndex& orderKey(const Element& r) noexcept {
     return r.z;
+}
+const core::FractionalIndex& orderKey(const study::Course& r) noexcept {
+    return r.order;
+}
+const core::FractionalIndex& orderKey(const study::Project& r) noexcept {
+    return r.order;
+}
+const core::FractionalIndex& orderKey(const study::Task& r) noexcept {
+    return r.order;
+}
+
+/// Sibling order: (order key, id); tags by (name ignoring ASCII case, id).
+template <class Record>
+bool siblingLess(const Record& a, const Record& b) {
+    const auto& ka = orderKey(a);
+    const auto& kb = orderKey(b);
+    return ka != kb ? ka < kb : a.id < b.id;
+}
+bool siblingLess(const study::Tag& a, const study::Tag& b) {
+    const std::string fa = study::foldTagName(a.name);
+    const std::string fb = study::foldTagName(b.name);
+    return fa != fb ? fa < fb : a.id < b.id;
+}
+
+/// Adds `id` to the list of `key` in a reverse-reference index.
+template <class Map, class Id>
+void addReference(Map& index, const typename Map::key_type& key, const Id& id) {
+    index[key].push_back(id);
+}
+
+/// Removes one `id` from the references of `key`; drops the entry when it becomes empty.
+/// Vectors (connectors of an element: few) by linear search; sets in O(1).
+template <class Map, class Id>
+void removeReference(Map& index, const typename Map::key_type& key, const Id& id) {
+    const auto it = index.find(key);
+    if (it == index.end()) {
+        return;
+    }
+    auto& ids = it->second;
+    if constexpr (requires { ids.find(id); }) {
+        ids.erase(id);
+    } else if (const auto at = std::find(ids.begin(), ids.end(), id); at != ids.end()) {
+        ids.erase(at);
+    }
+    if (ids.empty()) {
+        index.erase(it);
+    }
+}
+
+template <class Map, class Id>
+void reference(Map& index, const typename Map::key_type& key, const Id& id, int delta) {
+    if (delta > 0) {
+        if constexpr (requires { index[key].insert(id); }) {
+            index[key].insert(id);
+        } else {
+            addReference(index, key, id);
+        }
+    } else {
+        removeReference(index, key, id);
+    }
+}
+
+/// The references of `key` as a sorted vector (empty if none).
+template <class Id, class Map>
+std::vector<Id> sortedReferences(const Map& index, const typename Map::key_type& key) {
+    const auto it = index.find(key);
+    if (it == index.end()) {
+        return {};
+    }
+    std::vector<Id> ids(it->second.begin(), it->second.end());
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+/// Whether an update keeps the record at its place among its siblings (same parent, same
+/// order key): its entry in the sibling index then stays as it is.
+bool sameSlot(const NotebookInfo& a, const NotebookInfo& b) noexcept {
+    return a.order == b.order;
+}
+bool sameSlot(const SectionInfo& a, const SectionInfo& b) noexcept {
+    return a.notebook == b.notebook && a.order == b.order;
+}
+bool sameSlot(const PageInfo& a, const PageInfo& b) noexcept {
+    return a.section == b.section && a.order == b.order;
+}
+bool sameSlot(const Layer& a, const Layer& b) noexcept {
+    return a.page == b.page && a.order == b.order;
+}
+bool sameSlot(const Element& a, const Element& b) noexcept {
+    return a.layer == b.layer && a.z == b.z;
+}
+bool sameSlot(const study::Course& a, const study::Course& b) noexcept {
+    return a.order == b.order;
+}
+bool sameSlot(const study::Project& a, const study::Project& b) noexcept {
+    return a.order == b.order;
+}
+bool sameSlot(const study::Task& a, const study::Task& b) noexcept {
+    return a.parent == b.parent && a.order == b.order;
+}
+bool sameSlot(const study::Tag& a, const study::Tag& b) {
+    return study::foldTagName(a.name) == study::foldTagName(b.name);
+}
+
+template <class Id>
+bool isSortedUnique(const std::vector<Id>& ids) {
+    return std::adjacent_find(ids.begin(), ids.end(),
+                              [](const Id& a, const Id& b) { return !(a < b); }) == ids.end();
 }
 
 bool isFinite(const core::Vec2& v) noexcept {
@@ -86,6 +202,9 @@ Result<void> checkPayload(const TextBox& text) {
 }
 
 Result<void> checkPayload(const Shape& shape) {
+    if (!isKnownShapeKind(shape.kind)) {
+        return invalid("unknown shape kind");
+    }
     if (!isNonNegative(shape.size)) {
         return invalid("shape size must be finite and non-negative");
     }
@@ -124,14 +243,11 @@ auto* findIn(const Map& table, const typename Map::key_type& id) {
     return it == table.end() ? nullptr : &it->second;
 }
 
-/// Sorts ids by (order key, id) using the records in `table`.
+/// Sorts ids in sibling order using the records in `table`.
 template <class Id, class Table>
 void sortSiblings(std::vector<Id>& ids, const Table& table) {
-    std::sort(ids.begin(), ids.end(), [&](const Id& a, const Id& b) {
-        const auto& ka = orderKey(table.at(a));
-        const auto& kb = orderKey(table.at(b));
-        return ka != kb ? ka < kb : a < b;
-    });
+    std::sort(ids.begin(), ids.end(),
+              [&](const Id& a, const Id& b) { return siblingLess(table.at(a), table.at(b)); });
 }
 
 } // namespace
@@ -199,6 +315,49 @@ const Element* Workspace::findElement(core::ElementId id) const {
     return findIn(elements_, id);
 }
 
+const study::Course* Workspace::findCourse(core::CourseId id) const {
+    return findIn(courses_, id);
+}
+const study::Project* Workspace::findProject(core::ProjectId id) const {
+    return findIn(projects_, id);
+}
+const study::Task* Workspace::findTask(core::TaskId id) const {
+    return findIn(tasks_, id);
+}
+const study::Tag* Workspace::findTag(core::TagId id) const {
+    return findIn(tagsById_, id);
+}
+const study::Tag* Workspace::findTagByName(std::string_view name) const {
+    const auto it = tagsByName_.find(study::foldTagName(name));
+    return it == tagsByName_.end() ? nullptr : findTag(it->second);
+}
+
+std::span<const core::TaskId> Workspace::topLevelTasks() const {
+    return childrenIn<core::TaskId>(tasksByParent_, core::TaskId{});
+}
+std::span<const core::TaskId> Workspace::subtasksOf(core::TaskId task) const {
+    return task.isNull() ? std::span<const core::TaskId>{}
+                         : childrenIn<core::TaskId>(tasksByParent_, task);
+}
+std::vector<core::TaskId> Workspace::tasksLinkedTo(core::PageId page) const {
+    return sortedReferences<core::TaskId>(tasksByPage_, page);
+}
+std::vector<core::TaskId> Workspace::tasksOfProject(core::ProjectId project) const {
+    return sortedReferences<core::TaskId>(tasksByProject_, project);
+}
+std::vector<core::TaskId> Workspace::tasksOfCourse(core::CourseId course) const {
+    return sortedReferences<core::TaskId>(tasksByCourse_, course);
+}
+std::vector<core::ProjectId> Workspace::projectsOfCourse(core::CourseId course) const {
+    return sortedReferences<core::ProjectId>(projectsByCourse_, course);
+}
+std::vector<core::PageId> Workspace::pagesTagged(core::TagId tag) const {
+    return sortedReferences<core::PageId>(pagesByTag_, tag);
+}
+std::vector<core::TaskId> Workspace::tasksTagged(core::TagId tag) const {
+    return sortedReferences<core::TaskId>(tasksByTag_, tag);
+}
+
 std::optional<core::PageId> Workspace::pageOf(core::ElementId element) const {
     const Element* e = findElement(element);
     const Layer* layer = e != nullptr ? findLayer(e->layer) : nullptr;
@@ -233,6 +392,77 @@ Result<void> Workspace::checkRecord(const PageInfo& record) const {
     }
     if (!(std::isfinite(record.background.spacing) && record.background.spacing > 0.0F)) {
         return invalid("page background spacing must be positive and finite");
+    }
+    if (!isSortedUnique(record.tags)) {
+        return invalid("page tags must be sorted and unique");
+    }
+    return checkTagIds(record.tags);
+}
+
+Result<void> Workspace::checkTagIds(const std::vector<core::TagId>& tags) const {
+    for (const core::TagId tag : tags) {
+        if (findTag(tag) == nullptr) {
+            return makeError(ErrorCode::NotFound, "tag " + tag.toString() + " does not exist");
+        }
+    }
+    return {};
+}
+
+Result<void> Workspace::checkRecord(const study::Course& record) const {
+    return study::checkValues(record);
+}
+
+Result<void> Workspace::checkRecord(const study::Project& record) const {
+    if (auto values = study::checkValues(record); !values) {
+        return values;
+    }
+    if (record.course && findCourse(*record.course) == nullptr) {
+        return makeError(ErrorCode::NotFound,
+                         "course " + record.course->toString() + " does not exist");
+    }
+    return {};
+}
+
+Result<void> Workspace::checkRecord(const study::Task& record) const {
+    if (auto values = study::checkValues(record); !values) {
+        return values;
+    }
+    if (record.course && findCourse(*record.course) == nullptr) {
+        return makeError(ErrorCode::NotFound,
+                         "course " + record.course->toString() + " does not exist");
+    }
+    if (record.project && findProject(*record.project) == nullptr) {
+        return makeError(ErrorCode::NotFound,
+                         "project " + record.project->toString() + " does not exist");
+    }
+    if (record.parent) {
+        const study::Task* parent = findTask(*record.parent);
+        if (parent == nullptr) {
+            return makeError(ErrorCode::NotFound,
+                             "parent task " + record.parent->toString() + " does not exist");
+        }
+        if (parent->parent) {
+            return invalid("subtasks cannot have subtasks");
+        }
+        if (!subtasksOf(record.id).empty()) {
+            return invalid("a task with subtasks cannot become a subtask");
+        }
+    }
+    for (const core::PageId page : record.linkedPages) {
+        if (findPage(page) == nullptr) {
+            return makeError(ErrorCode::NotFound, "page " + page.toString() + " does not exist");
+        }
+    }
+    return checkTagIds(record.tags);
+}
+
+Result<void> Workspace::checkRecord(const study::Tag& record) const {
+    if (auto values = study::checkValues(record); !values) {
+        return values;
+    }
+    if (const auto it = tagsByName_.find(study::foldTagName(record.name));
+        it != tagsByName_.end() && it->second != record.id) {
+        return makeError(ErrorCode::AlreadyExists, "a tag named \"" + record.name + "\" exists");
     }
     return {};
 }
@@ -303,13 +533,31 @@ bool Workspace::hasDependents(const SectionInfo& record) const {
     return !pagesOf(record.id).empty();
 }
 bool Workspace::hasDependents(const PageInfo& record) const {
-    return !layersOf(record.id).empty();
+    return !layersOf(record.id).empty() || tasksByPage_.contains(record.id);
 }
 bool Workspace::hasDependents(const Layer& record) const {
     return !elementsOf(record.id).empty();
 }
+std::span<const core::ElementId> Workspace::connectorsAttachedTo(core::ElementId element) const {
+    const auto it = connectorsByAttachment_.find(element);
+    return it == connectorsByAttachment_.end() ? std::span<const core::ElementId>{}
+                                               : std::span<const core::ElementId>{it->second};
+}
+
 bool Workspace::hasDependents(const Element& record) const {
-    return connectorAttachments_.contains(record.id);
+    return connectorsByAttachment_.contains(record.id);
+}
+bool Workspace::hasDependents(const study::Course& record) const {
+    return projectsByCourse_.contains(record.id) || tasksByCourse_.contains(record.id);
+}
+bool Workspace::hasDependents(const study::Project& record) const {
+    return tasksByProject_.contains(record.id);
+}
+bool Workspace::hasDependents(const study::Task& record) const {
+    return tasksByParent_.contains(record.id);
+}
+bool Workspace::hasDependents(const study::Tag& record) const {
+    return pagesByTag_.contains(record.id) || tasksByTag_.contains(record.id);
 }
 
 // ---------------------------------------------------------------------------- indexes
@@ -329,17 +577,27 @@ std::vector<core::LayerId>& Workspace::siblingsOf(const Layer& record) {
 std::vector<core::ElementId>& Workspace::siblingsOf(const Element& record) {
     return elementsByLayer_[record.layer];
 }
+std::vector<core::CourseId>& Workspace::siblingsOf(const study::Course& /*record*/) {
+    return courseOrder_;
+}
+std::vector<core::ProjectId>& Workspace::siblingsOf(const study::Project& /*record*/) {
+    return projectOrder_;
+}
+std::vector<core::TaskId>& Workspace::siblingsOf(const study::Task& record) {
+    return tasksByParent_[record.parent.value_or(core::TaskId{})];
+}
+std::vector<core::TagId>& Workspace::siblingsOf(const study::Tag& /*record*/) {
+    return tagOrder_;
+}
 
 template <class Record>
 void Workspace::insertSorted(const Record& record) {
     auto& siblings = siblingsOf(record);
     const auto& records = table(static_cast<const Record*>(nullptr));
-    const auto& key = orderKey(record);
-    const auto pos = std::lower_bound(
-        siblings.begin(), siblings.end(), record.id, [&](const auto& sibling, const auto& id) {
-            const auto& siblingKey = orderKey(records.at(sibling));
-            return siblingKey != key ? siblingKey < key : sibling < id;
-        });
+    const auto pos = std::lower_bound(siblings.begin(), siblings.end(), record.id,
+                                      [&](const auto& sibling, const auto& /*id*/) {
+                                          return siblingLess(records.at(sibling), record);
+                                      });
     siblings.insert(pos, record.id);
 }
 
@@ -364,23 +622,57 @@ void Workspace::eraseFromSiblings(const Record& record) {
         if (siblings.empty()) {
             elementsByLayer_.erase(record.layer);
         }
+    } else if constexpr (std::is_same_v<Record, study::Task>) {
+        if (siblings.empty()) {
+            tasksByParent_.erase(record.parent.value_or(core::TaskId{}));
+        }
     }
 }
 
-void Workspace::trackConnector(const Element& element, int delta) {
+void Workspace::track(const Element& element, int delta) {
     const auto* connector = std::get_if<Connector>(&element.payload);
     if (connector == nullptr) {
         return;
     }
     for (const ConnectorEnd* end : {&connector->start, &connector->end}) {
-        if (!end->attachedTo) {
-            continue;
+        if (end->attachedTo) {
+            reference(connectorsByAttachment_, *end->attachedTo, element.id, delta);
         }
-        int& count = connectorAttachments_[*end->attachedTo];
-        count += delta;
-        if (count <= 0) {
-            connectorAttachments_.erase(*end->attachedTo);
-        }
+    }
+}
+
+void Workspace::track(const PageInfo& page, int delta) {
+    for (const core::TagId tag : page.tags) {
+        reference(pagesByTag_, tag, page.id, delta);
+    }
+}
+
+void Workspace::track(const study::Project& project, int delta) {
+    if (project.course) {
+        reference(projectsByCourse_, *project.course, project.id, delta);
+    }
+}
+
+void Workspace::track(const study::Task& task, int delta) {
+    if (task.course) {
+        reference(tasksByCourse_, *task.course, task.id, delta);
+    }
+    if (task.project) {
+        reference(tasksByProject_, *task.project, task.id, delta);
+    }
+    for (const core::PageId page : task.linkedPages) {
+        reference(tasksByPage_, page, task.id, delta);
+    }
+    for (const core::TagId tag : task.tags) {
+        reference(tasksByTag_, tag, task.id, delta);
+    }
+}
+
+void Workspace::track(const study::Tag& tag, int delta) {
+    if (delta > 0) {
+        tagsByName_.emplace(study::foldTagName(tag.name), tag.id);
+    } else {
+        tagsByName_.erase(study::foldTagName(tag.name));
     }
 }
 
@@ -415,9 +707,7 @@ Result<void> Workspace::applyChange(const Change<Record>& change) {
         const auto [inserted, ok] = records.emplace(id, *change.after);
         assert(ok);
         insertSorted(inserted->second);
-        if constexpr (std::is_same_v<Record, Element>) {
-            trackConnector(inserted->second, +1);
-        }
+        track(inserted->second, +1);
         return {};
     }
 
@@ -432,15 +722,16 @@ Result<void> Workspace::applyChange(const Change<Record>& change) {
 
     if (change.isRemove()) {
         if (hasDependents(it->second)) {
+            constexpr bool referenced = std::is_same_v<Record, study::Course> ||
+                                        std::is_same_v<Record, study::Project> ||
+                                        std::is_same_v<Record, study::Tag>;
             return invalid(std::string(what) + " " + id.toString() +
-                           (std::is_same_v<Record, Element>
-                                ? " still has connectors attached"
-                                : " still has children; remove them first"));
+                           (std::is_same_v<Record, Element> ? " still has connectors attached"
+                            : referenced ? " is still referenced; clear the references first"
+                                         : " still has children or links; remove them first"));
         }
         eraseFromSiblings(it->second);
-        if constexpr (std::is_same_v<Record, Element>) {
-            trackConnector(it->second, -1);
-        }
+        track(it->second, -1);
         records.erase(it);
         return {};
     }
@@ -456,14 +747,19 @@ Result<void> Workspace::applyChange(const Change<Record>& change) {
             }()) {
             return invalid("element with attached connectors cannot move to another page");
         }
-        trackConnector(it->second, -1);
     }
-    eraseFromSiblings(it->second);
+    // An update in place (the common case: a moved stroke, an edited task) keeps its sibling
+    // index entry: O(1) instead of O(siblings), so a patch updating k siblings is O(k).
+    const bool inPlace = sameSlot(it->second, *change.after);
+    track(it->second, -1);
+    if (!inPlace) {
+        eraseFromSiblings(it->second);
+    }
     it->second = *change.after;
-    insertSorted(it->second);
-    if constexpr (std::is_same_v<Record, Element>) {
-        trackConnector(it->second, +1);
+    if (!inPlace) {
+        insertSorted(it->second);
     }
+    track(it->second, +1);
     return {};
 }
 
@@ -541,7 +837,8 @@ Result<void> Workspace::validate() const {
         return Result<void>{};
     };
     for (auto check : {checkTable(notebooks_), checkTable(sections_), checkTable(pages_),
-                       checkTable(layers_), checkTable(elements_)}) {
+                       checkTable(layers_), checkTable(elements_), checkTable(courses_),
+                       checkTable(projects_), checkTable(tasks_), checkTable(tagsById_)}) {
         if (!check) {
             return check;
         }
@@ -573,8 +870,24 @@ Result<void> Workspace::validate() const {
             sectionsByNotebook_ ||
         rebuild(pages_, [](const PageInfo& r) { return r.section; }) != pagesBySection_ ||
         rebuild(layers_, [](const Layer& r) { return r.page; }) != layersByPage_ ||
-        rebuild(elements_, [](const Element& r) { return r.layer; }) != elementsByLayer_) {
+        rebuild(elements_, [](const Element& r) { return r.layer; }) != elementsByLayer_ ||
+        rebuild(tasks_, [](const study::Task& r) { return r.parent.value_or(core::TaskId{}); }) !=
+            tasksByParent_) {
         return makeError(ErrorCode::Internal, "child index is inconsistent with the records");
+    }
+    const auto ordered = [](const auto& records) {
+        using Id = typename std::decay_t<decltype(records)>::key_type;
+        std::vector<Id> ids;
+        ids.reserve(records.size());
+        for (const auto& [id, record] : records) {
+            ids.push_back(id);
+        }
+        sortSiblings(ids, records);
+        return ids;
+    };
+    if (ordered(courses_) != courseOrder_ || ordered(projects_) != projectOrder_ ||
+        ordered(tagsById_) != tagOrder_) {
+        return makeError(ErrorCode::Internal, "study order index is inconsistent");
     }
 
     // 3. Every page has at least one layer.
@@ -584,19 +897,52 @@ Result<void> Workspace::validate() const {
         }
     }
 
-    // 4. Connector attachment counts match the connectors.
-    std::unordered_map<core::ElementId, int> expectedAttachments;
+    // 4. The connector attachment index matches the connectors.
+    std::unordered_map<core::ElementId, std::vector<core::ElementId>> expectedAttachments;
     for (const auto& [id, element] : elements_) {
         if (const auto* connector = std::get_if<Connector>(&element.payload)) {
             for (const ConnectorEnd* end : {&connector->start, &connector->end}) {
                 if (end->attachedTo) {
-                    ++expectedAttachments[*end->attachedTo];
+                    expectedAttachments[*end->attachedTo].push_back(id);
                 }
             }
         }
     }
-    if (expectedAttachments != connectorAttachments_) {
+    if (expectedAttachments.size() != connectorsByAttachment_.size()) {
         return makeError(ErrorCode::Internal, "connector attachment index is inconsistent");
+    }
+    for (auto& [element, expected] : expectedAttachments) {
+        const auto it = connectorsByAttachment_.find(element);
+        if (it == connectorsByAttachment_.end()) {
+            return makeError(ErrorCode::Internal, "connector attachment index is inconsistent");
+        }
+        std::vector<core::ElementId> actual = it->second;
+        std::sort(actual.begin(), actual.end());
+        std::sort(expected.begin(), expected.end());
+        if (actual != expected) {
+            return makeError(ErrorCode::Internal, "connector attachment index is inconsistent");
+        }
+    }
+
+    // 5. The study reference indexes match the records (compared as sorted lists).
+    Workspace rebuilt(info_);
+    for (const auto& [id, page] : pages_) {
+        rebuilt.track(page, +1);
+    }
+    for (const auto& [id, project] : projects_) {
+        rebuilt.track(project, +1);
+    }
+    for (const auto& [id, task] : tasks_) {
+        rebuilt.track(task, +1);
+    }
+    for (const auto& [id, tag] : tagsById_) {
+        rebuilt.track(tag, +1);
+    }
+    if (rebuilt.tasksByPage_ != tasksByPage_ || rebuilt.tasksByProject_ != tasksByProject_ ||
+        rebuilt.tasksByCourse_ != tasksByCourse_ ||
+        rebuilt.projectsByCourse_ != projectsByCourse_ || rebuilt.pagesByTag_ != pagesByTag_ ||
+        rebuilt.tasksByTag_ != tasksByTag_ || rebuilt.tagsByName_ != tagsByName_) {
+        return makeError(ErrorCode::Internal, "study reference index is inconsistent");
     }
     return {};
 }
@@ -604,7 +950,9 @@ Result<void> Workspace::validate() const {
 bool operator==(const Workspace& lhs, const Workspace& rhs) {
     return lhs.info_ == rhs.info_ && lhs.notebooks_ == rhs.notebooks_ &&
            lhs.sections_ == rhs.sections_ && lhs.pages_ == rhs.pages_ &&
-           lhs.layers_ == rhs.layers_ && lhs.elements_ == rhs.elements_;
+           lhs.layers_ == rhs.layers_ && lhs.elements_ == rhs.elements_ &&
+           lhs.courses_ == rhs.courses_ && lhs.projects_ == rhs.projects_ &&
+           lhs.tasks_ == rhs.tasks_ && lhs.tagsById_ == rhs.tagsById_;
 }
 
 } // namespace studyapp::document

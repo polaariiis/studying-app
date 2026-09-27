@@ -4,8 +4,8 @@
 > hierarchy), §4.1–4.2 (elements, layers), §4.4 (invariants) and §6 (patches, commands,
 > undo/redo) describe the code in `src/core` and `src/document`. Phase 3 stores this model
 > in SQLite through the same patches (§6.4; mapping in DATABASE_SCHEMA.md §11). §4.3 (rich
-> text), §5 (study model) and the canvas parts of §6.4 and §7 are target design for later
-> phases and are marked as such.
+> text) and the canvas parts of §6.4 and §7 are target design for later phases and are
+> marked as such. §5 (study model) is implemented since Phase 7.
 
 This document describes the in-memory domain model (`core`, `document`, `study`), who owns
 what, the invariants, and how edits, commands and undo/redo work. The on-disk
@@ -174,7 +174,8 @@ struct Element {
 
 | Kind (stable id) | Phase 2 data | Added later |
 |---|---|---|
-| `Stroke` (1) | brush, colour, base width, points `{x, y, pressure}` in element-local space | smoothing, LOD (Phase 4) |
+| (index) | `Workspace::connectorsAttachedTo(element)`: connectors attached to an element, maintained with every applied change and checked by `validate()` (Phase 6) | — |
+| `Stroke` (1) | brush, colour (straight RGBA; highlighters are translucent), base width, points `{x, y, pressure}` in element-local space | smoothing, LOD (Phase 4); `Brush::Highlighter` is drawn at full width regardless of pressure (Phase 6) |
 | `TextBox` (2) | box size, **plain** UTF-8 text | rich-text model (§4.3, Phase 6) |
 | `Shape` (3) | kind (rectangle, ellipse, line), size, stroke colour/width, fill | polygons, dashes, corner radius (Phase 6) |
 | `Image` (4) | `AssetId` (content-addressed asset store since Phase 3), displayed size | crop (Phase 6) |
@@ -246,7 +247,7 @@ re-checks all of them (tests call it after every step):
   connector is attached to it.
 * Sibling order is by (order key, id); derived indexes always match the record tables.
 
-## 5. Study model (`study`) (target design, Phase 7)
+## 5. Study model (`study`) (implemented in Phase 7)
 
 ```cpp
 namespace studyapp::study {
@@ -297,6 +298,34 @@ stored as UTC. This avoids the classic "task moved a day when I travelled" bug.
 
 Recurrence (RRULE subset), reminders (need OS notifications — `platform`) and study
 sessions/time tracking come after the core planner (see ROADMAP).
+
+**As implemented (Phase 7).** The records are plain values in `studyapp::study`
+(`Records.hpp`); the document `Workspace` owns them and applies their changes like any other
+record (`CourseChange`, `ProjectChange`, `TaskChange`, `TagChange` in `AnyChange`; decision
+D42), so they share the undo history and persistence. Differences from the sketch above:
+`CalendarDate` is `std::chrono::year_month_day`; a time block is `TimeBlock{start, end}` (UTC
+instants); subtasks are one level deep (a subtask has no subtasks); `linkedPages` and `tags`
+are kept sorted and unique; tags have a name unique ignoring ASCII case (as the database's
+`COLLATE NOCASE`) and an optional colour; pages carry their tags (`PageInfo::tags`). Course
+`archived` and project fields exist but the planner edits titles, status and links only.
+
+Invariants (checked by `Workspace::apply`): titles are not blank; dates are real dates in
+years 1–9999; a due time needs a due date and lies within the day; a block does not end
+before it starts; references (course, project, parent, linked pages, tags; a page's tags)
+exist; a referenced record cannot be removed — the delete commands clear the references in
+the same patch (courses and projects `ON DELETE SET NULL`, tags removed from pages and
+tasks, deleted pages unlinked from tasks) and delete a task's subtasks with it. Reverse
+indexes (`tasksLinkedTo(page)` — the backlinks —, `tasksOfCourse`, `tasksOfProject`,
+`projectsOfCourse`, `pagesTagged`, `tasksTagged`) are hash sets updated per change (O(1)) and
+returned sorted by id.
+
+Planning logic (`Planning.hpp`) takes tasks by pointer and a `TimeZone` (implemented by
+`platform::QtTimeZone`): `buildAgenda` (open tasks: overdue — due before today, or only a
+time block that is over —, today — due today or a block overlapping today —, upcoming within
+7 days, unscheduled), `buildWeek` (seven days from a Monday: due tasks and blocks cut at local
+midnights), `progressOf` (done of not cancelled). A local time skipped by a daylight-saving
+change maps to the instant with the offset before it; a repeated one to its first
+occurrence.
 
 ---
 

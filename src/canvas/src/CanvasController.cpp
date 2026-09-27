@@ -3,12 +3,14 @@
 #include "Tools.hpp"
 
 #include <studyapp/canvas/ElementGeometry.hpp>
+#include <studyapp/canvas/SelectionHandles.hpp>
 #include <studyapp/core/Log.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/render/Tessellation.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <type_traits>
 #include <utility>
 
 namespace studyapp::canvas {
@@ -73,6 +75,47 @@ core::Rect viewRectOf(const Camera& camera, const core::DRect& world) noexcept {
                                   toFloat(camera.worldToView(world.max)));
 }
 
+/// Raster resolution for text at `devicePixelsPerUnit`: the next power of √2 at or above it,
+/// so a raster is re-made only when the zoom moves by a √2 step and is never more than
+/// 1.41× (in each direction) finer than the screen needs.
+float textPixelsPerUnit(double devicePixelsPerUnit) noexcept {
+    if (!(devicePixelsPerUnit > 0.0) || !std::isfinite(devicePixelsPerUnit)) {
+        return 1.0F;
+    }
+    const double halfSteps = std::ceil(2.0 * std::log2(devicePixelsPerUnit) - 1e-9);
+    return static_cast<float>(std::exp2(std::clamp(halfSteps, -16.0, 16.0) / 2.0));
+}
+
+/// Whether `patch` changes what the canvas of `page` shows: elements, layers, or the page's
+/// format and background. Study records (tasks, tags...) and other pages' titles do not.
+bool changesCanvas(const document::Patch& patch, std::optional<core::PageId> page) {
+    for (const document::AnyChange& change : patch.changes()) {
+        const bool visible = std::visit(
+            [&](const auto& c) {
+                using Change = std::decay_t<decltype(c)>;
+                if constexpr (std::is_same_v<Change, document::ElementChange> ||
+                              std::is_same_v<Change, document::LayerChange>) {
+                    return true; // the scene decides; cheap either way
+                } else if constexpr (std::is_same_v<Change, document::PageChange>) {
+                    const auto& record = c.after ? *c.after : *c.before;
+                    if (!page || record.id != *page) {
+                        return false;
+                    }
+                    return !c.before || !c.after || c.before->extent != c.after->extent ||
+                           c.before->size != c.after->size ||
+                           !(c.before->background == c.after->background);
+                } else {
+                    return false;
+                }
+            },
+            change);
+        if (visible) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 std::string_view toString(ToolKind tool) noexcept {
@@ -87,6 +130,14 @@ std::string_view toString(ToolKind tool) noexcept {
         return "Pan";
     case ToolKind::Zoom:
         return "Zoom";
+    case ToolKind::Highlighter:
+        return "Highlighter";
+    case ToolKind::Shape:
+        return "Shape";
+    case ToolKind::Text:
+        return "Text";
+    case ToolKind::Connector:
+        return "Connector";
     }
     return "Tool";
 }
@@ -99,9 +150,18 @@ CanvasController::CanvasController(DocumentPort& document, core::IdGenerator& id
     tools_[indexOf(ToolKind::Eraser)] = std::make_unique<detail::EraserTool>();
     tools_[indexOf(ToolKind::Pan)] = std::make_unique<detail::PanTool>();
     tools_[indexOf(ToolKind::Zoom)] = std::make_unique<detail::ZoomTool>();
+    tools_[indexOf(ToolKind::Highlighter)] =
+        std::make_unique<detail::PenTool>(CursorShape::Highlighter);
+    tools_[indexOf(ToolKind::Shape)] = std::make_unique<detail::ShapeTool>();
+    tools_[indexOf(ToolKind::Text)] = std::make_unique<detail::TextTool>();
+    tools_[indexOf(ToolKind::Connector)] = std::make_unique<detail::ConnectorTool>();
 }
 
-CanvasController::~CanvasController() = default;
+CanvasController::~CanvasController() {
+    if (imageSource_ != nullptr) {
+        imageSource_->setReadyHandler({}); // the source may outlive the controller
+    }
+}
 
 detail::Tool& CanvasController::toolFor(ToolKind kind) noexcept {
     return *tools_[indexOf(kind)];
@@ -117,6 +177,8 @@ void CanvasController::requestRedraw() const {
 
 void CanvasController::setPage(std::optional<core::PageId> page) {
     cancelGesture();
+    endTextEdit();
+    releaseImageTextures(); // another page shows other images
     selection_.clear();
     preview_->clear();
     scene_.rebuild(document_->workspace(), page);
@@ -133,8 +195,15 @@ void CanvasController::onDocumentChanged(const document::Patch& patch) {
     selection_.retainIf([this](core::ElementId id) { return scene_.find(id) != nullptr; });
     std::erase_if(preview_->erased,
                   [this](core::ElementId id) { return scene_.find(id) == nullptr; });
-    clampCamera();
-    requestRedraw();
+    std::erase_if(preview_->partial,
+                  [this](const auto& entry) { return scene_.find(entry.first) == nullptr; });
+    if (textEdit_ && textEdit_->element && scene_.find(*textEdit_->element) == nullptr) {
+        endTextEdit(); // the box being edited is gone (e.g. undo of its creation)
+    }
+    if (changesCanvas(patch, scene_.page())) {
+        clampCamera();
+        requestRedraw(); // planner edits (tasks, tags) cost no canvas frame
+    }
 }
 
 void CanvasController::commit(core::Result<document::Command> command) {
@@ -157,18 +226,28 @@ void CanvasController::commit(core::Result<document::Command> command) {
 // ---------------------------------------------------------------------------- input
 
 void CanvasController::dispatch(detail::Tool& tool, const PointerEvent& event) {
+    STUDYAPP_PROFILE_SCOPE(&profiler_, "tool");
     detail::ToolContext context{
         .camera = camera_,
         .scene = scene_,
         .document = *document_,
         .selection = selection_,
         .preview = *preview_,
-        .pen = pen_,
+        .pen = strokeStyle_,
+        .eraserMode = toolSettings_.eraser,
+        .shape = shapeStyle_,
         .strokeOptions = strokeOptions_,
         .ids = *ids_,
         .commit = [this](core::Result<document::Command> command) { commit(std::move(command)); },
+        .beginTextEdit = [this](TextEdit edit) { beginTextEdit(std::move(edit)); },
+        .textHeight = [this](std::string_view text,
+                             float width) { return textHeightFor(text, width); },
     };
     tool.onPointer(event, context);
+}
+
+void CanvasController::setToolSettings(const ToolSettings& settings) {
+    toolSettings_ = sanitized(settings);
 }
 
 void CanvasController::onPointer(const PointerEvent& event) {
@@ -178,6 +257,11 @@ void CanvasController::onPointer(const PointerEvent& event) {
         return;
     }
     if (event.phase == PointerPhase::Down && gestureTool_ == nullptr) {
+        // A stroke keeps the style it started with, even if the settings change mid-way.
+        // (penStyle() hands out the settings for direct edits, so they are sanitized here.)
+        const ToolSettings settings = sanitized(toolSettings_);
+        strokeStyle_ = toolKind_ == ToolKind::Highlighter ? settings.highlighter : settings.pen;
+        shapeStyle_ = settings.shape;
         if (event.button == PointerButton::Middle || spaceHeld_) {
             gestureTool_ = &toolFor(ToolKind::Pan);
         } else if (event.device == PointerDevice::Eraser) {
@@ -290,10 +374,14 @@ void CanvasController::cancelGesture() {
             .document = *document_,
             .selection = selection_,
             .preview = *preview_,
-            .pen = pen_,
+            .pen = strokeStyle_,
+            .eraserMode = toolSettings_.eraser,
+            .shape = shapeStyle_,
             .strokeOptions = strokeOptions_,
             .ids = *ids_,
             .commit = [](core::Result<document::Command>) {},
+            .beginTextEdit = [](TextEdit) {},
+            .textHeight = [](std::string_view text, float) { return fallbackTextHeight(text); },
         };
         gestureTool_->cancel(context);
         gestureTool_ = nullptr;
@@ -303,6 +391,10 @@ void CanvasController::cancelGesture() {
 // ---------------------------------------------------------------------------- actions
 
 core::Result<void> CanvasController::deleteSelection() {
+    return removeSelection({});
+}
+
+core::Result<void> CanvasController::removeSelection(std::string_view label) {
     if (selection_.empty()) {
         return {};
     }
@@ -311,11 +403,89 @@ core::Result<void> CanvasController::deleteSelection() {
     if (!command) {
         return tl::unexpected(command.error());
     }
+    if (!label.empty()) {
+        command->label = std::string(label);
+    }
     if (auto executed = document_->execute(std::move(*command)); !executed) {
         lastError_ = executed.error();
         return executed;
     }
     selection_.clear();
+    requestRedraw();
+    return {};
+}
+
+bool CanvasController::copySelection() {
+    if (selection_.empty()) {
+        return false;
+    }
+    const document::Workspace& workspace = document_->workspace();
+    std::vector<document::Element> copied;
+    copied.reserve(selection_.size());
+    core::DRect bounds{};
+    for (const core::ElementId id : scene_.drawOrder()) { // painter order, O(page)
+        if (!selection_.contains(id)) {
+            continue;
+        }
+        if (const document::Element* element = workspace.findElement(id)) {
+            const core::DRect box = visualBounds(*element);
+            bounds = copied.empty() ? box : bounds.united(box);
+            copied.push_back(*element);
+        }
+    }
+    if (copied.empty()) {
+        return false;
+    }
+    clipboard_ = std::move(copied);
+    clipboardBounds_ = bounds;
+    clipboardPage_ = scene_.page();
+    clipboardCut_ = false;
+    pastesOn_.clear();
+    return true;
+}
+
+core::Result<void> CanvasController::cutSelection() {
+    if (document_->isReadOnly()) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "the workspace is read-only");
+    }
+    if (!copySelection()) {
+        return {};
+    }
+    clipboardCut_ = true;
+    return removeSelection("Cut");
+}
+
+core::Result<void> CanvasController::paste() {
+    const auto page = scene_.page();
+    const document::Workspace& workspace = document_->workspace();
+    const auto layer = page ? detail::targetLayer(workspace, *page) : std::nullopt;
+    if (clipboard_.empty() || !layer || document_->isReadOnly()) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "nothing to paste here");
+    }
+    const int pasted = pastesOn_[*page];
+    const int steps = page == clipboardPage_ && !clipboardCut_ ? pasted + 1 : pasted;
+    constexpr double kPasteStepViewPx = 16.0;
+    const double step = camera_.viewToWorldLength(kPasteStepViewPx);
+    core::DVec2 offset{step * steps, step * steps};
+    const core::DRect view = camera_.visibleWorldRect();
+    // On the source page the copies may overlap the view edge (they sit next to their
+    // originals); elsewhere there is no reference position, so they must be fully visible.
+    const core::DRect placed = clipboardBounds_.translated(offset);
+    if (page == clipboardPage_ ? !view.intersects(placed) : !view.contains(placed)) {
+        offset = view.center() - clipboardBounds_.center();
+    }
+    auto created = document::commands::pasteElements(workspace, *layer, clipboard_, offset, *ids_);
+    if (!created) {
+        return tl::unexpected(created.error());
+    }
+    std::vector<core::ElementId> copies = std::move(created->id);
+    if (auto executed = document_->execute(std::move(created->command)); !executed) {
+        lastError_ = executed.error();
+        return executed;
+    }
+    lastError_.reset();
+    ++pastesOn_[*page];
+    selection_.set(std::move(copies));
     requestRedraw();
     return {};
 }
@@ -417,7 +587,328 @@ void CanvasController::clampCamera() noexcept {
 
 // ---------------------------------------------------------------------------- rendering
 
+void CanvasController::updateErasePreview(render::Renderer& renderer, int lodBucket) {
+    // Meshes of strokes the partial eraser cut: rebuilt only for strokes whose pieces
+    // changed since the last frame (O(points of those strokes)); released once the
+    // gesture ends. Everything else keeps its cached mesh.
+    for (auto it = erasePreviewMeshes_.begin(); it != erasePreviewMeshes_.end();) {
+        if (!preview_->partial.contains(it->first)) {
+            renderer.destroyMesh(it->second);
+            it = erasePreviewMeshes_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto& [id, erased] : preview_->partial) {
+        if (!erased.dirty) {
+            continue;
+        }
+        erased.dirty = false;
+        const document::Element* element = document_->workspace().findElement(id);
+        const auto* stroke =
+            element != nullptr ? std::get_if<document::Stroke>(&element->payload) : nullptr;
+        if (stroke == nullptr) {
+            continue;
+        }
+        render::MeshData mesh;
+        for (const StrokePiece& piece : erased.pieces) {
+            render::appendMesh(mesh, tessellateStrokePoints(*stroke, piece.points,
+                                                            RenderCache::pixelsPerUnit(lodBucket)));
+        }
+        render::MeshHandle& handle = erasePreviewMeshes_[id];
+        if (mesh.empty()) {
+            if (handle.isValid()) {
+                renderer.destroyMesh(handle);
+            }
+            erasePreviewMeshes_.erase(id);
+        } else if (!uploadScratch(renderer, handle, mesh)) {
+            erasePreviewMeshes_.erase(id);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------- text
+
+void CanvasController::setTextLayout(TextLayout* layout) {
+    if (layout == textLayout_) {
+        return;
+    }
+    textLayout_ = layout;
+    for (const auto& [id, cached] : textTextures_) {
+        pendingTextureDestroy_.push_back(cached.texture);
+    }
+    textTextures_.clear();
+    requestRedraw();
+}
+
+void CanvasController::beginTextEdit(TextEdit edit) {
+    textEdit_ = std::move(edit);
+    requestRedraw();
+    if (textEditHandler_) {
+        textEditHandler_();
+    }
+}
+
+void CanvasController::endTextEdit() {
+    if (!textEdit_) {
+        return;
+    }
+    textEdit_.reset();
+    requestRedraw();
+    if (textEditHandler_) {
+        textEditHandler_();
+    }
+}
+
+void CanvasController::cancelTextEdit() {
+    endTextEdit();
+}
+
+float CanvasController::textHeightFor(std::string_view text, float width) const {
+    return textLayout_ != nullptr ? textLayout_->heightFor(text, width) : fallbackTextHeight(text);
+}
+
+core::Result<void> CanvasController::finishTextEdit(std::string text) {
+    if (!textEdit_) {
+        return {};
+    }
+    const TextEdit edit = std::move(*textEdit_);
+    endTextEdit();
+    const bool blank = std::all_of(text.begin(), text.end(), [](char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    });
+    const document::Workspace& workspace = document_->workspace();
+    core::Result<document::Command> command = document::Command{};
+    if (edit.element) {
+        if (workspace.findElement(*edit.element) == nullptr) {
+            return {};
+        }
+        command = blank
+                      ? document::commands::deleteElement(workspace, *edit.element)
+                      : document::commands::editText(workspace, *edit.element, text,
+                                                     {edit.width, textHeightFor(text, edit.width)});
+    } else {
+        if (blank) {
+            return {}; // an empty new box is not created
+        }
+        const auto page = scene_.page();
+        const auto layer = page ? detail::targetLayer(workspace, *page) : std::nullopt;
+        if (!layer) {
+            return {};
+        }
+        const core::Vec2 size{edit.width, textHeightFor(text, edit.width)};
+        auto created = document::commands::createElement(
+            workspace, *layer,
+            {.transform = {.position = edit.position},
+             .payload = document::TextBox{.size = size, .text = std::move(text)}},
+            *ids_);
+        if (!created) {
+            return tl::unexpected(created.error());
+        }
+        command = std::move(created->command);
+    }
+    if (!command) {
+        return tl::unexpected(command.error());
+    }
+    commit(std::move(command));
+    return lastError_ ? core::Result<void>{tl::unexpected(*lastError_)} : core::Result<void>{};
+}
+
+render::TextureHandle CanvasController::textTexture(const document::Element& element,
+                                                    std::uint64_t version, float pixelsPerUnit,
+                                                    render::Renderer& renderer) {
+    const auto& box = std::get<document::TextBox>(element.payload);
+    if (box.text.empty() || box.size.x <= 0.0F || box.size.y <= 0.0F) {
+        return {};
+    }
+    // Never more than kMaxTextRasterPx per side: the resolution is capped instead.
+    const float cap = static_cast<float>(kMaxTextRasterPx) / std::max(box.size.x, box.size.y);
+    const float ppu = std::min(pixelsPerUnit, cap);
+    auto [it, inserted] = textTextures_.try_emplace(element.id);
+    TextTexture& cached = it->second;
+    const bool changed = inserted || cached.version != version || !cached.texture.isValid();
+    bool refine = !changed && cached.pixelsPerUnit < ppu * 0.999F;
+    const double cost = static_cast<double>(box.size.x) * static_cast<double>(box.size.y) *
+                        static_cast<double>(ppu) * static_cast<double>(ppu);
+    if (refine && textRefinedPixels_ > 0.0 && textRefinedPixels_ + cost > kTextRefinePixelBudget) {
+        refine = false; // keep the coarser raster (stretched) this frame
+        textRefinementPending_ = true;
+    }
+    if (changed || refine) {
+        if (cached.texture.isValid()) {
+            renderer.destroyTexture(cached.texture);
+        }
+        cached.texture = renderer.createTexture(textLayout_->rasterize(box.text, box.size, ppu));
+        cached.version = version;
+        cached.pixelsPerUnit = ppu;
+        ++textRasterized_;
+        if (refine) {
+            textRefinedPixels_ += cost;
+        }
+    }
+    return cached.texture;
+}
+
+// ---------------------------------------------------------------------------- images
+
+void CanvasController::setImageSource(ImageSource* source) {
+    if (source == imageSource_) {
+        return;
+    }
+    if (imageSource_ != nullptr) {
+        imageSource_->setReadyHandler({});
+    }
+    imageSource_ = source;
+    if (imageSource_ != nullptr) {
+        imageSource_->setReadyHandler([this] { requestRedraw(); }); // decoded: draw it
+    }
+    releaseImageTextures();
+    requestRedraw();
+}
+
+void CanvasController::releaseImageTextures() {
+    for (const auto& [asset, cached] : imageTextures_) {
+        pendingTextureDestroy_.push_back(cached.texture);
+    }
+    imageTextures_.clear();
+    imageTextureBytes_ = 0;
+}
+
+render::TextureHandle CanvasController::imageTexture(const document::Image& image,
+                                                     double devicePixelsPerUnit,
+                                                     render::Renderer& renderer) {
+    // The resolution this view needs: the image's longer side on screen, rounded up to a
+    // power of two (so zooming re-decodes only per factor 2), within the texture limit.
+    const double onScreen =
+        static_cast<double>(std::max(image.size.x, image.size.y)) * devicePixelsPerUnit;
+    int needed = 64;
+    while (needed < kMaxImageTexturePx && static_cast<double>(needed) < onScreen) {
+        needed *= 2;
+    }
+    auto [it, inserted] = imageTextures_.try_emplace(image.asset);
+    ImageTexture& cached = it->second;
+    cached.lastFrame = frameNumber_;
+    if (cached.failed) {
+        return {};
+    }
+    const bool refine = !inserted && !cached.full && cached.side < needed && cached.side > 0;
+    const bool waiting = !inserted && cached.side == 0 && !cached.full; // first load pending
+    if (!inserted && !refine && !waiting) {
+        return cached.texture;
+    }
+    const double cost = static_cast<double>(needed) * static_cast<double>(needed);
+    if (refine && imageRefinedPixels_ > 0.0 &&
+        imageRefinedPixels_ + cost > kImageRefinePixelBudget) {
+        imageRefinementPending_ = true; // keep the coarser texture (stretched) this frame
+        return cached.texture;
+    }
+    std::optional<render::ImageData> loaded = imageSource_->load(image.asset, needed);
+    if (!loaded) {
+        // Decoding elsewhere; the source calls back when it is done. Until then the
+        // coarser texture (or the neutral frame) is drawn.
+        if (inserted) {
+            cached.side = 0;
+        }
+        return cached.texture;
+    }
+    render::ImageData& pixels = *loaded;
+    ++imagesDecoded_;
+    if (refine) {
+        imageRefinedPixels_ += cost;
+    }
+    if (pixels.empty()) {
+        if (!cached.texture.isValid()) {
+            cached.failed = true; // missing or unreadable: a frame instead, not retried
+        }
+        cached.full = true;
+        return cached.texture;
+    }
+    const render::TextureHandle texture = renderer.createTexture(pixels);
+    if (!texture.isValid()) {
+        cached.full = true; // the backend refused it (too large): keep what we have
+        return cached.texture;
+    }
+    if (cached.texture.isValid()) {
+        renderer.destroyTexture(cached.texture);
+        imageTextureBytes_ -= cached.bytes;
+    }
+    cached.texture = texture;
+    cached.side = std::max(pixels.width, pixels.height);
+    cached.full = cached.side < needed; // the asset is smaller than asked: all of it
+    cached.bytes = pixels.byteSize() + pixels.byteSize() / 3;
+    imageTextureBytes_ += cached.bytes;
+    return cached.texture;
+}
+
+void CanvasController::trimImageTextures(render::Renderer& renderer) {
+    if (imageTextureBytes_ <= kImageTextureBudgetBytes) {
+        return;
+    }
+    // Over budget: release least recently drawn textures (not those of this frame).
+    std::vector<std::pair<std::uint64_t, core::AssetId>> byAge;
+    byAge.reserve(imageTextures_.size());
+    for (const auto& [asset, cached] : imageTextures_) {
+        if (cached.lastFrame != frameNumber_ && cached.texture.isValid()) {
+            byAge.emplace_back(cached.lastFrame, asset);
+        }
+    }
+    std::sort(byAge.begin(), byAge.end());
+    for (const auto& [frame, asset] : byAge) {
+        if (imageTextureBytes_ <= kImageTextureBudgetBytes) {
+            break;
+        }
+        const auto it = imageTextures_.find(asset);
+        renderer.destroyTexture(it->second.texture);
+        imageTextureBytes_ -= it->second.bytes;
+        imageTextures_.erase(it);
+    }
+}
+
+core::Result<void> CanvasController::insertImage(core::AssetId asset, const core::Vec2& pixelSize) {
+    const auto page = scene_.page();
+    const document::Workspace& workspace = document_->workspace();
+    const auto layer = page ? detail::targetLayer(workspace, *page) : std::nullopt;
+    if (!layer || !(pixelSize.x > 0.0F) || !(pixelSize.y > 0.0F)) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "nowhere to insert the image");
+    }
+    const core::DRect view = camera_.visibleWorldRect();
+    const double fit = std::min({1.0, 0.6 * view.width() / static_cast<double>(pixelSize.x),
+                                 0.6 * view.height() / static_cast<double>(pixelSize.y)});
+    const core::Vec2 size{static_cast<float>(pixelSize.x * fit),
+                          static_cast<float>(pixelSize.y * fit)};
+    const core::DVec2 topLeft =
+        view.center() - core::DVec2{static_cast<double>(size.x), static_cast<double>(size.y)} * 0.5;
+    auto created = document::commands::createElement(
+        workspace, *layer,
+        {.transform = {.position = topLeft},
+         .payload = document::Image{.asset = asset, .size = size}},
+        *ids_);
+    if (!created) {
+        return tl::unexpected(created.error());
+    }
+    const core::ElementId id = created->id;
+    commit(std::move(created->command));
+    if (lastError_) {
+        return tl::unexpected(*lastError_);
+    }
+    selection_.set({id});
+    requestRedraw();
+    return {};
+}
+
 void CanvasController::onGraphicsReset() noexcept {
+    imageTextures_.clear();
+    imageTextureBytes_ = 0;
+    textTextures_.clear();
+    pendingTextureDestroy_.clear();
+    erasePreviewMeshes_.clear();
+    shapePreviewMeshes_ = {};
+    followerMeshes_.clear();
+    draftMeshes_.clear();
+    handleMeshes_ = {};
+    for (auto& [id, erased] : preview_->partial) {
+        erased.dirty = true;
+    }
     cache_.forgetGpuResources();
     batches_.forgetGpuResources();
     liveMesh_ = {};
@@ -430,8 +921,25 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
     cache_.beginFrame();
     for (const core::ElementId id : scene_.takeRemoved()) {
         cache_.evict(id);
+        if (const auto text = textTextures_.find(id); text != textTextures_.end()) {
+            pendingTextureDestroy_.push_back(text->second.texture);
+            textTextures_.erase(text);
+        }
     }
     cache_.flush(renderer);
+    for (const render::TextureHandle texture : pendingTextureDestroy_) {
+        if (texture.isValid()) {
+            renderer.destroyTexture(texture);
+        }
+    }
+    pendingTextureDestroy_.clear();
+    textRasterized_ = 0;
+    textRefinedPixels_ = 0.0;
+    textRefinementPending_ = false;
+    ++frameNumber_;
+    imageRefinedPixels_ = 0.0;
+    imagesDecoded_ = 0;
+    imageRefinementPending_ = false;
     content_.clear();
     overlay_.clear();
 
@@ -474,13 +982,118 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
     const int lod = RenderCache::lodBucketFor(camera_.zoom());
     const core::Affine2 toCameraRelative = core::Affine2::translation(-centre);
     const core::Affine2 moveOffset = core::Affine2::translation(preview_->moveOffset);
+    {
+        STUDYAPP_PROFILE_SCOPE(&profiler_, "erase preview");
+        updateErasePreview(renderer, lod);
+    }
+    std::size_t draftMesh = 0;
     const auto drawElement = [&](core::ElementId id) {
-        if (preview_->erased.contains(id)) {
-            return;
-        }
         const document::Element* element = workspace.findElement(id);
         const SceneEntry* entry = scene_.find(id);
         if (element == nullptr || entry == nullptr) {
+            return;
+        }
+        if (preview_->resized && preview_->resized->id == id) {
+            // Being resized: drawn at its new geometry. Text boxes and images stretch their
+            // texture (below); other kinds are tessellated for this frame.
+            element = &*preview_->resized;
+            if (!std::holds_alternative<document::TextBox>(element->payload) &&
+                !std::holds_alternative<document::Image>(element->payload)) {
+                const core::Affine2f transform =
+                    (toCameraRelative * meshToWorld(*element)).cast<float>();
+                for (const MeshPart& part :
+                     buildElementMeshes(*element, RenderCache::pixelsPerUnit(lod))) {
+                    if (draftMesh == draftMeshes_.size()) {
+                        draftMeshes_.emplace_back();
+                    }
+                    render::MeshHandle& handle = draftMeshes_[draftMesh];
+                    if (uploadScratch(renderer, handle, part.mesh)) {
+                        ++draftMesh;
+                        content_.push_back({.mesh = handle,
+                                            .transform = transform,
+                                            .color = part.color,
+                                            .opacity = entry->layerOpacity});
+                    }
+                }
+                return;
+            }
+        }
+        if (textLayout_ != nullptr && std::holds_alternative<document::TextBox>(element->payload)) {
+            if (textEdit_ && textEdit_->element == id) {
+                return; // shown by the editor overlay while it is edited
+            }
+            const render::TextureHandle texture = textTexture(
+                *element, entry->contentVersion,
+                textPixelsPerUnit(camera_.zoom() * camera_.devicePixelRatio()), renderer);
+            if (texture.isValid()) {
+                core::Affine2 toWorld = meshToWorld(*element);
+                if (preview_->moving && selection_.contains(id)) {
+                    toWorld = moveOffset * toWorld;
+                }
+                const auto& box = std::get<document::TextBox>(element->payload);
+                const core::Affine2 toBox = core::Affine2::scaling(static_cast<double>(box.size.x),
+                                                                   static_cast<double>(box.size.y));
+                content_.push_back({.mesh = {},
+                                    .transform = (toCameraRelative * toWorld * toBox).cast<float>(),
+                                    .color = core::Color::white(),
+                                    .opacity = entry->layerOpacity,
+                                    .texture = texture});
+            }
+            return;
+        }
+        if (textEdit_ && textEdit_->element == id) {
+            return;
+        }
+        if (const auto* image = std::get_if<document::Image>(&element->payload);
+            image != nullptr && imageSource_ != nullptr) {
+            const render::TextureHandle texture =
+                imageTexture(*image, camera_.zoom() * camera_.devicePixelRatio(), renderer);
+            if (texture.isValid()) {
+                core::Affine2 toWorld = meshToWorld(*element);
+                if (preview_->moving && selection_.contains(id)) {
+                    toWorld = moveOffset * toWorld;
+                }
+                const core::Affine2 toBox = core::Affine2::scaling(
+                    static_cast<double>(image->size.x), static_cast<double>(image->size.y));
+                content_.push_back({.mesh = {},
+                                    .transform = (toCameraRelative * toWorld * toBox).cast<float>(),
+                                    .color = core::Color::white(),
+                                    .opacity = entry->layerOpacity,
+                                    .texture = texture});
+                return;
+            }
+            // Missing or unreadable: the neutral frame below.
+        }
+        if (preview_->moving && preview_->followers.contains(id)) {
+            // Attached to what is being moved: its attached ends follow the offset.
+            document::Element follower = *element;
+            auto& connector = std::get<document::Connector>(follower.payload);
+            for (document::ConnectorEnd* end : {&connector.start, &connector.end}) {
+                if (end->attachedTo && selection_.contains(*end->attachedTo)) {
+                    end->position += preview_->moveOffset;
+                }
+            }
+            const std::vector<MeshPart> parts =
+                buildElementMeshes(follower, RenderCache::pixelsPerUnit(lod));
+            if (!parts.empty() && uploadScratch(renderer, followerMeshes_[id], parts[0].mesh)) {
+                content_.push_back(
+                    {.mesh = followerMeshes_[id],
+                     .transform = (toCameraRelative * meshToWorld(follower)).cast<float>(),
+                     .color = parts[0].color,
+                     .opacity = entry->layerOpacity});
+            }
+            return;
+        }
+        if (preview_->erased.contains(id)) {
+            // Being erased: nothing, or (partial eraser) what is left of it, in its place.
+            if (const auto piece = erasePreviewMeshes_.find(id);
+                piece != erasePreviewMeshes_.end()) {
+                content_.push_back(
+                    {.mesh = piece->second,
+                     .transform = (toCameraRelative * meshToWorld(*element)).cast<float>(),
+                     .color = std::get<document::Stroke>(element->payload).color,
+                     .opacity = entry->layerOpacity});
+            }
             return;
         }
         const RenderCache::Entry& cached =
@@ -529,9 +1142,11 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
                 bool erased = false;
                 bool anySelected = false;
                 bool allSelected = true;
-                if (!preview_->erased.empty() || preview_->moving) {
+                if (!preview_->erased.empty() || preview_->moving || preview_->resized) {
                     for (const core::ElementId id : batch.members) {
-                        erased = erased || preview_->erased.contains(id);
+                        erased = erased || preview_->erased.contains(id) ||
+                                 (preview_->moving && preview_->followers.contains(id)) ||
+                                 (preview_->resized && preview_->resized->id == id);
                         const bool selected = preview_->moving && selection_.contains(id);
                         anySelected = anySelected || selected;
                         allSelected = allSelected && selected;
@@ -559,8 +1174,10 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
     // Live stroke: tessellated every frame from the smoothed samples, camera-relative.
     if (preview_->stroke) {
         STUDYAPP_PROFILE_SCOPE(&profiler_, "live stroke");
-        const document::Stroke style{
-            .brush = pen_.brush, .color = pen_.color, .baseWidth = pen_.width, .points = {}};
+        const document::Stroke style{.brush = strokeStyle_.brush,
+                                     .color = strokeStyle_.color,
+                                     .baseWidth = strokeStyle_.width,
+                                     .points = {}};
         std::vector<render::WidthPoint> points;
         points.reserve(preview_->stroke->points().size());
         for (const StrokeSample& sample : preview_->stroke->points()) {
@@ -570,7 +1187,22 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
         const render::MeshData mesh = render::tessellatePolyline(
             points, {.pixelsPerUnit = static_cast<float>(camera_.zoom())});
         if (uploadScratch(renderer, liveMesh_, mesh)) {
-            content_.push_back({.mesh = liveMesh_, .transform = {}, .color = pen_.color});
+            content_.push_back({.mesh = liveMesh_, .transform = {}, .color = strokeStyle_.color});
+        }
+    }
+
+    // The shape being dragged, on top of the content.
+    if (preview_->shape) {
+        const std::vector<MeshPart> parts =
+            buildElementMeshes(*preview_->shape, RenderCache::pixelsPerUnit(lod));
+        const core::Affine2f transform =
+            (toCameraRelative * meshToWorld(*preview_->shape)).cast<float>();
+        for (std::size_t i = 0; i < parts.size() && i < shapePreviewMeshes_.size(); ++i) {
+            if (uploadScratch(renderer, shapePreviewMeshes_[i], parts[i].mesh)) {
+                content_.push_back({.mesh = shapePreviewMeshes_[i],
+                                    .transform = transform,
+                                    .color = parts[i].color});
+            }
         }
     }
 
@@ -593,6 +1225,39 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
                 {.mesh = selectionMesh_, .transform = {}, .color = colors_.selection});
         }
     }
+    // Handles of a single selected element (view space).
+    if (selection_.size() == 1 && !preview_->moving && !document_->isReadOnly()) {
+        const core::ElementId id = *selection_.ids().begin();
+        const document::Element* element = preview_->resized && preview_->resized->id == id
+                                               ? &*preview_->resized
+                                               : workspace.findElement(id);
+        const SceneEntry* entry = scene_.find(id);
+        render::MeshData outer;
+        render::MeshData inner;
+        if (element != nullptr && entry != nullptr && !entry->layerLocked && !element->locked) {
+            const auto half = static_cast<float>(detail::SelectTool::kHandleViewPx * 0.5);
+            for (const Handle& handle : handlesFor(*element)) {
+                const core::Vec2 at = toFloat(camera_.worldToView(handle.world));
+                const core::Rect box{at - core::Vec2{half, half}, at + core::Vec2{half, half}};
+                const std::array<core::Vec2, 4> square{box.min, core::Vec2{box.max.x, box.min.y},
+                                                       box.max, core::Vec2{box.min.x, box.max.y}};
+                render::appendMesh(outer, render::tessellateConvexFill(square));
+                const core::Rect light = box.expanded(-1.25F);
+                const std::array<core::Vec2, 4> hole{
+                    light.min, core::Vec2{light.max.x, light.min.y}, light.max,
+                    core::Vec2{light.min.x, light.max.y}};
+                render::appendMesh(inner, render::tessellateConvexFill(hole));
+            }
+        }
+        if (uploadScratch(renderer, handleMeshes_[0], outer)) {
+            overlay_.push_back(
+                {.mesh = handleMeshes_[0], .transform = {}, .color = colors_.selection});
+        }
+        if (uploadScratch(renderer, handleMeshes_[1], inner)) {
+            overlay_.push_back(
+                {.mesh = handleMeshes_[1], .transform = {}, .color = core::Color::white()});
+        }
+    }
     if (preview_->marquee) {
         const render::MeshData mesh = render::tessellateRectOutline(
             viewRectOf(camera_, *preview_->marquee), kOverlayHalfWidthPx);
@@ -601,7 +1266,14 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
         }
     }
     lastDrawItems_ = content_.size();
-    if (cache_.refinementPending()) {
+    trimImageTextures(renderer);
+    if (!preview_->moving && !followerMeshes_.empty()) {
+        for (const auto& [id, mesh] : followerMeshes_) {
+            renderer.destroyMesh(mesh);
+        }
+        followerMeshes_.clear();
+    }
+    if (cache_.refinementPending() || textRefinementPending_ || imageRefinementPending_) {
         // Some meshes were drawn at a coarser level of detail than this zoom asks for; the
         // next frames refine them within the budget, then rendering is idle again.
         requestRedraw();
@@ -621,7 +1293,12 @@ CanvasStats CanvasController::stats() const noexcept {
             .batched = lastFrameBatched_,
             .batches = batches_.batches().size(),
             .batchesRebuilt = batches_.rebuiltLastUpdate(),
-            .cache = cache_.stats()};
+            .cache = cache_.stats(),
+            .textTextures = textTextures_.size(),
+            .textRasterizedLastFrame = textRasterized_,
+            .imageTextures = imageTextures_.size(),
+            .imageTextureBytes = imageTextureBytes_,
+            .imagesDecodedLastFrame = imagesDecoded_};
 }
 
 } // namespace studyapp::canvas

@@ -3,6 +3,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileDialog>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStandardPaths>
@@ -49,6 +51,16 @@ public:
         return toPath(chosen);
     }
 
+    std::optional<std::filesystem::path> chooseImageToInsert(QWidget* parent) override {
+        const QString chosen = QFileDialog::getOpenFileName(
+            parent, tr("Insert Image"), documentsDirectory(),
+            tr("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*)"));
+        if (chosen.isEmpty()) {
+            return std::nullopt;
+        }
+        return toPath(chosen);
+    }
+
     bool confirmOpenReadOnly(QWidget* parent, const QString& details) override {
         QMessageBox box(QMessageBox::Information, tr("Workspace in use"),
                         tr("This workspace is open in another StudyBoard window or on another "
@@ -78,6 +90,14 @@ public:
         }
         return box.clickedButton() == readOnly ? StaleLockChoice::ReadOnly
                                                : StaleLockChoice::Cancel;
+    }
+
+    std::optional<QString> askText(QWidget* parent, const QString& title, const QString& label,
+                                   const QString& text) override {
+        bool accepted = false;
+        const QString answer =
+            QInputDialog::getText(parent, title, label, QLineEdit::Normal, text, &accepted);
+        return accepted ? std::optional(answer) : std::nullopt;
     }
 
     bool confirmDelete(QWidget* parent, const QString& what) override {

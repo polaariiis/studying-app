@@ -2,6 +2,7 @@
 
 #include <studyapp/document/Element.hpp>
 #include <studyapp/document/Records.hpp>
+#include <studyapp/study/Records.hpp>
 
 #include <cstddef>
 #include <optional>
@@ -40,9 +41,14 @@ using SectionChange = Change<SectionInfo>;
 using PageChange = Change<PageInfo>;
 using LayerChange = Change<Layer>;
 using ElementChange = Change<Element>;
+// Study & planning records (Phase 7, docs/ARCHITECTURE.md D42).
+using CourseChange = Change<study::Course>;
+using ProjectChange = Change<study::Project>;
+using TaskChange = Change<study::Task>;
+using TagChange = Change<study::Tag>;
 
-using AnyChange =
-    std::variant<NotebookChange, SectionChange, PageChange, LayerChange, ElementChange>;
+using AnyChange = std::variant<NotebookChange, SectionChange, PageChange, LayerChange,
+                               ElementChange, CourseChange, ProjectChange, TaskChange, TagChange>;
 
 template <class Record>
 [[nodiscard]] AnyChange created(Record record) {

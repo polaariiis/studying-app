@@ -17,9 +17,11 @@
 #include <vector>
 
 class QLabel;
+class QTextEdit;
 
 namespace studyapp::canvas {
 class CanvasController;
+enum class CursorShape : std::uint8_t;
 } // namespace studyapp::canvas
 
 namespace studyapp::render_gl {
@@ -64,6 +66,9 @@ public:
     /// frames of the canvas itself.
     [[nodiscard]] std::uint64_t paintCount() const noexcept { return paintCount_; }
 
+    /// Ends text editing in the overlay editor and writes the text (no-op when not editing).
+    void finishTextEditing();
+
     /// Empty while the renderer works; otherwise why it could not start.
     [[nodiscard]] const QString& graphicsError() const noexcept { return graphicsError_; }
 
@@ -84,17 +89,35 @@ protected:
     void focusOutEvent(QFocusEvent* event) override;
     bool event(QEvent* event) override;
 
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     void syncViewport();
+    /// Shows or hides the editor overlay to match the controller's text edit.
+    void syncTextEditor();
+    void positionTextEditor();
+    /// Whether `position` (widget coordinates) is on the open text editor.
+    [[nodiscard]] bool isOverTextEditor(const QPointF& position) const;
     void updateHud();
     void releaseGraphics();
     void onRedrawRequested();
     void onFrameSwapped();
-    [[nodiscard]] const QCursor& eraserCursor();
+    /// Image cursors (EraserRing, Highlighter), rebuilt only when the screen density or
+    /// the colour changes.
+    struct ImageCursor {
+        QCursor cursor;
+        double dpr = 0.0;
+        QRgb color = 0;
+    };
+    [[nodiscard]] const QCursor& imageCursor(canvas::CursorShape shape);
 
     canvas::CanvasController* controller_;
     std::unique_ptr<render_gl::OpenGLRenderer> renderer_;
     QLabel* hud_ = nullptr;
+    /// Plain-text editor over the text box being edited (docs/CANVAS.md §9). Created on the
+    /// first edit; its text becomes document data only when the edit is finished.
+    QTextEdit* textEditor_ = nullptr;
+    bool finishingText_ = false;
     QString graphicsError_;
     bool pointerDown_ = false;
     bool inResizeGL_ = false;
@@ -114,9 +137,8 @@ private:
     std::optional<double> paintedRequestAtMs_; ///< request time of the frame being presented
     std::vector<double> recentLatenciesMs_;    ///< request → frame presented
 
-    QCursor eraserCursor_;
-    double eraserCursorDpr_ = 0.0;
-    QRgb eraserCursorColor_ = 0;
+    ImageCursor eraserCursor_;
+    ImageCursor highlighterCursor_;
 
     struct Benchmark {
         int remaining = 0;

@@ -5,6 +5,7 @@
 #include <QPen>
 #include <QPixmap>
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 
@@ -39,7 +40,84 @@ void drawMoon(QPainter& painter, const QColor& color) {
     painter.drawPath(disc.subtracted(bite));
 }
 
+QPixmap blank() {
+    QPixmap pixmap(static_cast<int>(kLogicalSize * kScale),
+                   static_cast<int>(kLogicalSize * kScale));
+    pixmap.setDevicePixelRatio(kScale);
+    pixmap.fill(Qt::transparent);
+    return pixmap;
+}
+
 } // namespace
+
+QIcon swatchIcon(const QColor& fill, const QColor& border) {
+    QPixmap pixmap = blank();
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(border, 1.0));
+        painter.setBrush(fill);
+        painter.drawEllipse(QPointF(kLogicalSize / 2.0, kLogicalSize / 2.0), 6.5, 6.5);
+    }
+    return QIcon(pixmap);
+}
+
+QIcon lineWidthIcon(double thickness, const QColor& color) {
+    QPixmap pixmap = blank();
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(color, thickness, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(QPointF(3.5, kLogicalSize / 2.0),
+                         QPointF(kLogicalSize - 3.5, kLogicalSize / 2.0));
+    }
+    return QIcon(pixmap);
+}
+
+QIcon penOptionsIcon(const QColor& ink, double width, const QColor& border) {
+    QPixmap pixmap = blank();
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(border, 1.0));
+        painter.setBrush(ink);
+        const double radius = std::clamp(2.5 + width * 1.2, 3.0, 8.0);
+        painter.drawEllipse(QPointF(kLogicalSize / 2.0, kLogicalSize / 2.0), radius, radius);
+    }
+    return QIcon(pixmap);
+}
+
+QIcon shapeIcon(document::ShapeKind kind, const QColor& color, bool filled) {
+    QPixmap pixmap = blank();
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QColor fill = color;
+        fill.setAlphaF(0.25F);
+        painter.setBrush(filled ? QBrush(fill) : QBrush(Qt::NoBrush));
+        const QRectF box(4.0, 5.5, 12.0, 9.0);
+        switch (kind) {
+        case document::ShapeKind::Rectangle:
+            painter.drawRect(box);
+            break;
+        case document::ShapeKind::Ellipse:
+            painter.drawEllipse(box);
+            break;
+        case document::ShapeKind::Line:
+            painter.drawLine(QPointF(4.0, 15.0), QPointF(16.0, 5.0));
+            break;
+        case document::ShapeKind::Arrow: {
+            painter.drawLine(QPointF(4.0, 15.0), QPointF(15.0, 6.0));
+            painter.setBrush(color);
+            const QPointF head[] = {QPointF(16.5, 4.5), QPointF(10.5, 6.0), QPointF(15.0, 10.5)};
+            painter.drawPolygon(head, 3);
+            break;
+        }
+        }
+    }
+    return QIcon(pixmap);
+}
 
 QIcon themeToggleIcon(bool darkThemeShown, const QColor& color) {
     QPixmap pixmap(static_cast<int>(kLogicalSize * kScale),

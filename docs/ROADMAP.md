@@ -15,8 +15,9 @@
 | 3 — Persistence | ✅ Done |
 | 4 — Canvas & OpenGL MVP | ✅ Done |
 | 5 — Application shell & navigation | ✅ Done |
-| 6 — Rich canvas content | Next |
-| 7–9 | Planned |
+| 6 — Rich canvas content | ✅ Done (final audit: non-blocking follow-ups only) |
+| 7 — Study & planning | ✅ Done (see the Phase 7 section) |
+| 8–9 | Planned |
 
 ## Phase 0 — Architecture ✅
 
@@ -354,22 +355,123 @@ Original plan:
 * **Exit:** a user can organise notes across notebooks and sections without touching
   the file system; all structure edits are undoable.
 
-## Phase 6 — Rich canvas content
+## Phase 6 — Rich canvas content ✅
+
+Progress (steps in order; each ends with build, tests, architecture and rendering checks):
+
+1. ✅ Tool configuration and pen: `canvas::ToolSettings` (pen brush, colour, width;
+   sanitized; tool state, never document data), pen style control in the shell (muted inks,
+   Fine/Medium/Thick) remembered per user; each stroke persists its own style.
+2. ✅ Highlighter: `ToolKind::Highlighter` with its own settings and cursor; strokes
+   with `Brush::Highlighter`, translucent colour and width stored per stroke (no schema
+   change); even band (no pressure); translucent ink covers each pixel once per stroke,
+   also in batches (depth-based single coverage, D39); Highlighter Style menu, key M;
+   single-key tool shortcuts no longer fire while the navigation tree has focus.
+   Measured: a highlighter gesture costs the same as a pen gesture (≈ 0.29 ms per sample
+   and frame on a 10 000-stroke page, release); tool and style changes rebuild nothing.
+   (Correction found in step 3: a stroke commit on that page costs ≈ 3 ms, not 0.36 ms —
+   the earlier benchmark's commits were rejected for duplicate ids; ≈ 2.7 ms of it is
+   `RenderBatches::update` re-hashing every element's run signature after any scene
+   change, a Phase 4 cost and a Phase 9 candidate.)
+3. ✅ Partial, vector-preserving eraser (default; whole-stroke mode kept): exact capsule
+   cuts in element-local space, bit-exact surviving points, fragment policy,
+   `commands::splitStrokes` (first piece keeps the id, pieces keep draw order), live
+   preview of the pieces, Tools ▸ Eraser. Batch runs now end at content-defined
+   boundaries (D40), so inserting pieces mid-page rebuilds only nearby runs.
+   Measured (release, 120-step gesture with a frame per step): 10 000-stroke page ≈ 0.45 ms
+   per step (p99 ≈ 1 ms), commit frame ≈ 15 ms in writing order / ≈ 29 ms in random
+   order (was 36 ms before D40; the rest is rebuilding the runs the erase touched);
+   300 strokes × 3 000 points: ≈ 3.3 ms per step, commit ≈ 93 ms (≈ 77 ms of it
+   re-tessellating the 900 000 cut points).
+4. ✅ Shapes: line, arrow (new `ShapeKind::Arrow`, stored value 6, no migration),
+   rectangle, ellipse; drag with live preview, Shift constraint, optional fill; select,
+   move, delete, undo/redo and persistence through the existing element paths; visual
+   bounds include outlines and arrowheads; Shape tool and Shape Style menu.
+   Creating a shape is one element and one command (the stroke commit path); style
+   changes rebuild nothing (tested); the drag preview tessellates one shape per step.
+5. ✅ Text: plain UTF-8 text boxes (one style), Text tool, `QTextEdit` overlay while
+   editing (letters, Delete and Ctrl+Z stay in the editor), one command per edit
+   (`commands::editText`; cleared boxes are removed), `canvas::TextLayout` implemented by
+   `platform::QtTextLayout`, texture support in the renderer (`createTexture`, textured
+   program), rasters cached per √2 zoom step with a 1 Mpx refinement budget per frame.
+   Measured in the release app: rasterising one 240 × 48 box at 4.2× zoom took 36 ms with
+   power-of-two buckets; with √2 steps the worst zoom frame was ≈ 15 ms (p95). Rasterising
+   off the GUI thread is the Phase 9 threading item.
+6. ✅ Images: Insert Image through the content-addressed asset store (deduplicated),
+   one selected element; one texture per asset at the resolution the view needs (powers of
+   two ≤ 4096, 2 Mpx refinement budget, 256 MB LRU, released on page switch); decoding on
+   worker threads (`ui::SessionImageSource`); missing/corrupt assets drawn as a frame.
+   Measured in the release app: a 6000 × 4000 PNG decoded on the GUI thread stalled the
+   first frame ≈ 313 ms; decoded off-thread, reopening the page ran at ≤ 6.9 ms CPU per
+   frame (p95) while the image arrived.
+7. ✅ Connectors: Connector tool (attach at element edges, free ends, arrowhead), endpoint
+   dragging (`commands::setConnectorEnds`), attached ends follow moves in the preview and
+   the command; the workspace's connector index (element → attached connectors) replaces
+   the attachment counts, so moving one element touches only its connectors (tested with
+   500 connectors: a one-box move is a 2-change patch) instead of scanning the page.
+8. ✅ Selection handles: resize boxes, shapes and images (aspect kept on image corners),
+   text box width with the height from the layout, line/arrow/connector ends (connector
+   ends re-attach on drop); one command per drag (`commands::resizeElement` maps attached
+   connector ends); preview without writes; no handles in read-only workspaces. No
+   rotation tool; attached connectors catch up on release rather than during the drag.
+9. ✅ Copy/paste: Edit ▸ Cut/Copy/Paste of mixed selections through a per-workspace
+   canvas clipboard (D41); one `commands::pasteElements` command (new ids, painter order
+   kept, connectors among the copies re-attached, others detached, assets shared); offset
+   or in place or centred; survives save/reopen (tested). Measured: pasting 1 014 strokes
+   2.5 ms + an 18.6 ms frame; the whole 10 000-stroke page 26 ms + a 177 ms first frame
+   (Phase 9 first-frame item). Pasting between workspaces or applications is deferred.
+
+Final audit (2026-09-27), fixed with regression tests: a paste failed when a connector lay
+below the element it is attached to (connectors are now created last in the patch); typed
+text was dropped when the page changed or the workspace closed from the keyboard, and a
+right/middle click or popup inside the text editor ended the edit; lines and arrows at an
+angle had no end handles; the resize preview was not drawn on batched pages; decoded images
+the canvas never collected were kept without bound (now within 256 MB). Added coverage:
+one mesh switching between plain and part-numbered data on a real GL context; every Phase 6
+edit undone and redone to exact states across two reopen cycles.
+
+Original plan:
 
 * Shapes (rect, ellipse, line, polygon), connectors (attach/detach, arrowheads),
   images (import, crop, resize), text boxes (overlay editing, rich text model v1),
-  highlighter (stencil no-overlap), partial eraser, lasso selection, rotate/scale handles,
+  highlighter (no self-overlap darkening), partial eraser, lasso selection, rotate/scale handles,
   layers panel, z-order commands, copy/paste (internal format + images/text from OS
   clipboard).
 * **Exit:** all element kinds are creatable, editable, undoable, persisted and
   hit-testable with tests in each layer.
 
-## Phase 7 — Study & planning
+## Phase 7 — Study & planning ✅
 
 * Courses, projects, tasks (subtasks, priorities, due dates, time blocks), tags on pages
   and tasks, task ↔ page links and backlinks.
 * Views: Today/agenda, list by course/project, simple week calendar.
 * **Exit:** agenda logic fully unit-tested across timezones; planner usable end-to-end.
+
+Delivered (steps in order, each with tests, review and a manual run):
+
+1. ✅ Study domain (`study`): records, value checks, `TimeZone` port, local dates and
+   instants across daylight-saving changes, agenda, week, progress — unit-tested with fixed
+   offsets from −12:00 to +13:45 and Europe/US-style daylight-saving zones.
+2. ✅ Workspace integration (D42): the study records are Workspace records; commands for
+   courses, projects, tasks (subtasks, move, links), tags and page tags; deletes clear
+   references in the same patch; one undo history with the notes.
+3. ✅ Persistence: `StudyStore` over the existing schema v1 tables (no migration); round trip,
+   join-table diffs, cascades, undo/redo writes, corrupt-data rejection.
+4. ✅ Application and platform: `Planner` (use cases; tags by name created in the same
+   step), `QtTimeZone` (system zone; named IANA zones in tests).
+5. ✅ Shell: `PlannerPanel` (View ▸ Planner, Ctrl+Shift+P): Today, Tasks (by course or
+   project, progress), Week, Page (tags, backlinks), task editor; canvas patches do not
+   rebuild it and planner patches draw no canvas frame; built on first show.
+
+Found and fixed in the step reviews: bulk updates (deleting a course with many tasks) were
+O(n²) through the sibling and reference indexes (20 000 tasks: 540 ms → 42 ms; the same fix
+applies a 10 000-stroke move in 2.8 ms instead of 119 ms); planner fields typed in when the
+workspace closed were lost; page tags typed before a page switch went to the new page; the
+panel's widgets were built for every window (the shell tests ran 3× slower).
+
+Not in Phase 7: recurrence, reminders, study sessions, notebook ↔ course links, editing course
+details beyond the name, drag-and-drop reordering in the planner (Move is by command), a
+multi-column week grid.
 
 ## Phase 8 — Search, PDF, export
 

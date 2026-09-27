@@ -1,5 +1,9 @@
 #include <studyapp/ui/DesignTokens.hpp>
 
+#include <studyapp/canvas/ToolSettings.hpp>
+
+#include <QCoreApplication>
+
 #include <cstdint>
 
 namespace studyapp::ui {
@@ -65,6 +69,48 @@ const ColorTokens& darkColorTokens() noexcept {
 const MetricTokens& metricTokens() noexcept {
     static constexpr MetricTokens tokens{};
     return tokens;
+}
+
+std::span<const InkColor> inkPalette() noexcept {
+    // Black first: the default ink. Shown on dark paper through the display transform
+    // (docs/RENDERING.md §8), so black ink reads light there.
+    static constexpr InkColor inks[] = {
+        {"black", QT_TRANSLATE_NOOP("Ink", "Black"), core::Color::fromRgba(0x00, 0x00, 0x00)},
+        {"graphite", QT_TRANSLATE_NOOP("Ink", "Graphite"), core::Color::fromRgba(0x5C, 0x5C, 0x5C)},
+        {"blue", QT_TRANSLATE_NOOP("Ink", "Blue"), core::Color::fromRgba(0x2F, 0x5F, 0xA8)},
+        {"red", QT_TRANSLATE_NOOP("Ink", "Red"), core::Color::fromRgba(0xB3, 0x36, 0x2F)},
+        {"green", QT_TRANSLATE_NOOP("Ink", "Green"), core::Color::fromRgba(0x2E, 0x7D, 0x4F)},
+    };
+    return inks;
+}
+
+std::span<const PenWidthPreset> penWidthPresets() noexcept {
+    static constexpr PenWidthPreset widths[] = {
+        {"fine", QT_TRANSLATE_NOOP("Ink", "Fine"), 1.2F},
+        {"medium", QT_TRANSLATE_NOOP("Ink", "Medium"), 2.0F},
+        {"thick", QT_TRANSLATE_NOOP("Ink", "Thick"), 4.0F},
+    };
+    return widths;
+}
+
+std::span<const InkColor> highlighterPalette() noexcept {
+    constexpr std::uint8_t a = canvas::kHighlighterAlpha;
+    static constexpr InkColor inks[] = {
+        {"yellow", QT_TRANSLATE_NOOP("Ink", "Yellow"), canvas::kDefaultHighlighter.color},
+        {"green", QT_TRANSLATE_NOOP("Ink", "Green"), core::Color::fromRgba(0x8C, 0xCF, 0x7E, a)},
+        {"blue", QT_TRANSLATE_NOOP("Ink", "Blue"), core::Color::fromRgba(0x86, 0xB6, 0xE8, a)},
+        {"pink", QT_TRANSLATE_NOOP("Ink", "Pink"), core::Color::fromRgba(0xEE, 0x9D, 0xB6, a)},
+    };
+    return inks;
+}
+
+std::span<const PenWidthPreset> highlighterWidthPresets() noexcept {
+    static constexpr PenWidthPreset widths[] = {
+        {"fine", QT_TRANSLATE_NOOP("Ink", "Fine"), 8.0F},
+        {"medium", QT_TRANSLATE_NOOP("Ink", "Medium"), canvas::kDefaultHighlighter.width},
+        {"thick", QT_TRANSLATE_NOOP("Ink", "Thick"), 22.0F},
+    };
+    return widths;
 }
 
 } // namespace studyapp::ui

@@ -34,6 +34,14 @@ private:
     std::uint64_t hash_ = 0xCBF29CE484222325ULL;
 };
 
+/// Whether a run starts at this element (content-defined: the same for the element
+/// wherever it is in the draw order).
+bool startsRun(const core::ElementId& id) noexcept {
+    Signature hash;
+    hash.add(id.value());
+    return hash.value() % RenderBatches::kBoundaryModulus == 0;
+}
+
 } // namespace
 
 void RenderBatches::update(const CanvasScene& scene, const document::Workspace& workspace,
@@ -53,11 +61,15 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
         if (entry == nullptr || element == nullptr || !entry->layerVisible) {
             continue;
         }
+        const bool textured = std::holds_alternative<document::TextBox>(element->payload) ||
+                              std::holds_alternative<document::Image>(element->payload);
         if (next.empty() || next.back().members.size() >= kBatchSize ||
-            layers.back() != entry->layer) {
+            layers.back() != entry->layer || textured || next.back().textured ||
+            (next.back().members.size() >= kMinBatchSize && startsRun(id))) {
             next.push_back(Batch{.firstDrawIndex = entry->drawIndex,
                                  .origin = meshToWorld(*element).apply({0.0, 0.0}),
-                                 .opacity = entry->layerOpacity});
+                                 .opacity = entry->layerOpacity,
+                                 .textured = textured});
             layers.push_back(entry->layer);
         }
         Batch& batch = next.back();
@@ -93,8 +105,17 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
                 continue;
             }
         }
+        if (batch.textured) {
+            if (reusable.isValid()) {
+                renderer.destroyMesh(reusable);
+            }
+            continue; // drawn by the controller, element by element
+        }
         render::MeshData mesh;
         const core::Affine2 toRun = core::Affine2::translation(-batch.origin);
+        // Every member mesh part is its own part of the batch: it covers a pixel at most
+        // once, exactly as when drawn on its own (render::RenderFrame::content).
+        std::uint32_t partNumber = 0;
         for (const core::ElementId id : batch.members) {
             const document::Element& element = *workspace.findElement(id);
             const SceneEntry& entry = *scene.find(id);
@@ -109,6 +130,7 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
                     mesh.bounds = mesh.bounds.including(p);
                 }
                 mesh.colors.insert(mesh.colors.end(), part.mesh.vertices.size(), part.color);
+                mesh.parts.insert(mesh.parts.end(), part.mesh.vertices.size(), partNumber++);
                 for (const std::uint32_t index : part.mesh.indices) {
                     mesh.indices.push_back(base + index);
                 }

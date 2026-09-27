@@ -2,7 +2,9 @@
 
 #include "CanvasWidget.hpp"
 #include "NavigationPanel.hpp"
+#include "PlannerPanel.hpp"
 #include "SessionDocumentPort.hpp"
+#include "SessionImageSource.hpp"
 #include "ThemeIcons.hpp"
 #include "WorkspaceTreeModel.hpp"
 
@@ -17,6 +19,7 @@
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/ui/AppIcon.hpp>
 #include <studyapp/ui/CanvasPlaceholder.hpp>
+#include <studyapp/ui/DesignTokens.hpp>
 #include <studyapp/ui/ShellDialogs.hpp>
 #include <studyapp/ui/ThemeManager.hpp>
 
@@ -26,17 +29,20 @@
 #include <QCloseEvent>
 #include <QDir>
 #include <QFileInfo>
+#include <QImageReader>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeDatabase>
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeView>
 #include <QVBoxLayout>
 
@@ -54,8 +60,30 @@ const QString kGeometryKey = QStringLiteral("mainWindow/geometry");
 const QString kStateKey = QStringLiteral("mainWindow/state");
 const QString kSplitterKey = QStringLiteral("mainWindow/navigationSplitter");
 const QString kNavigationKey = QStringLiteral("mainWindow/navigationVisible");
+const QString kPlannerKey = QStringLiteral("mainWindow/plannerVisible");
 const QString kThemeKey = QStringLiteral("appearance/theme");
 const QString kHudKey = QStringLiteral("canvas/debugHud");
+const QString kPenColorKey = QStringLiteral("tools/penColor");
+const QString kPenWidthKey = QStringLiteral("tools/penWidth");
+const QString kHighlighterColorKey = QStringLiteral("tools/highlighterColor");
+const QString kHighlighterWidthKey = QStringLiteral("tools/highlighterWidth");
+const QString kEraserModeKey = QStringLiteral("tools/eraserMode"); // "partial" | "strokes"
+const QString kShapeKindKey = QStringLiteral("tools/shapeKind");
+const QString kShapeColorKey = QStringLiteral("tools/shapeColor");
+const QString kShapeWidthKey = QStringLiteral("tools/shapeWidth");
+const QString kShapeFillKey = QStringLiteral("tools/shapeFill");
+
+struct ShapeKindName {
+    document::ShapeKind kind;
+    const char* name; ///< settings value and object-name suffix
+    const char* label;
+};
+constexpr ShapeKindName kShapeKinds[] = {
+    {document::ShapeKind::Line, "line", QT_TRANSLATE_NOOP("MainWindow", "&Line")},
+    {document::ShapeKind::Arrow, "arrow", QT_TRANSLATE_NOOP("MainWindow", "&Arrow")},
+    {document::ShapeKind::Rectangle, "rectangle", QT_TRANSLATE_NOOP("MainWindow", "&Rectangle")},
+    {document::ShapeKind::Ellipse, "ellipse", QT_TRANSLATE_NOOP("MainWindow", "&Ellipse")},
+};
 const QString kRecentKey = QStringLiteral("workspaces/recent");
 const QString kLastKey = QStringLiteral("workspaces/last");
 constexpr int kMaxRecent = 8;
@@ -89,6 +117,25 @@ bool sameDirectory(const std::filesystem::path& a, const std::filesystem::path& 
     return normalized(a) == normalized(b);
 }
 
+core::Color toCoreColor(const QColor& color) noexcept {
+    return core::Color::fromRgba(
+        static_cast<std::uint8_t>(color.red()), static_cast<std::uint8_t>(color.green()),
+        static_cast<std::uint8_t>(color.blue()), static_cast<std::uint8_t>(color.alpha()));
+}
+
+/// How a (translucent) ink looks on white paper, for swatches on any chrome colour.
+QColor onPaper(const QColor& ink) {
+    const float a = ink.alphaF();
+    return QColor::fromRgbF(1.0F - a * (1.0F - ink.redF()), 1.0F - a * (1.0F - ink.greenF()),
+                            1.0F - a * (1.0F - ink.blueF()));
+}
+
+/// Width shown by style icons: highlighter bands are drawn at the scale of pen widths.
+double iconWidth(canvas::ToolKind tool, float width) noexcept {
+    constexpr double kHighlighterIconScale = 1.0 / 6.0;
+    return tool == canvas::ToolKind::Highlighter ? width * kHighlighterIconScale : width;
+}
+
 } // namespace
 
 /// Everything that belongs to one open workspace; recreated when another one is opened.
@@ -103,17 +150,21 @@ struct MainWindow::OpenWorkspace {
                   const core::Clock& shellClock, core::IdGenerator& shellIds)
         : owned(std::move(ownedSession)), session(&shown), clock(&shellClock), ids(&shellIds),
           port(std::make_unique<SessionDocumentPort>(shown)),
+          images(std::make_unique<SessionImageSource>(shown)),
           controller(std::make_unique<canvas::CanvasController>(*port, shellIds)),
-          navigator(shown.workspace()), structure(shown, shellClock, shellIds) {}
+          navigator(shown.workspace()), structure(shown, shellClock, shellIds),
+          planner(shown, shellClock, shellIds) {}
 
     std::unique_ptr<application::WorkspaceSession> owned; ///< null when borrowed
     application::WorkspaceSession* session;
     const core::Clock* clock;
     core::IdGenerator* ids;
     std::unique_ptr<SessionDocumentPort> port;
+    std::unique_ptr<SessionImageSource> images;
     std::unique_ptr<canvas::CanvasController> controller;
     application::PageNavigator navigator;
     WorkspaceStructure structure;
+    application::Planner planner;
     /// Where the user left each page in this session (not persisted).
     std::unordered_map<core::PageId, View> views;
 };
@@ -223,6 +274,32 @@ void MainWindow::createActions() {
     connect(redoAction_, &QAction::triggered, this, &MainWindow::redo);
     // Canvas edits: their shortcuts work while the canvas has focus (the tree has its own
     // Delete for pages, sections and notebooks).
+    insertImageAction_ = make(tr("Insert &Image…"), QStringLiteral("actionInsertImage"),
+                              QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
+    connect(insertImageAction_, &QAction::triggered, this, &MainWindow::insertImage);
+    // Cut, copy and paste of canvas elements (the canvas clipboard, not the system one; text
+    // being edited takes these keys itself).
+    cutAction_ = make(tr("Cu&t"), QStringLiteral("actionCut"), QKeySequence::Cut);
+    cutAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(cutAction_, &QAction::triggered, this, [this] {
+        if (open_) {
+            (void)open_->controller->cutSelection();
+        }
+    });
+    copyAction_ = make(tr("&Copy"), QStringLiteral("actionCopy"), QKeySequence::Copy);
+    copyAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(copyAction_, &QAction::triggered, this, [this] {
+        if (open_) {
+            (void)open_->controller->copySelection();
+        }
+    });
+    pasteAction_ = make(tr("&Paste"), QStringLiteral("actionPaste"), QKeySequence::Paste);
+    pasteAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(pasteAction_, &QAction::triggered, this, [this] {
+        if (open_ && open_->controller->canPaste() && open_->controller->paste()) {
+            selectTool(canvas::ToolKind::Select); // the copies are selected, ready to move
+        }
+    });
     deleteAction_ = make(tr("&Delete"), QStringLiteral("actionDelete"), QKeySequence::Delete);
     deleteAction_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     connect(deleteAction_, &QAction::triggered, this, [this] {
@@ -298,6 +375,13 @@ void MainWindow::createActions() {
         action->setData(static_cast<int>(tool));
         action->setActionGroup(toolGroup_);
         connect(action, &QAction::triggered, this, [this, tool] {
+            if (tool == canvas::ToolKind::Pen || tool == canvas::ToolKind::Highlighter ||
+                tool == canvas::ToolKind::Shape || tool == canvas::ToolKind::Connector) {
+                // Connectors are drawn in the shape style's colour and width.
+                styleShown_ = static_cast<int>(
+                    tool == canvas::ToolKind::Connector ? canvas::ToolKind::Shape : tool);
+                syncInkActions(); // the style button shows the chosen drawing tool
+            }
             if (!open_) {
                 return;
             }
@@ -310,12 +394,84 @@ void MainWindow::createActions() {
     };
     makeTool(tr("&Pen"), QStringLiteral("actionToolPen"), Qt::Key_P, canvas::ToolKind::Pen)
         ->setChecked(true);
+    makeTool(tr("&Highlighter"), QStringLiteral("actionToolHighlighter"), Qt::Key_M,
+             canvas::ToolKind::Highlighter);
+    makeTool(tr("Sh&ape"), QStringLiteral("actionToolShape"), Qt::Key_S, canvas::ToolKind::Shape);
+    makeTool(tr("&Text"), QStringLiteral("actionToolText"), Qt::Key_T, canvas::ToolKind::Text);
+    makeTool(tr("C&onnector"), QStringLiteral("actionToolConnector"), Qt::Key_C,
+             canvas::ToolKind::Connector);
     makeTool(tr("&Select"), QStringLiteral("actionToolSelect"), Qt::Key_V,
              canvas::ToolKind::Select);
     makeTool(tr("&Eraser"), QStringLiteral("actionToolEraser"), Qt::Key_E,
              canvas::ToolKind::Eraser);
     makeTool(tr("Pa&n"), QStringLiteral("actionToolPan"), Qt::Key_H, canvas::ToolKind::Pan);
     makeTool(tr("&Zoom"), QStringLiteral("actionToolZoom"), Qt::Key_Z, canvas::ToolKind::Zoom);
+    const canvas::ToolSettings defaults;
+    pen_ = {.tool = canvas::ToolKind::Pen,
+            .color = toQColor(defaults.pen.color),
+            .width = defaults.pen.width};
+    highlighter_ = {.tool = canvas::ToolKind::Highlighter,
+                    .color = toQColor(defaults.highlighter.color),
+                    .width = defaults.highlighter.width};
+    shape_ = {.tool = canvas::ToolKind::Shape,
+              .color = toQColor(defaults.shape.color),
+              .width = defaults.shape.width};
+    shapeKind_ = static_cast<int>(defaults.shape.kind);
+    styleShown_ = static_cast<int>(canvas::ToolKind::Pen);
+    createInkActions(pen_);
+    createInkActions(highlighter_);
+    createInkActions(shape_);
+    // Shape kinds first, then (from createInkActions) inks and widths, then the fill.
+    shapeKindGroup_ = new QActionGroup(this);
+    shapeKindGroup_->setExclusive(true);
+    for (const ShapeKindName& entry : kShapeKinds) {
+        auto* action =
+            new QAction(QCoreApplication::translate("MainWindow", entry.label), shapeKindGroup_);
+        action->setObjectName(QStringLiteral("actionShapeKind_") + QString::fromLatin1(entry.name));
+        action->setCheckable(true);
+        const int kind = static_cast<int>(entry.kind);
+        action->setData(kind);
+        connect(action, &QAction::triggered, this, [this, kind] {
+            shapeKind_ = kind;
+            styleShown_ = static_cast<int>(canvas::ToolKind::Shape);
+            applyToolSettings();
+            selectTool(canvas::ToolKind::Shape);
+        });
+    }
+    QAction* firstInk = shape_.menu->actions().isEmpty() ? nullptr : shape_.menu->actions().front();
+    shape_.menu->insertActions(firstInk, shapeKindGroup_->actions());
+    shape_.menu->insertSeparator(firstInk);
+    shapeFillAction_ = new QAction(tr("&Fill"), this);
+    shapeFillAction_->setObjectName(QStringLiteral("actionShapeFill"));
+    shapeFillAction_->setCheckable(true);
+    connect(shapeFillAction_, &QAction::triggered, this, [this](bool on) {
+        shapeFill_ = on;
+        styleShown_ = static_cast<int>(canvas::ToolKind::Shape);
+        applyToolSettings();
+        selectTool(canvas::ToolKind::Shape);
+    });
+    shape_.menu->addSeparator();
+    shape_.menu->addAction(shapeFillAction_);
+
+    // Eraser mode: partial (vector pieces remain) or whole strokes.
+    eraserMenu_ = new QMenu(tr("E&raser"), this);
+    eraserMenu_->setObjectName(QStringLiteral("menuEraserMode"));
+    eraserModeGroup_ = new QActionGroup(this);
+    eraserModeGroup_->setExclusive(true);
+    for (const bool whole : {false, true}) {
+        auto* action = new QAction(whole ? tr("Erase &Whole Strokes") : tr("Erase &Partially"),
+                                   eraserModeGroup_);
+        action->setObjectName(whole ? QStringLiteral("actionEraserWholeStrokes")
+                                    : QStringLiteral("actionEraserPartial"));
+        action->setCheckable(true);
+        action->setData(whole);
+        connect(action, &QAction::triggered, this, [this, whole] {
+            eraseWholeStrokes_ = whole;
+            applyToolSettings();
+            selectTool(canvas::ToolKind::Eraser); // choosing a mode means erasing next
+        });
+    }
+    eraserMenu_->addActions(eraserModeGroup_->actions());
 
     // ---- View
     navigationAction_ = make(tr("&Navigation"), QStringLiteral("actionNavigation"),
@@ -325,6 +481,15 @@ void MainWindow::createActions() {
     connect(navigationAction_, &QAction::toggled, this, [this](bool visible) {
         if (navigation_ != nullptr) {
             navigation_->setVisible(visible);
+        }
+    });
+    plannerAction_ = make(tr("&Planner"), QStringLiteral("actionPlanner"),
+                          QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P));
+    plannerAction_->setCheckable(true);
+    plannerAction_->setChecked(false);
+    connect(plannerAction_, &QAction::toggled, this, [this](bool visible) {
+        if (planner_ != nullptr) {
+            planner_->setVisible(visible);
         }
     });
 
@@ -449,8 +614,13 @@ void MainWindow::createMenus() {
     editMenu->addAction(undoAction_);
     editMenu->addAction(redoAction_);
     editMenu->addSeparator();
+    editMenu->addAction(cutAction_);
+    editMenu->addAction(copyAction_);
+    editMenu->addAction(pasteAction_);
     editMenu->addAction(deleteAction_);
     editMenu->addAction(selectAllAction_);
+    editMenu->addSeparator();
+    editMenu->addAction(insertImageAction_);
 
     QMenu* notebookMenu = menuBar()->addMenu(tr("&Notebook"));
     notebookMenu->setObjectName(QStringLiteral("menuNotebook"));
@@ -469,10 +639,16 @@ void MainWindow::createMenus() {
     QMenu* toolsMenu = menuBar()->addMenu(tr("&Tools"));
     toolsMenu->setObjectName(QStringLiteral("menuTools"));
     toolsMenu->addActions(toolGroup_->actions());
+    toolsMenu->addSeparator();
+    toolsMenu->addMenu(pen_.menu);
+    toolsMenu->addMenu(highlighter_.menu);
+    toolsMenu->addMenu(shape_.menu);
+    toolsMenu->addMenu(eraserMenu_);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->setObjectName(QStringLiteral("menuView"));
     viewMenu->addAction(navigationAction_);
+    viewMenu->addAction(plannerAction_);
     viewMenu->addSeparator();
     QMenu* themeMenu = viewMenu->addMenu(tr("&Theme"));
     themeMenu->setObjectName(QStringLiteral("menuTheme"));
@@ -504,6 +680,17 @@ void MainWindow::createToolBar() {
     toolBar->setObjectName(QStringLiteral("mainToolBar"));
     toolBar->setMovable(false);
     toolBar->addActions(toolGroup_->actions());
+    inkStyleButton_ = new QToolButton(toolBar);
+    inkStyleButton_->setObjectName(QStringLiteral("inkStyleButton"));
+    inkStyleButton_->setPopupMode(QToolButton::InstantPopup);
+    inkStyleButton_->setAutoRaise(true);
+    inkStyleButton_->setIconSize(toolBar->iconSize());
+    inkStyleButton_->setToolButtonStyle(toolBar->toolButtonStyle());
+    connect(toolBar, &QToolBar::iconSizeChanged, inkStyleButton_, &QToolButton::setIconSize);
+    connect(toolBar, &QToolBar::toolButtonStyleChanged, inkStyleButton_,
+            &QToolButton::setToolButtonStyle);
+    toolBar->addWidget(inkStyleButton_);
+    syncInkActions();
     toolBar->addSeparator();
     toolBar->addAction(undoAction_);
     toolBar->addAction(redoAction_);
@@ -544,11 +731,20 @@ void MainWindow::createCentralWidget() {
     canvasArea_->setObjectName(QStringLiteral("canvasArea"));
     auto* canvasLayout = new QVBoxLayout(canvasArea_);
     canvasLayout->setContentsMargins(0, 0, 0, 0);
+    planner_ = new PlannerPanel(*dialogs_, shell_);
+    planner_->setMinimumWidth(240);
+    planner_->setVisible(plannerAction_->isChecked());
+    planner_->setOpenPageHandler([this](core::PageId page) { (void)openPage(page); });
+    planner_->setFailureHandler([this](const QString& summary, const QString& details) {
+        reportFailure(summary, details);
+    });
     shell_->addWidget(navigation_);
     shell_->addWidget(canvasArea_);
+    shell_->addWidget(planner_);
     shell_->setStretchFactor(0, 0);
     shell_->setStretchFactor(1, 1);
-    shell_->setSizes({240, 960});
+    shell_->setStretchFactor(2, 0);
+    shell_->setSizes({240, 960, 320});
     stack_->addWidget(shell_);
     setCentralWidget(stack_);
 
@@ -613,7 +809,32 @@ void MainWindow::readSettings() {
     restoreState(settings_->value(kStateKey).toByteArray());
     shell_->restoreState(settings_->value(kSplitterKey).toByteArray());
     navigationAction_->setChecked(settings_->value(kNavigationKey, true).toBool());
+    plannerAction_->setChecked(settings_->value(kPlannerKey, false).toBool());
     hudAction_->setChecked(settings_->value(kHudKey, false).toBool());
+    const auto readInk = [this](InkControls& ink, const QString& colorKey,
+                                const QString& widthKey) {
+        const QColor color(settings_->value(colorKey).toString());
+        if (color.isValid()) {
+            ink.color = color;
+        }
+        bool widthOk = false;
+        const float width = settings_->value(widthKey).toFloat(&widthOk);
+        if (widthOk) {
+            ink.width = width;
+        }
+    };
+    readInk(pen_, kPenColorKey, kPenWidthKey);
+    readInk(highlighter_, kHighlighterColorKey, kHighlighterWidthKey);
+    eraseWholeStrokes_ = settings_->value(kEraserModeKey).toString() == QStringLiteral("strokes");
+    readInk(shape_, kShapeColorKey, kShapeWidthKey);
+    const QString storedKind = settings_->value(kShapeKindKey).toString();
+    for (const ShapeKindName& entry : kShapeKinds) {
+        if (storedKind == QLatin1String(entry.name)) {
+            shapeKind_ = static_cast<int>(entry.kind);
+        }
+    }
+    shapeFill_ = settings_->value(kShapeFillKey, false).toBool();
+    applyToolSettings();
 }
 
 void MainWindow::writeSettings() {
@@ -622,7 +843,22 @@ void MainWindow::writeSettings() {
     settings_->setValue(kStateKey, saveState());
     settings_->setValue(kSplitterKey, shell_->saveState());
     settings_->setValue(kNavigationKey, navigationAction_->isChecked());
+    settings_->setValue(kPlannerKey, plannerAction_->isChecked());
     settings_->setValue(kHudKey, hudAction_->isChecked());
+    settings_->setValue(kPenColorKey, pen_.color.name(QColor::HexArgb));
+    settings_->setValue(kPenWidthKey, pen_.width);
+    settings_->setValue(kHighlighterColorKey, highlighter_.color.name(QColor::HexArgb));
+    settings_->setValue(kHighlighterWidthKey, highlighter_.width);
+    settings_->setValue(kEraserModeKey,
+                        eraseWholeStrokes_ ? QStringLiteral("strokes") : QStringLiteral("partial"));
+    settings_->setValue(kShapeColorKey, shape_.color.name(QColor::HexArgb));
+    settings_->setValue(kShapeWidthKey, shape_.width);
+    settings_->setValue(kShapeFillKey, shapeFill_);
+    for (const ShapeKindName& entry : kShapeKinds) {
+        if (static_cast<int>(entry.kind) == shapeKind_) {
+            settings_->setValue(kShapeKindKey, QString::fromLatin1(entry.name));
+        }
+    }
     settings_->sync();
 }
 
@@ -795,6 +1031,8 @@ bool MainWindow::closeWorkspace() {
     if (!open_) {
         return true;
     }
+    finishTextEditing(); // written (and flushed below) before the workspace closes
+    planner_->finishEditing();
     if (open_->owned) {
         // Writes are continuous; this only catches what a failed write left pending
         // (P3-01): never close silently over unsaved changes.
@@ -838,12 +1076,20 @@ void MainWindow::attach(std::unique_ptr<OpenWorkspace> workspace,
     canvasWidget_ = new CanvasWidget(*open_->controller, canvasArea_);
     canvasArea_->layout()->addWidget(canvasWidget_);
     canvasWidget_->setHudVisible(hudAction_->isChecked());
-    canvasWidget_->addAction(deleteAction_); // canvas-only shortcuts
+    for (QAction* action : {cutAction_, copyAction_, pasteAction_}) {
+        canvasWidget_->addAction(action); // canvas-only shortcuts
+    }
+    canvasWidget_->addAction(deleteAction_);
     canvasWidget_->addAction(selectAllAction_);
     applyCanvasTheme();
     if (QAction* checked = toolGroup_->checkedAction()) {
         open_->controller->setTool(static_cast<canvas::ToolKind>(checked->data().toInt()));
     }
+    applyToolSettings(); // tool settings outlive workspaces
+    open_->controller->setTextLayout(textLayout_);
+    open_->controller->setImageSource(open_->images.get());
+    planner_->setReadOnly(session.isReadOnly());
+    planner_->setPlanner(&open_->planner, open_->clock);
 
     if (!page) {
         page = application::firstPage(session.workspace());
@@ -866,6 +1112,7 @@ void MainWindow::detach(bool closeSession) {
     }
     open_->session->setPatchListener({});
     treeModel_->setWorkspace(nullptr);
+    planner_->setPlanner(nullptr, nullptr);
     // The canvas widget refers to the controller: destroy it while the controller exists.
     delete canvasWidget_;
     canvasWidget_ = nullptr;
@@ -920,6 +1167,7 @@ void MainWindow::onPatchApplied(const document::Patch& patch) {
     applyingPatch_ = true;
     open_->controller->onDocumentChanged(patch);
     treeModel_->onPatch(patch);
+    planner_->onPatch(patch);
     const bool pageChanged = open_->navigator.onPatch(patch);
     applyingPatch_ = false;
     if (pageChanged) {
@@ -943,6 +1191,7 @@ bool MainWindow::openPage(core::PageId page) {
         syncTreeToActivePage();
         return true;
     }
+    finishTextEditing(); // what is being typed belongs to the page being left
     rememberView();
     if (auto opened = open_->navigator.open(page); !opened) {
         reportFailure(tr("The page could not be opened."), errorText(opened.error()));
@@ -960,6 +1209,12 @@ void MainWindow::rememberView() {
     }
 }
 
+void MainWindow::finishTextEditing() {
+    if (canvasWidget_ != nullptr) {
+        canvasWidget_->finishTextEditing();
+    }
+}
+
 void MainWindow::showActivePage() {
     const auto page = activePage();
     open_->controller->setPage(page);
@@ -969,8 +1224,14 @@ void MainWindow::showActivePage() {
         }
     }
     treeModel_->setActivePage(page);
+    planner_->setActivePage(page);
     updateActions();
     updateStatus();
+}
+
+void MainWindow::setTimeZone(const study::TimeZone* zone) {
+    timeZone_ = zone;
+    planner_->setTimeZone(zone);
 }
 
 void MainWindow::revealPage(std::optional<core::PageId> page) {
@@ -1256,6 +1517,217 @@ void MainWindow::redo() {
     revealPage(application::pageChangedBy(applied, open_->session->workspace()));
 }
 
+void MainWindow::setTextLayout(canvas::TextLayout* layout) {
+    textLayout_ = layout;
+    if (open_) {
+        open_->controller->setTextLayout(layout);
+    }
+}
+
+void MainWindow::createInkActions(InkControls& ink) {
+    // A small, fixed choice of inks and widths (DesignTokens): quick to reach, no dialogs.
+    const bool highlighter = ink.tool == canvas::ToolKind::Highlighter;
+    const bool shape = ink.tool == canvas::ToolKind::Shape;
+    const QString prefix = highlighter ? QStringLiteral("actionHighlighter")
+                           : shape     ? QStringLiteral("actionShape")
+                                       : QStringLiteral("actionPen");
+    ink.menu = new QMenu(highlighter ? tr("Highlighter Sty&le")
+                         : shape     ? tr("Shape S&tyle")
+                                     : tr("Pen St&yle"),
+                         this);
+    ink.menu->setObjectName(highlighter ? QStringLiteral("menuHighlighterStyle")
+                            : shape     ? QStringLiteral("menuShapeStyle")
+                                        : QStringLiteral("menuPenStyle"));
+    ink.colors = new QActionGroup(this);
+    ink.colors->setExclusive(true);
+    for (const InkColor& color : highlighter ? highlighterPalette() : inkPalette()) {
+        auto* action = new QAction(QCoreApplication::translate("Ink", color.label), ink.colors);
+        action->setObjectName(prefix + QStringLiteral("Color_") + QString::fromLatin1(color.name));
+        action->setCheckable(true);
+        const QColor value = toQColor(color.color);
+        action->setData(value);
+        connect(action, &QAction::triggered, this, [this, &ink, value] {
+            ink.color = value;
+            styleShown_ = static_cast<int>(ink.tool);
+            applyToolSettings();
+            selectTool(ink.tool); // choosing an ink means drawing with it next
+        });
+    }
+    ink.widths = new QActionGroup(this);
+    ink.widths->setExclusive(true);
+    for (const PenWidthPreset& preset :
+         highlighter ? highlighterWidthPresets() : penWidthPresets()) {
+        auto* action = new QAction(QCoreApplication::translate("Ink", preset.label), ink.widths);
+        action->setObjectName(prefix + QStringLiteral("Width_") + QString::fromLatin1(preset.name));
+        action->setCheckable(true);
+        action->setData(preset.width);
+        const float width = preset.width;
+        connect(action, &QAction::triggered, this, [this, &ink, width] {
+            ink.width = width;
+            styleShown_ = static_cast<int>(ink.tool);
+            applyToolSettings();
+            selectTool(ink.tool);
+        });
+    }
+    ink.menu->addActions(ink.colors->actions());
+    ink.menu->addSeparator();
+    ink.menu->addActions(ink.widths->actions());
+}
+
+void MainWindow::applyToolSettings() {
+    canvas::ToolSettings settings;
+    settings.pen = {
+        .brush = document::Brush::Pen, .color = toCoreColor(pen_.color), .width = pen_.width};
+    settings.highlighter = {.brush = document::Brush::Highlighter,
+                            .color = toCoreColor(highlighter_.color),
+                            .width = highlighter_.width};
+    settings.eraser =
+        eraseWholeStrokes_ ? canvas::EraserMode::WholeStroke : canvas::EraserMode::Partial;
+    settings.shape = {.kind = static_cast<document::ShapeKind>(shapeKind_),
+                      .color = toCoreColor(shape_.color),
+                      .width = shape_.width,
+                      .fill = shapeFill_};
+    settings = canvas::sanitized(settings);
+    shapeKind_ = static_cast<int>(settings.shape.kind);
+    shape_.color = toQColor(settings.shape.color);
+    shape_.width = settings.shape.width;
+    pen_.color = toQColor(settings.pen.color);
+    pen_.width = settings.pen.width;
+    highlighter_.color = toQColor(settings.highlighter.color);
+    highlighter_.width = settings.highlighter.width;
+    if (open_) {
+        open_->controller->setToolSettings(settings);
+    }
+    syncInkActions();
+}
+
+void MainWindow::selectTool(canvas::ToolKind tool) {
+    for (QAction* action : toolGroup_->actions()) {
+        if (action->data().toInt() == static_cast<int>(tool) && action->isEnabled() &&
+            !action->isChecked()) {
+            action->trigger();
+        }
+    }
+}
+
+void MainWindow::refreshInkIcons() {
+    const QColor border = toQColor(themes_->tokens().borderStrong);
+    const QColor line = toQColor(themes_->tokens().textSecondary);
+    if (shapeKindGroup_ != nullptr) {
+        for (QAction* action : shapeKindGroup_->actions()) {
+            action->setIcon(
+                shapeIcon(static_cast<document::ShapeKind>(action->data().toInt()), line));
+        }
+    }
+    for (const InkControls* ink : {&pen_, &highlighter_, &shape_}) {
+        for (QAction* action : ink->colors->actions()) {
+            action->setIcon(swatchIcon(onPaper(action->data().value<QColor>()), border));
+        }
+        for (QAction* action : ink->widths->actions()) {
+            const double width = iconWidth(ink->tool, action->data().toFloat());
+            action->setIcon(lineWidthIcon(std::clamp(width * 1.2, 1.0, 6.0), line));
+        }
+    }
+}
+
+void MainWindow::syncInkActions() {
+    if (pen_.colors == nullptr || highlighter_.colors == nullptr || shape_.colors == nullptr) {
+        return;
+    }
+    if (shapeKindGroup_ != nullptr) {
+        for (QAction* action : shapeKindGroup_->actions()) {
+            action->setChecked(action->data().toInt() == shapeKind_);
+        }
+        shapeFillAction_->setChecked(shapeFill_);
+    }
+    if (eraserModeGroup_ != nullptr) {
+        for (QAction* action : eraserModeGroup_->actions()) {
+            action->setChecked(action->data().toBool() == eraseWholeStrokes_);
+        }
+    }
+    for (const InkControls* ink : {&pen_, &highlighter_, &shape_}) {
+        for (QAction* action : ink->colors->actions()) {
+            action->setChecked(action->data().value<QColor>().rgba() == ink->color.rgba());
+        }
+        for (QAction* action : ink->widths->actions()) {
+            action->setChecked(std::abs(action->data().toFloat() - ink->width) < 0.01F);
+        }
+    }
+    if (inkStyleButton_ == nullptr) {
+        return;
+    }
+    const QColor border = toQColor(themes_->tokens().borderStrong);
+    const auto shownTool = static_cast<canvas::ToolKind>(styleShown_);
+    const InkControls& shown = shownTool == canvas::ToolKind::Highlighter ? highlighter_
+                               : shownTool == canvas::ToolKind::Shape     ? shape_
+                                                                          : pen_;
+    inkStyleButton_->setMenu(shown.menu);
+    if (shownTool == canvas::ToolKind::Shape) {
+        inkStyleButton_->setIcon(
+            shapeIcon(static_cast<document::ShapeKind>(shapeKind_), shape_.color, shapeFill_));
+    } else {
+        inkStyleButton_->setIcon(
+            penOptionsIcon(onPaper(shown.color), iconWidth(shown.tool, shown.width), border));
+    }
+    QString name = tr("Custom");
+    for (QAction* action : shown.colors->actions()) {
+        if (action->isChecked()) {
+            name = action->text();
+        }
+    }
+    const QString width = QString::number(shown.width);
+    if (shownTool == canvas::ToolKind::Shape) {
+        QString kind;
+        for (QAction* action : shapeKindGroup_->actions()) {
+            if (action->isChecked()) {
+                kind = action->text().remove(QLatin1Char('&'));
+            }
+        }
+        inkStyleButton_->setToolTip(tr("Shape style: %1, %2, %3").arg(kind, name, width));
+    } else {
+        inkStyleButton_->setToolTip(shownTool == canvas::ToolKind::Highlighter
+                                        ? tr("Highlighter style: %1, %2").arg(name, width)
+                                        : tr("Pen style: %1, %2").arg(name, width));
+    }
+}
+
+void MainWindow::insertImage() {
+    if (!open_ || open_->session->isReadOnly() || !activePage()) {
+        return;
+    }
+    const auto chosen = dialogs_->chooseImageToInsert(this);
+    if (!chosen) {
+        return;
+    }
+    const QString file = QString::fromStdU16String(chosen->u16string());
+    QImageReader reader(file);
+    reader.setAutoTransform(true);
+    QSize size = reader.size();
+    if (reader.transformation().testFlag(QImageIOHandler::TransformationRotate90)) {
+        size.transpose();
+    }
+    if (!reader.canRead() || !size.isValid() || size.isEmpty()) {
+        dialogs_->showError(this, tr("The image could not be inserted."),
+                            tr("%1 is not an image StudyBoard can read.").arg(file));
+        return;
+    }
+    const QString mediaType = QMimeDatabase().mimeTypeForFile(file).name();
+    // Content-addressed: importing the same file again reuses the stored copy.
+    auto asset = open_->session->importAsset(*chosen, mediaType.toStdString());
+    if (!asset) {
+        dialogs_->showError(this, tr("The image could not be inserted."), errorText(asset.error()));
+        return;
+    }
+    if (auto inserted = open_->controller->insertImage(
+            *asset, {static_cast<float>(size.width()), static_cast<float>(size.height())});
+        !inserted) {
+        dialogs_->showError(this, tr("The image could not be inserted."),
+                            errorText(inserted.error()));
+        return;
+    }
+    selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
+}
+
 void MainWindow::setPageFormat(int backgroundPattern, bool bounded) {
     const auto page = activePage();
     if (!open_ || !page) {
@@ -1302,6 +1774,8 @@ void MainWindow::syncThemeActions() {
         tip + QStringLiteral(" (") +
         toggleThemeAction_->shortcut().toString(QKeySequence::NativeText) + QLatin1Char(')'));
     toggleThemeAction_->setStatusTip(tip);
+    refreshInkIcons(); // swatch borders follow the theme
+    syncInkActions();
 }
 
 void MainWindow::applyCanvasTheme() {
@@ -1348,6 +1822,9 @@ void MainWindow::updateActions() {
     redoAction_->setText(nextRedo != nullptr ? tr("&Redo %1").arg(label(nextRedo->label))
                                              : tr("&Redo"));
     deleteAction_->setEnabled(writable);
+    cutAction_->setEnabled(writable);
+    pasteAction_->setEnabled(writable);
+    copyAction_->setEnabled(open);
     selectAllAction_->setEnabled(open);
 
     const std::optional<HierarchyItem> item =

@@ -31,8 +31,10 @@ target_link_libraries(canvas_widget_tests PRIVATE
     studyapp::ui
     studyapp::application
     studyapp::platform
+    studyapp::render_gl
     studyapp::test_support
     Qt6::Test
+    Qt6::OpenGL
     Qt6::OpenGLWidgets
     studyapp_project_options
     studyapp_warnings)
@@ -53,9 +55,11 @@ endif()
 # includes the private WorkspaceTreeModel header to test the model on its own.
 add_executable(shell_tests ShellTest.cpp)
 target_include_directories(shell_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/ui/src")
+# persistence is linked directly only for fault injection (a second connection).
 target_link_libraries(shell_tests PRIVATE
     studyapp::ui
     studyapp::application
+    studyapp::persistence
     studyapp::platform
     studyapp::test_support
     Qt6::Test

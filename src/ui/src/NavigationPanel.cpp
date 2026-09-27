@@ -2,8 +2,10 @@
 
 #include "WorkspaceTreeModel.hpp"
 
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QToolButton>
@@ -52,12 +54,28 @@ NavigationPanel::NavigationPanel(WorkspaceTreeModel& model, QWidget* parent) : Q
     tree_->setFrameShape(QFrame::NoFrame);
     tree_->setIndentation(14);
     tree_->setExpandsOnDoubleClick(true);
+    tree_->installEventFilter(this);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addLayout(header);
     layout->addWidget(tree_, 1);
+}
+
+bool NavigationPanel::eventFilter(QObject* watched, QEvent* event) {
+    // Plain typing in the tree is its keyboard search: the window's single-key shortcuts
+    // (tools: P, M, V, E, H, Z) must not take those keys while the tree has focus.
+    if (watched == tree_ && event->type() == QEvent::ShortcutOverride) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        const Qt::KeyboardModifiers chord =
+            key->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        if (chord == Qt::NoModifier && !key->text().isEmpty() && key->text().front().isPrint()) {
+            event->accept();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void NavigationPanel::setWorkspaceName(const QString& name) {

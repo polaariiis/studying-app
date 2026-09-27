@@ -37,7 +37,8 @@ QT_FREE_DOMAIN = frozenset({"core"})
 
 RULES: dict[str, Rule] = {
     "core": Rule(frozenset()),
-    "document": Rule(QT_FREE_DOMAIN),
+    # The document Workspace owns the study records (docs/ARCHITECTURE.md D42).
+    "document": Rule(frozenset({"core", "study"})),
     "study": Rule(QT_FREE_DOMAIN),
     "render": Rule(QT_FREE_DOMAIN),
     "canvas": Rule(frozenset({"core", "document", "render"})),

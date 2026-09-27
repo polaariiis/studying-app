@@ -432,7 +432,7 @@ Result<PageData> PageStore::load(core::PageId page) {
         "SELECT k.element_id, k.shape_kind, k.width, k.height, k.stroke_color, k.stroke_width, "
         "k.fill_color FROM shape k JOIN element e ON e.id = k.element_id WHERE e.page_id = ?1",
         "shape", rows, [](RowDecoder& decode, const Statement& /*s*/) {
-            return Shape{.kind = decode.enumeration<document::ShapeKind>(1, 0, 2),
+            return Shape{.kind = decode.enumeration<document::ShapeKind>(1, 0, 6),
                          .size = {decode.real32(2), decode.real32(3)},
                          .strokeColor = decode.optionalColor(4),
                          .strokeWidth = decode.real32(5),

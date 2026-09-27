@@ -2,6 +2,8 @@
 
 #include <studyapp/core/Color.hpp>
 
+#include <span>
+
 namespace studyapp::ui {
 
 // StudyBoard design tokens: the minimal shared visual vocabulary (docs/ARCHITECTURE.md
@@ -56,5 +58,28 @@ struct MetricTokens {
 [[nodiscard]] const ColorTokens& lightColorTokens() noexcept;
 [[nodiscard]] const ColorTokens& darkColorTokens() noexcept;
 [[nodiscard]] const MetricTokens& metricTokens() noexcept;
+
+/// An ink the pen offers. Inks are document content, not chrome: they are not bound to the
+/// neutral chrome palette, but kept few and muted so notes stay calm. `name` is stable
+/// (settings, object names); `label` is shown (translated in the "Ink" context).
+struct InkColor {
+    const char* name;
+    const char* label;
+    core::Color color;
+};
+/// A pen width preset, in world units at pressure 1.
+struct PenWidthPreset {
+    const char* name;
+    const char* label;
+    float width;
+};
+
+[[nodiscard]] std::span<const InkColor> inkPalette() noexcept;
+[[nodiscard]] std::span<const PenWidthPreset> penWidthPresets() noexcept;
+/// Highlighter inks: light colours at canvas::kHighlighterAlpha, so the content under
+/// them stays readable. The first one is canvas::kDefaultHighlighter.
+[[nodiscard]] std::span<const InkColor> highlighterPalette() noexcept;
+/// Highlighter widths (broad bands); the middle one is the default.
+[[nodiscard]] std::span<const PenWidthPreset> highlighterWidthPresets() noexcept;
 
 } // namespace studyapp::ui

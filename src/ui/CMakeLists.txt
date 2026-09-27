@@ -19,7 +19,11 @@ studyapp_add_module(ui
         src/MainWindow.cpp
         src/NavigationPanel.cpp
         src/NavigationPanel.hpp
+        src/PlannerPanel.cpp
+        src/PlannerPanel.hpp
         src/SessionDocumentPort.hpp
+        src/SessionImageSource.cpp
+        src/SessionImageSource.hpp
         src/ShellDialogs.cpp
         src/ThemeIcons.cpp
         src/ThemeIcons.hpp

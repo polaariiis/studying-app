@@ -6,7 +6,10 @@ studyapp_add_gtest(canvas_tests
         CanvasControllerTest.cpp
         CanvasTestSupport.hpp
         SceneTest.cpp
+        SelectionHandlesTest.cpp
+        ShapeBuilderTest.cpp
         StrokeBuilderTest.cpp
+        StrokeEraserTest.cpp
     LIBS
         studyapp::canvas
         studyapp::document_test_support

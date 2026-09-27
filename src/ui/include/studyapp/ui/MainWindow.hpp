@@ -4,10 +4,12 @@
 #include <studyapp/ui/PanBenchmark.hpp>
 #include <studyapp/ui/ShellDialogs.hpp>
 
+#include <QColor>
 #include <QImage>
 #include <QMainWindow>
 #include <QStringList>
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -20,11 +22,17 @@ class QMenu;
 class QSettings;
 class QSplitter;
 class QStackedWidget;
+class QToolButton;
 
 namespace studyapp::application {
 class WorkspaceLocker;
 class WorkspaceSession;
 } // namespace studyapp::application
+
+namespace studyapp::canvas {
+enum class ToolKind : std::uint8_t;
+class TextLayout;
+} // namespace studyapp::canvas
 
 namespace studyapp::core {
 class Clock;
@@ -35,10 +43,15 @@ namespace studyapp::document {
 class Patch;
 } // namespace studyapp::document
 
+namespace studyapp::study {
+class TimeZone;
+} // namespace studyapp::study
+
 namespace studyapp::ui {
 
 class CanvasPlaceholder;
 class CanvasWidget;
+class PlannerPanel;
 class NavigationPanel;
 class ThemeManager;
 class WorkspaceTreeModel;
@@ -116,6 +129,14 @@ public:
 
     // ---- navigation ----------------------------------------------------------------------
     [[nodiscard]] std::optional<core::PageId> activePage() const;
+    /// How text boxes are laid out and drawn (the composition root passes the Qt
+    /// implementation; not owned, must outlive the window). Without one, text boxes are
+    /// drawn as frames.
+    void setTextLayout(canvas::TextLayout* layout);
+    /// Local time of the planner (the composition root passes the system zone); UTC until
+    /// set.
+    void setTimeZone(const study::TimeZone* zone);
+
     /// Shows `page` on the canvas (where the user left it, if it was open before).
     bool openPage(core::PageId page);
 
@@ -149,6 +170,9 @@ private:
     void onPatchApplied(const document::Patch& patch);
     void showActivePage();
     void rememberView();
+    /// Writes the text being typed on the canvas, if any (before the page changes or the
+    /// workspace closes).
+    void finishTextEditing();
     void revealPage(std::optional<core::PageId> page);
     void syncTreeToActivePage();
     void onTreeCurrentChanged();
@@ -166,6 +190,17 @@ private:
     void deleteCurrent();
     void moveCurrent(int delta);
     void setPageFormat(int backgroundPattern, bool bounded);
+    void insertImage();
+    struct InkControls;
+    void createInkActions(InkControls& ink);
+    /// Hands the pen and highlighter styles to the canvas (canvas::ToolSettings).
+    void applyToolSettings();
+    void selectTool(canvas::ToolKind tool);
+    /// Checked inks and widths, and the style button (menu, icon, tooltip). Cheap: runs on
+    /// every tool or style change.
+    void syncInkActions();
+    /// Swatch and width icons of the style menus; they depend on the theme only.
+    void refreshInkIcons();
 
     // Chrome.
     void syncThemeActions();
@@ -196,6 +231,9 @@ private:
     CanvasPlaceholder* welcome_ = nullptr;
     QSplitter* shell_ = nullptr;
     NavigationPanel* navigation_ = nullptr;
+    PlannerPanel* planner_ = nullptr;
+    QAction* plannerAction_ = nullptr;
+    const study::TimeZone* timeZone_ = nullptr;
     WorkspaceTreeModel* treeModel_ = nullptr;
     QWidget* canvasArea_ = nullptr;
     CanvasWidget* canvasWidget_ = nullptr;
@@ -210,6 +248,9 @@ private:
     // Edit.
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
+    QAction* cutAction_ = nullptr;
+    QAction* copyAction_ = nullptr;
+    QAction* pasteAction_ = nullptr;
     QAction* deleteAction_ = nullptr;
     QAction* selectAllAction_ = nullptr;
     // Notebook (structure).
@@ -218,12 +259,42 @@ private:
     QAction* newNotebookAction_ = nullptr;
     QAction* renameAction_ = nullptr;
     QAction* deleteItemAction_ = nullptr;
+    QAction* insertImageAction_ = nullptr;
     QAction* moveUpAction_ = nullptr;
     QAction* moveDownAction_ = nullptr;
     QAction* previousPageAction_ = nullptr;
     QAction* nextPageAction_ = nullptr;
     // Tools and view.
     QActionGroup* toolGroup_ = nullptr;
+    // Ink tool styles (canvas::ToolSettings: the pen's and the highlighter's colour and
+    // width), kept here across workspaces and remembered per user (QSettings).
+    struct InkControls {
+        canvas::ToolKind tool;
+        QColor color;
+        float width = 0.0F;
+        QActionGroup* colors = nullptr;
+        QActionGroup* widths = nullptr;
+        QMenu* menu = nullptr;
+    };
+    InkControls pen_;
+    InkControls highlighter_;
+    /// Shape style (canvas::ShapeStyle): ink and width as for the pen, plus kind and fill.
+    InkControls shape_;
+    canvas::TextLayout* textLayout_ = nullptr;
+    int shapeKind_ = 0; ///< document::ShapeKind value
+    bool shapeFill_ = false;
+    QActionGroup* shapeKindGroup_ = nullptr;
+    QAction* shapeFillAction_ = nullptr;
+    /// Eraser mode (canvas::EraserMode), remembered per user like the ink styles.
+    bool eraseWholeStrokes_ = false;
+    QActionGroup* eraserModeGroup_ = nullptr;
+    QMenu* eraserMenu_ = nullptr;
+    /// The toolbar's style button: the style of the ink tool chosen last (pen/highlighter).
+    /// A plain button with QToolButton::setMenu: QAction::setMenu would make the style
+    /// menus' own entries in the Tools menu point at the button.
+    QToolButton* inkStyleButton_ = nullptr;
+    /// Whose style the button shows: canvas::ToolKind Pen, Highlighter or Shape.
+    int styleShown_ = 0;
     QAction* navigationAction_ = nullptr;
     QActionGroup* themeGroup_ = nullptr;
     QAction* themeSystemAction_ = nullptr;

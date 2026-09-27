@@ -93,6 +93,10 @@ enum class CursorShape : std::uint8_t {
     /// without the one to two frames of latency of anything presented through the
     /// compositor, and it disappears when the pointer leaves the canvas.
     EraserRing,
+    /// The highlighter: a crosshair with a small bar, also a platform cursor image, so the
+    /// active tool is visible at the pointer without anything drawn by the renderer.
+    Highlighter,
+    IBeam, ///< the text tool
 };
 
 /// Radius of the stroke eraser, in view pixels (the size of CursorShape::EraserRing).

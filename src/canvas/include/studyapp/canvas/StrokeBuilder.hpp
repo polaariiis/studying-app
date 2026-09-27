@@ -110,6 +110,8 @@ struct PenStyle {
     document::Brush brush = document::Brush::Pen;
     core::Color color = core::Color::black();
     float width = 2.0F; ///< world units at pressure 1
+
+    [[nodiscard]] friend bool operator==(const PenStyle&, const PenStyle&) = default;
 };
 
 /// Precondition: `points` is not empty.

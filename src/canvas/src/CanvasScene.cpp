@@ -1,5 +1,7 @@
 #include <studyapp/canvas/CanvasScene.hpp>
 
+#include <studyapp/canvas/ElementGeometry.hpp>
+
 #include <algorithm>
 #include <type_traits>
 #include <variant>
@@ -33,7 +35,7 @@ void CanvasScene::upsert(const document::Workspace& workspace, core::ElementId i
         removeEntry(id);
         return;
     }
-    const core::DRect bounds = document::worldBounds(*element);
+    const core::DRect bounds = visualBounds(*element);
     auto [it, inserted] = entries_.try_emplace(id);
     SceneEntry& entry = it->second;
     entry.id = id;

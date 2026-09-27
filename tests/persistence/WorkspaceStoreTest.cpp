@@ -1,5 +1,6 @@
 #include <studyapp/persistence/WorkspaceStore.hpp>
 
+#include <studyapp/document/StudyCommands.hpp>
 #include <studyapp/persistence/AssetStore.hpp>
 #include <studyapp/persistence/WorkspaceFile.hpp>
 #include <studyapp/testing/TempDirectory.hpp>
@@ -504,6 +505,141 @@ TEST_F(WorkspaceStoreTest, RepeatedSaveLoadCyclesAreStable) {
     EXPECT_EQ(doc.workspace.elementCount(), 10U);
 }
 
+// ---------------------------------------------------------------------------- study (Phase 7)
+
+namespace commands = document::commands;
+
+study::CalendarDate ymd(int y, unsigned m, unsigned d) {
+    return study::CalendarDate{std::chrono::year{y}, std::chrono::month{m}, std::chrono::day{d}};
+}
+
+TEST_F(WorkspaceStoreTest, DatesAreStoredAsIsoText) {
+    EXPECT_EQ(formatDate(ymd(2026, 3, 9)), "2026-03-09");
+    EXPECT_EQ(formatDate(ymd(1, 1, 1)), "0001-01-01");
+    EXPECT_EQ(parseDate("2024-02-29"), ymd(2024, 2, 29));
+    for (const char* bad : {"2026-02-30", "2026-2-3", "20260203", "2026-13-01", "abcd-ef-gh",
+                            "0000-01-01", "2026-03-09 "}) {
+        EXPECT_FALSE(parseDate(bad).has_value()) << bad;
+    }
+}
+
+TEST_F(WorkspaceStoreTest, StudyRecordsRoundTripWithAllFieldsAndLinks) {
+    const auto layer = addSavedPath();
+    const auto page = doc.workspace.findLayer(layer)->page;
+    const auto exam = doc.run(commands::createTag(doc.workspace, "Exam", doc.clock, doc.ids));
+    save();
+    const auto reading = doc.run(commands::createTag(doc.workspace, "Reading", doc.clock, doc.ids));
+    save();
+    study::Tag coloured = *doc.workspace.findTag(reading);
+    coloured.color = core::Color::fromRgba(20, 90, 60);
+    executeAndSave(Patch({document::updated(*doc.workspace.findTag(reading), coloured)}));
+    const auto course =
+        doc.run(commands::createCourse(doc.workspace, "Biology", doc.clock, doc.ids));
+    save();
+    study::Course full = *doc.workspace.findCourse(course);
+    full.code = "BIO 101";
+    full.term = "Autumn 2026";
+    full.instructor = "Dr. Ørsted";
+    full.color = core::Color::fromRgba(200, 40, 40);
+    full.start = ymd(2026, 9, 1);
+    full.end = ymd(2026, 12, 18);
+    doc.run(commands::updateCourse(doc.workspace, full, doc.clock));
+    save();
+    const auto project =
+        doc.run(commands::createProject(doc.workspace, "Lab report", course, doc.clock, doc.ids));
+    save();
+    study::Project fullProject = *doc.workspace.findProject(project);
+    fullProject.description = "Enzyme kinetics";
+    fullProject.status = study::ProjectStatus::Done;
+    fullProject.start = ymd(2026, 10, 1);
+    fullProject.due = ymd(2026, 10, 20);
+    fullProject.color = core::Color::fromRgba(1, 2, 3, 4);
+    doc.run(commands::updateProject(doc.workspace, fullProject, doc.clock));
+    save();
+    const auto task = doc.run(commands::createTask(
+        doc.workspace, {.title = "Write methods", .course = course, .project = project}, doc.clock,
+        doc.ids));
+    save();
+    study::Task fullTask = *doc.workspace.findTask(task);
+    fullTask.notes = "Include the ΔG table\nand units";
+    fullTask.status = study::TaskStatus::Done;
+    fullTask.priority = study::Priority::High;
+    fullTask.dueDate = ymd(2026, 10, 15);
+    fullTask.dueTime = std::chrono::minutes{17 * 60 + 30};
+    fullTask.scheduled = study::TimeBlock{doc.clock.now() + std::chrono::hours{2},
+                                          doc.clock.now() + std::chrono::hours{3}};
+    fullTask.estimate = std::chrono::minutes{90};
+    fullTask.linkedPages = {page};
+    fullTask.tags = {reading, exam};
+    doc.run(commands::updateTask(doc.workspace, fullTask, doc.clock));
+    save();
+    const auto subtask = doc.run(commands::createTask(
+        doc.workspace, {.title = "Figures", .parent = task}, doc.clock, doc.ids));
+    save();
+    doc.run(commands::setPageTags(doc.workspace, page, {exam}, doc.clock));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM task_tag"), 2);
+    EXPECT_EQ(count("SELECT count(*) FROM task_page"), 1);
+    EXPECT_EQ(count("SELECT count(*) FROM page_tag"), 1);
+    expectRoundTrip();
+    ASSERT_NE(doc.workspace.findTask(subtask), nullptr);
+
+    // Link and tag changes write only the difference; deletes cascade as the model does.
+    study::Task relinked = *doc.workspace.findTask(task);
+    relinked.tags = {exam};
+    doc.run(commands::updateTask(doc.workspace, relinked, doc.clock));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM task_tag"), 1);
+    doc.run(commands::deleteTag(doc.workspace, exam));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM task_tag"), 0);
+    EXPECT_EQ(count("SELECT count(*) FROM page_tag"), 0);
+    doc.run(commands::deleteCourse(doc.workspace, course));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM task WHERE course_id IS NOT NULL"), 0);
+    doc.run(commands::deletePage(doc.workspace, page));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM task_page"), 0);
+    doc.run(commands::deleteTask(doc.workspace, task));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM task"), 0);
+    expectRoundTrip();
+
+    // Undo all of it back through the store; redo again.
+    for (int i = 0; i < 5; ++i) {
+        undoAndSave();
+    }
+    EXPECT_EQ(count("SELECT count(*) FROM task_tag"), 2);
+    EXPECT_EQ(count("SELECT count(*) FROM page_tag"), 1);
+    EXPECT_EQ(count("SELECT count(*) FROM task_page"), 1);
+    expectRoundTrip();
+    for (int i = 0; i < 5; ++i) {
+        redoAndSave();
+    }
+    expectRoundTrip();
+}
+
+TEST_F(WorkspaceStoreTest, TaskOrderAndSubtasksRoundTrip) {
+    std::vector<core::TaskId> tasks;
+    for (const char* title : {"a", "b", "c"}) {
+        tasks.push_back(
+            doc.run(commands::createTask(doc.workspace, {.title = title}, doc.clock, doc.ids)));
+        save();
+    }
+    doc.run(commands::moveTask(doc.workspace, tasks[2], 0, doc.clock));
+    save();
+    for (const char* title : {"x", "y"}) {
+        doc.run(commands::createTask(doc.workspace, {.title = title, .parent = tasks[1]}, doc.clock,
+                                     doc.ids));
+        save();
+    }
+    expectRoundTrip();
+    auto loaded = reload();
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->topLevelTasks()[0], tasks[2]);
+    EXPECT_EQ(loaded->subtasksOf(tasks[1]).size(), 2U);
+}
+
 // ---------------------------------------------------------------------------- corrupt data
 
 struct CorruptDataTest : WorkspaceStoreTest {
@@ -615,6 +751,56 @@ TEST_F(CorruptDataTest, ReportsUnsupportedNestedSections) {
                     "updated_at) SELECT randomblob(16), notebook_id, id, 'Child', 'a0', 0, 0 "
                     "FROM section",
                     core::ErrorCode::Unsupported);
+}
+
+struct CorruptStudyDataTest : CorruptDataTest {
+    core::TaskId task;
+
+    void SetUp() override {
+        CorruptDataTest::SetUp();
+        const auto page = doc.workspace.findLayer(layer)->page;
+        const auto tag = doc.run(commands::createTag(doc.workspace, "Tag", doc.clock, doc.ids));
+        save();
+        task = doc.run(commands::createTask(doc.workspace, {.title = "T", .linkedPages = {page}},
+                                            doc.clock, doc.ids));
+        save();
+        doc.run(commands::setPageTags(doc.workspace, page, {tag}, doc.clock));
+        save();
+        ASSERT_OK(reload());
+    }
+};
+
+TEST_F(CorruptStudyDataTest, RejectsMalformedDates) {
+    expectLoadFails("UPDATE task SET due_date = '2026-02-30'");
+}
+
+TEST_F(CorruptStudyDataTest, RejectsHalfATimeBlock) {
+    expectLoadFails("UPDATE task SET scheduled_start = 5");
+}
+
+TEST_F(CorruptStudyDataTest, RejectsUnknownStatuses) {
+    expectLoadFails("UPDATE task SET status = 9");
+}
+
+TEST_F(CorruptStudyDataTest, RejectsLinksToMissingPages) {
+    expectLoadFails("UPDATE task_page SET page_id = randomblob(16)");
+}
+
+TEST_F(CorruptStudyDataTest, RejectsTagsOfMissingPages) {
+    expectLoadFails("UPDATE page_tag SET page_id = randomblob(16)");
+}
+
+TEST_F(CorruptStudyDataTest, RejectsSubtasksOfSubtasks) {
+    expectLoadFails("INSERT INTO task (id, title, sort_key, created_at, updated_at) VALUES "
+                    "(x'0123456789abcdef0123456789abcdef', 'P', 'a0', 0, 0);"
+                    "UPDATE task SET parent_id = x'0123456789abcdef0123456789abcdef' "
+                    "WHERE title = 'T';"
+                    "INSERT INTO task (id, title, parent_id, sort_key, created_at, updated_at) "
+                    "SELECT randomblob(16), 'Deeper', id, 'a0', 0, 0 FROM task WHERE title = 'T'");
+}
+
+TEST_F(CorruptStudyDataTest, ReportsUnsupportedRecurrence) {
+    expectLoadFails("UPDATE task SET recurrence = 'FREQ=DAILY'", core::ErrorCode::Unsupported);
 }
 
 } // namespace

@@ -25,6 +25,9 @@ public:
     /// The menu behind the header's "New" button (the owner fills it).
     [[nodiscard]] QMenu* newMenu() const noexcept { return newMenu_; }
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     QLabel* title_ = nullptr;
     QToolButton* newButton_ = nullptr;

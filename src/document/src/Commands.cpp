@@ -1,11 +1,18 @@
 #include <studyapp/document/Commands.hpp>
 
+#include "CommandSupport.hpp"
+
+#include <studyapp/document/StudyCommands.hpp>
+
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -17,19 +24,12 @@ using core::FractionalIndex;
 using core::makeError;
 using core::Result;
 
+using detail::appendKey;
+using detail::keyAt;
+using detail::makeCommand;
+using detail::notFound;
+
 namespace {
-
-template <class Id, class Lookup>
-FractionalIndex appendKey(std::span<const Id> siblings, Lookup orderOf) {
-    return siblings.empty() ? FractionalIndex::first()
-                            : FractionalIndex::after(orderOf(siblings.back()));
-}
-
-template <class Id>
-core::Error notFound(std::string_view what, const Id& id) {
-    return core::Error{ErrorCode::NotFound,
-                       std::string(what) + " " + id.toString() + " does not exist"};
-}
 
 using ElementSet = std::unordered_set<core::ElementId>;
 
@@ -97,8 +97,10 @@ void appendSectionRemoval(const Workspace& ws, const SectionInfo& section,
     out.push_back(removed(section));
 }
 
-Command makeCommand(std::string label, std::vector<AnyChange> changes) {
-    return Command{std::move(label), Patch(std::move(changes))};
+/// Pages of a section, for unlinking tasks before the pages go.
+void collectPages(const Workspace& ws, core::SectionId section, std::vector<core::PageId>& out) {
+    const auto pages = ws.pagesOf(section);
+    out.insert(out.end(), pages.begin(), pages.end());
 }
 
 } // namespace
@@ -147,7 +149,12 @@ Result<Command> deleteNotebook(const Workspace& workspace, core::NotebookId note
     if (current == nullptr) {
         return tl::unexpected(notFound("notebook", notebook));
     }
+    std::vector<core::PageId> pages;
+    for (const core::SectionId section : workspace.sectionsOf(notebook)) {
+        collectPages(workspace, section, pages);
+    }
     std::vector<AnyChange> changes;
+    appendTaskUnlinks(workspace, pages, changes);
     for (const core::SectionId section : workspace.sectionsOf(notebook)) {
         appendSectionRemoval(workspace, *workspace.findSection(section), changes);
     }
@@ -204,7 +211,10 @@ Result<Command> deleteSection(const Workspace& workspace, core::SectionId sectio
     if (current == nullptr) {
         return tl::unexpected(notFound("section", section));
     }
+    std::vector<core::PageId> pages;
+    collectPages(workspace, section, pages);
     std::vector<AnyChange> changes;
+    appendTaskUnlinks(workspace, pages, changes);
     appendSectionRemoval(workspace, *current, changes);
     return makeCommand("Delete section", std::move(changes));
 }
@@ -265,45 +275,12 @@ Result<Command> deletePage(const Workspace& workspace, core::PageId page) {
         return tl::unexpected(notFound("page", page));
     }
     std::vector<AnyChange> changes;
+    appendTaskUnlinks(workspace, std::span(&page, 1), changes);
     appendPageRemoval(workspace, *current, changes);
     return makeCommand("Delete page", std::move(changes));
 }
 
 // ---------------------------------------------------------------------------- ordering
-
-namespace {
-
-/// Order key that places `moved` at `index` among `siblings` (the destination's children,
-/// which may include `moved` itself). nullopt: it is already there (no-op).
-template <class Id, class OrderOf>
-Result<std::optional<FractionalIndex>> keyAt(std::span<const Id> siblings, Id moved,
-                                             std::size_t index, OrderOf orderOf) {
-    std::vector<Id> others;
-    others.reserve(siblings.size());
-    std::optional<std::size_t> current;
-    for (const Id id : siblings) {
-        if (id == moved) {
-            current = others.size();
-        } else {
-            others.push_back(id);
-        }
-    }
-    index = std::min(index, others.size());
-    if (current == index) {
-        return std::optional<FractionalIndex>{};
-    }
-    const std::optional<FractionalIndex> lower =
-        index > 0 ? std::optional(orderOf(others[index - 1])) : std::nullopt;
-    const std::optional<FractionalIndex> upper =
-        index < others.size() ? std::optional(orderOf(others[index])) : std::nullopt;
-    auto key = FractionalIndex::between(lower, upper);
-    if (!key) {
-        return tl::unexpected(key.error());
-    }
-    return std::optional(std::move(*key));
-}
-
-} // namespace
 
 Result<Command> moveNotebook(const Workspace& workspace, core::NotebookId notebook,
                              std::size_t index, const core::Clock& clock) {
@@ -568,24 +545,285 @@ Result<Command> moveElements(const Workspace& workspace, std::span<const core::E
         }
         changes.push_back(updated(element, std::move(after)));
     }
-    for (const core::PageId page : pagesOf(workspace, *ids)) {
-        for (const core::LayerId layer : workspace.layersOf(page)) {
-            for (const core::ElementId id : workspace.elementsOf(layer)) {
-                const Element& element = *workspace.findElement(id);
-                if (moved.contains(id) || !std::holds_alternative<Connector>(element.payload)) {
-                    continue;
-                }
-                Element after = element;
-                auto& connector = std::get<Connector>(after.payload);
-                const bool startFollows = follow(connector.start, false);
-                const bool endFollows = follow(connector.end, false);
-                if (startFollows || endFollows) {
-                    changes.push_back(updated(element, std::move(after)));
-                }
+    // Connectors attached to moved elements, from the workspace's attachment index: only
+    // those are touched (not a scan of the page). Sorted: the patch is deterministic.
+    std::vector<core::ElementId> attached;
+    for (const core::ElementId id : *ids) {
+        for (const core::ElementId connector : workspace.connectorsAttachedTo(id)) {
+            if (!moved.contains(connector)) {
+                attached.push_back(connector);
             }
         }
     }
+    std::sort(attached.begin(), attached.end());
+    attached.erase(std::unique(attached.begin(), attached.end()), attached.end());
+    for (const core::ElementId id : attached) {
+        const Element& element = *workspace.findElement(id);
+        Element after = element;
+        auto& connector = std::get<Connector>(after.payload);
+        const bool startFollows = follow(connector.start, false);
+        const bool endFollows = follow(connector.end, false);
+        if (startFollows || endFollows) {
+            changes.push_back(updated(element, std::move(after)));
+        }
+    }
     return makeCommand(label, std::move(changes));
+}
+
+Result<Command> splitStrokes(const Workspace& workspace, std::span<const StrokePieces> strokes,
+                             core::IdGenerator& ids) {
+    if (strokes.empty()) {
+        return makeError(ErrorCode::InvalidArgument, "no strokes given");
+    }
+    // The key of each stroke's next sibling bounds the keys of its extra pieces. It comes
+    // from one pass over each affected layer: O(layer elements + strokes), not a search per
+    // stroke.
+    std::unordered_map<core::ElementId, std::optional<FractionalIndex>> nextKey;
+    nextKey.reserve(strokes.size());
+    std::vector<core::LayerId> layers;
+    for (const StrokePieces& split : strokes) {
+        const Element* element = workspace.findElement(split.stroke);
+        if (element == nullptr) {
+            return tl::unexpected(notFound("element", split.stroke));
+        }
+        if (!std::holds_alternative<Stroke>(element->payload)) {
+            return makeError(ErrorCode::InvalidArgument,
+                             "element " + split.stroke.toString() + " is not a stroke");
+        }
+        if (!nextKey.try_emplace(split.stroke).second) {
+            return makeError(ErrorCode::InvalidArgument,
+                             "stroke " + split.stroke.toString() + " is given twice");
+        }
+        for (const StrokePoints& piece : split.pieces) {
+            if (!piece || piece->empty()) {
+                return makeError(ErrorCode::InvalidArgument, "a stroke piece has no points");
+            }
+        }
+        layers.push_back(element->layer);
+    }
+    std::sort(layers.begin(), layers.end());
+    layers.erase(std::unique(layers.begin(), layers.end()), layers.end());
+    for (const core::LayerId layer : layers) {
+        const auto order = workspace.elementsOf(layer);
+        for (std::size_t i = 0; i + 1 < order.size(); ++i) {
+            if (const auto it = nextKey.find(order[i]); it != nextKey.end()) {
+                it->second = workspace.findElement(order[i + 1])->z;
+            }
+        }
+    }
+
+    std::vector<AnyChange> changes;
+    std::vector<core::ElementId> erased;
+    for (const StrokePieces& split : strokes) {
+        const Element& element = *workspace.findElement(split.stroke);
+        if (split.pieces.empty()) {
+            erased.push_back(split.stroke);
+            continue;
+        }
+        const auto& stroke = std::get<Stroke>(element.payload);
+        const auto pieceOf = [&](const StrokePoints& points) {
+            return Stroke{.brush = stroke.brush,
+                          .color = stroke.color,
+                          .baseWidth = stroke.baseWidth,
+                          .points = points};
+        };
+        Element first = element;
+        first.payload = pieceOf(split.pieces.front());
+        changes.push_back(updated(element, std::move(first)));
+        FractionalIndex lower = element.z;
+        const std::optional<FractionalIndex>& upper = nextKey.at(split.stroke);
+        for (std::size_t k = 1; k < split.pieces.size(); ++k) {
+            auto key = FractionalIndex::between(lower, upper);
+            if (!key) {
+                return tl::unexpected(key.error());
+            }
+            lower = *key;
+            changes.push_back(created(Element{.id = core::ElementId::generate(ids),
+                                              .layer = element.layer,
+                                              .z = std::move(*key),
+                                              .transform = element.transform,
+                                              .locked = element.locked,
+                                              .payload = pieceOf(split.pieces[k])}));
+        }
+    }
+    if (!erased.empty()) {
+        for (const core::PageId page : pagesOf(workspace, erased)) {
+            ElementSet doomed;
+            for (const core::ElementId id : erased) {
+                if (*workspace.pageOf(id) == page) {
+                    doomed.insert(id);
+                }
+            }
+            appendElementRemovals(workspace, page, doomed, changes);
+        }
+    }
+    return makeCommand("Erase", std::move(changes));
+}
+
+Result<Command> editText(const Workspace& workspace, core::ElementId element, std::string text,
+                         core::Vec2 size) {
+    const Element* current = workspace.findElement(element);
+    if (current == nullptr) {
+        return tl::unexpected(notFound("element", element));
+    }
+    const auto* box = std::get_if<TextBox>(&current->payload);
+    if (box == nullptr) {
+        return makeError(ErrorCode::InvalidArgument,
+                         "element " + element.toString() + " is not a text box");
+    }
+    if (box->text == text && box->size == size) {
+        return Command{"Edit text", Patch{}};
+    }
+    Element after = *current;
+    after.payload = TextBox{.size = size, .text = std::move(text)};
+    return makeCommand("Edit text", {updated(*current, std::move(after))});
+}
+
+Result<Command> setConnectorEnds(const Workspace& workspace, core::ElementId connector,
+                                 ConnectorEnd start, ConnectorEnd end) {
+    const Element* current = workspace.findElement(connector);
+    if (current == nullptr) {
+        return tl::unexpected(notFound("element", connector));
+    }
+    const auto* before = std::get_if<Connector>(&current->payload);
+    if (before == nullptr) {
+        return makeError(ErrorCode::InvalidArgument,
+                         "element " + connector.toString() + " is not a connector");
+    }
+    for (const ConnectorEnd* e : {&start, &end}) {
+        if (!std::isfinite(e->position.x) || !std::isfinite(e->position.y)) {
+            return makeError(ErrorCode::InvalidArgument, "connector ends must be finite");
+        }
+    }
+    if (before->start == start && before->end == end) {
+        return Command{"Edit connector", Patch{}};
+    }
+    Element after = *current;
+    auto& payload = std::get<Connector>(after.payload);
+    payload.start = start;
+    payload.end = end;
+    return makeCommand("Edit connector", {updated(*current, std::move(after))});
+}
+
+Result<Created<std::vector<core::ElementId>>>
+pasteElements(const Workspace& workspace, core::LayerId layer, std::span<const Element> elements,
+              core::DVec2 offset, core::IdGenerator& ids) {
+    if (workspace.findLayer(layer) == nullptr) {
+        return tl::unexpected(notFound("layer", layer));
+    }
+    if (elements.empty()) {
+        return makeError(ErrorCode::InvalidArgument, "nothing to paste");
+    }
+    if (!std::isfinite(offset.x) || !std::isfinite(offset.y)) {
+        return makeError(ErrorCode::InvalidArgument, "a paste needs a finite offset");
+    }
+    // Old id -> copy id, for re-attaching connectors among the copies (temporary, O(n)).
+    std::unordered_map<core::ElementId, core::ElementId> copyOf;
+    copyOf.reserve(elements.size());
+    std::vector<core::ElementId> pasted;
+    pasted.reserve(elements.size());
+    for (const Element& element : elements) {
+        const core::ElementId id = core::ElementId::generate(ids);
+        if (!copyOf.try_emplace(element.id, id).second) {
+            return makeError(ErrorCode::InvalidArgument,
+                             "element " + element.id.toString() + " is pasted twice");
+        }
+        pasted.push_back(id);
+    }
+    const auto siblings = workspace.elementsOf(layer);
+    std::optional<FractionalIndex> lower;
+    if (!siblings.empty()) {
+        lower = workspace.findElement(siblings.back())->z;
+    }
+    // Connectors are created after everything else: a connector may lie below the element it
+    // is attached to, and the workspace checks each change against those before it.
+    std::vector<AnyChange> changes;
+    changes.reserve(elements.size());
+    std::vector<AnyChange> connectors;
+    for (std::size_t i = 0; i < elements.size(); ++i) {
+        Element copy = elements[i];
+        copy.id = pasted[i];
+        copy.layer = layer;
+        copy.z = lower ? FractionalIndex::after(*lower) : FractionalIndex::first();
+        lower = copy.z;
+        if (auto* connector = std::get_if<Connector>(&copy.payload)) {
+            for (ConnectorEnd* end : {&connector->start, &connector->end}) {
+                end->position += offset;
+                if (end->attachedTo) {
+                    const auto it = copyOf.find(*end->attachedTo);
+                    end->attachedTo = it != copyOf.end() ? std::optional{it->second} : std::nullopt;
+                }
+            }
+            connectors.push_back(created(std::move(copy)));
+        } else {
+            copy.transform.position += offset;
+            changes.push_back(created(std::move(copy)));
+        }
+    }
+    std::move(connectors.begin(), connectors.end(), std::back_inserter(changes));
+    return Created<std::vector<core::ElementId>>{std::move(pasted),
+                                                 makeCommand("Paste", std::move(changes))};
+}
+
+Result<Command> resizeElement(const Workspace& workspace, core::ElementId element,
+                              Transform transform, core::Vec2 size) {
+    const Element* current = workspace.findElement(element);
+    if (current == nullptr) {
+        return tl::unexpected(notFound("element", element));
+    }
+    if (!std::isfinite(size.x) || !std::isfinite(size.y) || size.x < 0.0F || size.y < 0.0F ||
+        !std::isfinite(transform.position.x) || !std::isfinite(transform.position.y)) {
+        return makeError(ErrorCode::InvalidArgument, "a resized element needs a finite size");
+    }
+    Element after = *current;
+    after.transform = transform;
+    const bool resizable = std::visit(
+        [&](auto& payload) {
+            using T = std::decay_t<decltype(payload)>;
+            if constexpr (std::is_same_v<T, Shape> || std::is_same_v<T, Image> ||
+                          std::is_same_v<T, TextBox>) {
+                payload.size = size;
+                return true;
+            } else {
+                return false;
+            }
+        },
+        after.payload);
+    if (!resizable) {
+        return makeError(ErrorCode::InvalidArgument,
+                         "element " + element.toString() + " cannot be resized");
+    }
+    if (after == *current) {
+        return Command{"Resize element", Patch{}};
+    }
+    std::vector<AnyChange> changes;
+    // Attached connector ends keep their relative place on the element's bounds.
+    const core::DRect from = worldBounds(*current);
+    const core::DRect to = worldBounds(after);
+    const auto map = [&](core::DVec2 p) {
+        const auto axis = [](double v, double min0, double size0, double min1, double size1) {
+            return size0 > 0.0 ? min1 + (v - min0) * (size1 / size0) : min1 + size1 * 0.5;
+        };
+        return core::DVec2{axis(p.x, from.min.x, from.width(), to.min.x, to.width()),
+                           axis(p.y, from.min.y, from.height(), to.min.y, to.height())};
+    };
+    std::vector<core::ElementId> attached(workspace.connectorsAttachedTo(element).begin(),
+                                          workspace.connectorsAttachedTo(element).end());
+    std::sort(attached.begin(), attached.end());
+    attached.erase(std::unique(attached.begin(), attached.end()), attached.end());
+    changes.push_back(updated(*current, std::move(after)));
+    for (const core::ElementId id : attached) {
+        const Element& link = *workspace.findElement(id);
+        Element moved = link;
+        auto& connector = std::get<Connector>(moved.payload);
+        for (ConnectorEnd* end : {&connector.start, &connector.end}) {
+            if (end->attachedTo == element) {
+                end->position = map(end->position);
+            }
+        }
+        changes.push_back(updated(link, std::move(moved)));
+    }
+    return makeCommand("Resize element", std::move(changes));
 }
 
 } // namespace studyapp::document::commands

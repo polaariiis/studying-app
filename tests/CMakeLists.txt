@@ -6,6 +6,7 @@
 
 add_subdirectory(support)
 add_subdirectory(core)
+add_subdirectory(study)
 add_subdirectory(document)
 add_subdirectory(render)
 add_subdirectory(canvas)

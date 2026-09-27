@@ -19,3 +19,20 @@ if(WIN32)
     set_property(TEST platform.QtWorkspaceLockerTest APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()
+
+add_executable(platform_timezone_tests QtTimeZoneTest.cpp)
+target_link_libraries(platform_timezone_tests PRIVATE
+    studyapp::platform
+    Qt6::Core
+    Qt6::Test
+    studyapp_project_options
+    studyapp_warnings)
+target_compile_features(platform_timezone_tests PRIVATE cxx_std_20)
+studyapp_enable_qt(platform_timezone_tests)
+set_target_properties(platform_timezone_tests PROPERTIES FOLDER "tests")
+add_test(NAME platform.QtTimeZoneTest COMMAND platform_timezone_tests)
+set_tests_properties(platform.QtTimeZoneTest PROPERTIES LABELS integration)
+if(WIN32)
+    set_property(TEST platform.QtTimeZoneTest APPEND PROPERTY ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()

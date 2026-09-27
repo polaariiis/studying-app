@@ -210,9 +210,26 @@ Phase 9 (driven by profiling, same public API):
   distance-to-edge vertex attribute, the `aa` field reserved in `Vertex`) is the planned
   upgrade if MSAA cost or quality on thin strokes is insufficient.
 * **Highlighter / translucent strokes**: tessellated strokes overlap themselves at joins,
-  which darkens translucent ink. Each translucent stroke is drawn with a stencil test
-  ("write once per stroke": increment on first write, reject further writes, clear per
-  stroke or use alternating stencil values). Opaque strokes don't need it.
+  caps and loops, which darkens translucent ink. Planned as a per-stroke stencil test;
+  *implemented (Phase 6, step 2) with the depth buffer instead*, because the stencil
+  reference is per draw call and batches (D31) draw up to 256 strokes in one call. Every
+  content part — each draw item, and each part of a batch mesh (`MeshData::parts`, one
+  number per member mesh part) — gets its own depth, increasing in painter's order, and is
+  drawn with depth test "greater" and depth writes on (depth cleared to 0 per frame): a
+  part's own later fragments are rejected, later parts pass. So each part colours a pixel
+  once, the same drawn element by element or batched; separate translucent strokes still
+  blend over each other (they build up where they cross), and opaque content looks exactly
+  as before. Window depth of part k is (k + 1) / 2²⁰ — ≈ 16 units apart in a 24-bit depth
+  buffer, exact in float; a frame with more parts clears the depth buffer and starts over.
+  `solid.vert` turns the part number into depth (`uFirstPart` per item, `aPart` per vertex
+  for batches); `CanvasWidget` requests a 24-bit depth buffer, and the renderer checks the
+  framebuffer it draws into: with fewer than 24 bits it draws without the rule (only the
+  self-overlap suppression is lost). Normal (straight) alpha blending: a highlighter tints
+  the ink under it rather than multiplying, which also works on dark paper (§8). No
+  `Material::Highlighter` was needed. Measured cost: part numbers add 4 bytes per batched
+  vertex (7.6 MB on ≈ 50 MB of batch meshes for a whole 10 000-stroke page); the first
+  frame of that page 148 → 155 ms and zoom frames 5.75 → 5.78 ms median (release, within
+  run-to-run noise).
 
 ### 6.6 Frame loop
 
@@ -282,6 +299,12 @@ backend target — nothing in `canvas`, `document` or `persistence`.
 
 ## 12. Phase 4 implementation notes
 
+* **Textures** *(Phase 6, step 5)*: `createTexture(ImageData)` / `destroyTexture` (RGBA8
+  premultiplied, linear + mipmaps, clamp) and `DrawItem::texture`: a textured item draws
+  the unit square [0, 1]² through its transform with the `textured` program (converts to
+  straight alpha for the content blend, applies the dark-paper transform, and takes a depth
+  part like any content item). Programs switch only between consecutive items of different
+  kinds.
 * **API subset** (§3): meshes only — `createMesh`/`updateMesh`/`destroyMesh`, `render`,
   `lastFrameStats`, `releaseAll`. Textures, materials other than solid, and
   `ColorTransform` beyond `InvertLightness` arrive with their content (Phases 6/8).

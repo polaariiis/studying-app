@@ -7,6 +7,7 @@
 #include <studyapp/document/Element.hpp>
 #include <studyapp/render/Renderer.hpp>
 
+#include <span>
 #include <vector>
 
 namespace studyapp::canvas {
@@ -22,6 +23,7 @@ namespace studyapp::canvas {
 
 /// Radius (half width, local units) of a stroke at `pressure` in [0, 1]. Pressure scales
 /// the width between 30 % and 100 % of `baseWidth`; devices without pressure report 1.
+/// Highlighter strokes (document::Brush::Highlighter) keep the full width at any pressure.
 [[nodiscard]] float strokeRadius(const document::Stroke& stroke, float pressure) noexcept;
 
 /// One single-colour mesh of an element, in the space meshToWorld() maps from.
@@ -30,10 +32,25 @@ struct MeshPart {
     core::Color color;
 };
 
+/// Mesh of a run of stroke points in `stroke`'s style (width, pressure response), in the
+/// points' space. Used for stroke elements and for pieces a partial erase leaves.
+[[nodiscard]] render::MeshData tessellateStrokePoints(const document::Stroke& stroke,
+                                                      std::span<const document::StrokePoint> points,
+                                                      float pixelsPerUnit);
+
 /// Meshes of an element. `pixelsPerUnit` (view pixels per world unit, bucketed by the
 /// caller) only affects how round caps, joins and ellipses are subdivided.
 [[nodiscard]] std::vector<MeshPart> buildElementMeshes(const document::Element& element,
                                                        float pixelsPerUnit);
+
+/// World bounds of what the element draws: document::worldBounds() plus the ink outside
+/// the element's box (half a shape's outline width, an arrowhead). Used by the scene for
+/// culling, spatial queries and selection frames.
+[[nodiscard]] core::DRect visualBounds(const document::Element& element);
+
+/// Where a connector attached to `target` meets it: the point where the ray from the
+/// centre of its visual bounds towards `towards` (world) leaves those bounds.
+[[nodiscard]] core::DVec2 attachPoint(const document::Element& target, const core::DVec2& towards);
 
 /// Transform from the space of buildElementMeshes() to world: the element transform, or
 /// for connectors (defined by world end positions) a translation to the start point.

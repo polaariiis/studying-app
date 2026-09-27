@@ -39,6 +39,8 @@ public:
     [[nodiscard]] render::MeshHandle createMesh(const render::MeshData& mesh) override;
     void updateMesh(render::MeshHandle handle, const render::MeshData& mesh) override;
     void destroyMesh(render::MeshHandle handle) override;
+    [[nodiscard]] render::TextureHandle createTexture(const render::ImageData& image) override;
+    void destroyTexture(render::TextureHandle handle) override;
 
     void render(const render::RenderFrame& frame) override;
     [[nodiscard]] render::RenderStats lastFrameStats() const noexcept override;

@@ -9,6 +9,8 @@
 #include <studyapp/core/Log.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/platform/QtLogSink.hpp>
+#include <studyapp/platform/QtTextLayout.hpp>
+#include <studyapp/platform/QtTimeZone.hpp>
 #include <studyapp/platform/QtWorkspaceLocker.hpp>
 #include <studyapp/ui/AppIcon.hpp>
 #include <studyapp/ui/MainWindow.hpp>
@@ -139,7 +141,11 @@ int main(int argc, char* argv[]) {
     studyapp::platform::QtWorkspaceLocker locker;
 
     const studyapp::ui::ShellServices services{.clock = clock, .ids = ids, .locker = locker};
+    studyapp::platform::QtTextLayout textLayout;   // outlives the window
+    const studyapp::platform::QtTimeZone timeZone; // the system zone, for the planner
     auto window = std::make_unique<studyapp::ui::MainWindow>(themes, settings, services);
+    window->setTextLayout(&textLayout);
+    window->setTimeZone(&timeZone);
     // Development runs (benchmarks, screenshots) leave the recent/start-up workspace alone.
     window->setRememberWorkspaces(!parser.isSet(generateOption) && !parser.isSet(panOption) &&
                                   !parser.isSet(screenshotOption));

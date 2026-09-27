@@ -22,4 +22,6 @@ qt_add_resources(studyapp_render_gl "studyapp_shaders"
         "${_studyapp_shader_dir}/pattern.frag"
         "${_studyapp_shader_dir}/pattern.vert"
         "${_studyapp_shader_dir}/solid.frag"
-        "${_studyapp_shader_dir}/solid.vert")
+        "${_studyapp_shader_dir}/solid.vert"
+        "${_studyapp_shader_dir}/textured.frag"
+        "${_studyapp_shader_dir}/textured.vert")

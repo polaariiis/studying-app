@@ -5,6 +5,7 @@ studyapp_add_gtest(document_tests
         EditorTest.cpp
         ElementTest.cpp
         PatchTest.cpp
+        StudyCommandsTest.cpp
         WorkspaceTest.cpp
     LIBS
         studyapp::document

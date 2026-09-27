@@ -9,15 +9,21 @@ endif()
 studyapp_add_module(platform
     SOURCES
         include/studyapp/platform/QtLogSink.hpp
+        include/studyapp/platform/QtTextLayout.hpp
+        include/studyapp/platform/QtTimeZone.hpp
         include/studyapp/platform/QtWorkspaceLocker.hpp
         src/QtLogSink.cpp
+        src/QtTextLayout.cpp
+        src/QtTimeZone.cpp
         src/QtWorkspaceLocker.cpp
         src/os/ProcessInfo.hpp
         ${_studyapp_platform_os_sources}
     PUBLIC_DEPS
         studyapp::application
         studyapp::canvas
+        studyapp::study
     PRIVATE_DEPS
         Qt6::Core
+        Qt6::Gui
 )
 studyapp_enable_qt(studyapp_platform)
