@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Integration branches of a phase run CI before they are merged to main.
+    branches: [main, 'phase-*']
   pull_request:
   workflow_dispatch:
 
