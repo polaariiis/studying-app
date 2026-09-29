@@ -53,5 +53,9 @@ else()
         -Wimplicit-fallthrough
         -Wmissing-declarations
         $<$<CXX_COMPILER_ID:GNU>:-Wduplicated-cond -Wlogical-op>
+        # GCC 13 (Ubuntu 24.04) reports designated initializers that leave members to their
+        # default member initializers as "missing" (-Wextra); the code relies on those
+        # defaults deliberately (`{.id = …, .title = …}`). GCC 14 and Clang do not warn.
+        $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers>
         $<$<BOOL:${STUDYAPP_WARNINGS_AS_ERRORS}>:-Werror>)
 endif()

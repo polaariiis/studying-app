@@ -65,6 +65,12 @@ function(studyapp_add_gtest name)
         ${arg_LIBS} GTest::gtest GTest::gtest_main studyapp_project_options studyapp_warnings)
     target_compile_features(${name} PRIVATE cxx_std_20)
     set_target_properties(${name} PROPERTIES FOLDER "tests")
+    if(APPLE)
+        # GoogleTest prints std::chrono values (dates) through libc++'s formatter, which
+        # libc++ marks as macOS 13.3+. Test executables run only on the build machine, so
+        # they opt out of the availability markup; the application keeps its 13.0 target.
+        target_compile_definitions(${name} PRIVATE _LIBCPP_DISABLE_AVAILABILITY)
+    endif()
 
     # PRE_TEST discovery runs the executable at test time, not at build time, so builds
     # don't depend on runtime DLL paths.
