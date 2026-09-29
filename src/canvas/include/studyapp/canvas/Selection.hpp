@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -20,15 +21,22 @@ public:
     [[nodiscard]] bool contains(core::ElementId id) const noexcept {
         return std::binary_search(ids_.begin(), ids_.end(), id);
     }
+    /// Changes whenever the selected ids may have changed (caches of derived data compare it).
+    [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
 
-    void clear() noexcept { ids_.clear(); }
+    void clear() noexcept {
+        ids_.clear();
+        ++revision_;
+    }
     void set(std::vector<core::ElementId> ids) {
         ids_ = std::move(ids);
         normalise();
+        ++revision_;
     }
     void add(core::ElementId id) {
         if (!contains(id)) {
             ids_.insert(std::lower_bound(ids_.begin(), ids_.end(), id), id);
+            ++revision_;
         }
     }
     void toggle(core::ElementId id) {
@@ -38,13 +46,17 @@ public:
         } else {
             ids_.insert(it, id);
         }
+        ++revision_;
     }
     /// Drops ids for which `exists` returns false (after a patch removed elements).
     template <class Predicate>
     void retainIf(Predicate exists) {
-        ids_.erase(std::remove_if(ids_.begin(), ids_.end(),
-                                  [&](core::ElementId id) { return !exists(id); }),
-                   ids_.end());
+        const auto end = std::remove_if(ids_.begin(), ids_.end(),
+                                        [&](core::ElementId id) { return !exists(id); });
+        if (end != ids_.end()) {
+            ids_.erase(end, ids_.end());
+            ++revision_;
+        }
     }
 
 private:
@@ -54,6 +66,7 @@ private:
     }
 
     std::vector<core::ElementId> ids_;
+    std::uint64_t revision_ = 0;
 };
 
 } // namespace studyapp::canvas

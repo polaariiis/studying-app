@@ -1398,23 +1398,40 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
         }
     }
 
-    // Overlays in view space.
+    // Overlays in view space. Selection outlines are built for the current zoom relative to
+    // an anchor and only translated while panning: rebuilding 10 000 of them per frame cost
+    // ≈ 8 ms (docs/PERFORMANCE.md).
     if (!selection_.empty()) {
-        render::MeshData mesh;
-        mesh.vertices.reserve(8 * selection_.size()); // one 8-vertex outline per element
-        mesh.indices.reserve(24 * selection_.size());
         const core::DVec2 offset = preview_->moving ? preview_->moveOffset : core::DVec2{};
-        for (const core::ElementId id : selection_.ids()) {
-            if (const SceneEntry* entry = scene_.find(id)) {
-                const core::Rect view = viewRectOf(camera_, entry->bounds.translated(offset));
-                render::appendMesh(mesh, render::tessellateRectOutline(
-                                             view.expanded(static_cast<float>(kSelectionPaddingPx)),
-                                             kOverlayHalfWidthPx));
+        const SelectionOutlineKey key{.selection = selection_.revision(),
+                                      .scene = scene_.generation(),
+                                      .zoom = camera_.zoom(),
+                                      .offset = offset};
+        if (!(selectionOutlineKey_ && *selectionOutlineKey_ == key && selectionMesh_.isValid())) {
+            render::MeshData mesh;
+            mesh.vertices.reserve(8 * selection_.size()); // one 8-vertex outline per element
+            mesh.indices.reserve(24 * selection_.size());
+            for (const core::ElementId id : selection_.ids()) {
+                if (const SceneEntry* entry = scene_.find(id)) {
+                    const core::Rect view = viewRectOf(camera_, entry->bounds.translated(offset));
+                    render::appendMesh(mesh,
+                                       render::tessellateRectOutline(
+                                           view.expanded(static_cast<float>(kSelectionPaddingPx)),
+                                           kOverlayHalfWidthPx));
+                }
             }
+            selectionOutlineAnchor_ = camera_.center();
+            selectionOutlineAnchorView_ = camera_.worldToView(selectionOutlineAnchor_);
+            selectionOutlineKey_ =
+                uploadScratch(renderer, selectionMesh_, mesh) ? std::optional(key) : std::nullopt;
         }
-        if (uploadScratch(renderer, selectionMesh_, mesh)) {
-            overlay_.push_back(
-                {.mesh = selectionMesh_, .transform = {}, .color = colors_.selection});
+        if (selectionOutlineKey_) {
+            // Where the anchor is on screen now, relative to where the mesh was built.
+            const core::DVec2 shift =
+                camera_.worldToView(selectionOutlineAnchor_) - selectionOutlineAnchorView_;
+            overlay_.push_back({.mesh = selectionMesh_,
+                                .transform = core::Affine2::translation(shift).cast<float>(),
+                                .color = colors_.selection});
         }
     }
     // Handles of a single selected element (view space).

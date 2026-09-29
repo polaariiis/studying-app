@@ -29,6 +29,7 @@ public:
     void updateMesh(render::MeshHandle handle, const render::MeshData& mesh) override {
         if (meshes.contains(handle.index)) {
             meshes[handle.index] = mesh;
+            ++updated;
         }
     }
     void destroyMesh(render::MeshHandle handle) override {
@@ -69,6 +70,7 @@ public:
     std::pair<int, int> framebuffer{};
     std::size_t created = 0;
     std::size_t destroyed = 0;
+    std::size_t updated = 0; ///< updateMesh calls on live meshes
     std::size_t frames = 0;
 
 private:

@@ -581,6 +581,42 @@ TEST(CanvasControllerTest, BackgroundComesFromThePage) {
     EXPECT_EQ(f.renderer.lastBackground.pattern, render::BackgroundPattern::None);
 }
 
+TEST(CanvasControllerTest, SelectionOutlinesAreTranslatedWhilePanning) {
+    CanvasFixture f;
+    for (int i = 0; i < 20; ++i) {
+        f.pointer(PointerPhase::Down, {100.0 + 20 * i, 100});
+        f.pointer(PointerPhase::Move, {110.0 + 20 * i, 140});
+        f.pointer(PointerPhase::Up, {110.0 + 20 * i, 140});
+    }
+    f.controller.selectAll();
+    (void)f.frame();
+    ASSERT_EQ(f.renderer.lastOverlay.size(), 1U);
+    const render::DrawItem built = f.renderer.lastOverlay.front();
+    const std::size_t updates = f.renderer.updated;
+    const std::size_t creates = f.renderer.created;
+    const core::DVec2 before = f.controller.camera().worldToView({0.0, 0.0});
+    // Panning: the same mesh, not rebuilt, shifted exactly as the content moved.
+    f.controller.panBy({37.0, -21.0});
+    (void)f.frame();
+    ASSERT_EQ(f.renderer.lastOverlay.size(), 1U);
+    const render::DrawItem panned = f.renderer.lastOverlay.front();
+    EXPECT_EQ(panned.mesh.index, built.mesh.index);
+    EXPECT_EQ(f.renderer.updated, updates);
+    EXPECT_EQ(f.renderer.created, creates);
+    const core::DVec2 moved = f.controller.camera().worldToView({0.0, 0.0}) - before;
+    EXPECT_NEAR(panned.transform.tx - built.transform.tx, moved.x, 1e-3);
+    EXPECT_NEAR(panned.transform.ty - built.transform.ty, moved.y, 1e-3);
+    // Zooming or changing the selection rebuilds it.
+    f.controller.zoomBy(1.5);
+    (void)f.frame();
+    EXPECT_GT(f.renderer.updated + f.renderer.created, updates + creates);
+    const std::size_t afterZoom = f.renderer.updated + f.renderer.created;
+    f.controller.onKey({.key = Key::Escape}); // clears the selection
+    f.controller.selectAll();
+    (void)f.frame();
+    EXPECT_GT(f.renderer.updated + f.renderer.created, afterZoom);
+}
+
 TEST(CanvasControllerTest, GraphicsResetReuploadsFromCpuCaches) {
     SelectionFixture f;
     f.frame();
@@ -1853,9 +1889,11 @@ TEST(CanvasControllerTest, MovingAnElementTouchesOnlyItsOwnConnectors) {
     for (int i = 0; i < 1000; i += 2) {
         auto created = document::commands::createElement(
             f.doc.workspace, f.layer,
-            {.payload = document::Connector{
-                 .start = {.position = {}, .attachedTo = boxes[static_cast<std::size_t>(i)]},
-                 .end = {.position = {}, .attachedTo = boxes[static_cast<std::size_t>(i) + 1]}}},
+            {.payload =
+                 document::Connector{
+                     .start = {.position = {}, .attachedTo = boxes[static_cast<std::size_t>(i)]},
+                     .end = {.position = {},
+                             .attachedTo = boxes[static_cast<std::size_t>(i) + 1]}}},
             f.doc.ids);
         ASSERT_OK(created);
         ASSERT_OK(f.port.execute(std::move(created->command)));

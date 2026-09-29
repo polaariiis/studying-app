@@ -350,6 +350,18 @@ private:
     bool documentTilesPending_ = false;
     std::vector<DocumentTileKey> wantedTiles_;           ///< tiles asked for this frame (reused)
     std::vector<RenderCache::Request> prebuildRequests_; ///< reused per frame
+    /// What the selection outline mesh was built for; it is only translated while panning.
+    struct SelectionOutlineKey {
+        std::uint64_t selection = 0;
+        std::uint64_t scene = 0;
+        double zoom = 0.0;
+        core::DVec2 offset{};
+        [[nodiscard]] friend bool operator==(const SelectionOutlineKey&,
+                                             const SelectionOutlineKey&) = default;
+    };
+    std::optional<SelectionOutlineKey> selectionOutlineKey_;
+    core::DVec2 selectionOutlineAnchor_{};     ///< world
+    core::DVec2 selectionOutlineAnchorView_{}; ///< view, when the mesh was built
 
     // Text.
     struct TextTexture {
