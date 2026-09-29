@@ -104,6 +104,12 @@ importNotebooks(const Workspace& workspace, const Workspace& source,
                 const std::unordered_map<core::AssetId, core::AssetId>& assets,
                 core::IdGenerator& ids);
 
+/// A patch that creates every record of `workspace` — in an order Workspace::apply accepts
+/// (parents, tags and attachment targets first) — so that applying it to an empty workspace
+/// with the same info reproduces `workspace` exactly. Used to write a workspace held in
+/// memory to a new file ("Save a Copy", Phase 9). O(records).
+[[nodiscard]] Patch creationPatch(const Workspace& workspace);
+
 // ---- ordering -------------------------------------------------------------------------
 // Moves change only the record's parent, order key and modified time; the subtree moves
 // with it. `index` is the position among the destination's children once the record is

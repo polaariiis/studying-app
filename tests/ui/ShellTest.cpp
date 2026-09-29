@@ -816,6 +816,32 @@ private Q_SLOTS:
                 subtitle->mapTo(welcome, QPoint(0, subtitle->height())).y());
     }
 
+    // P3-01, Phase 9: when writes keep failing, "Save a Copy" writes everything — the
+    // unsaved changes too — into a new workspace, closes the failing one and opens the copy.
+    void unsavedChangesCanBeSavedAsACopy() {
+        Shell shell(settings(QStringLiteral("savecopy")));
+        const auto path = freshPath(QStringLiteral("Failing"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const auto page = *shell.window->activePage();
+        const auto layer = shell.ws().layersOf(page).front();
+        injectWriteFailure(path, true);
+        auto note = document::commands::createElement(
+            shell.ws(), layer,
+            {.payload = document::TextBox{.size = {200, 40}, .text = "only in memory"}}, shell.ids);
+        QVERIFY(note.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(note->command)).has_value());
+        QVERIFY(shell.window->session()->pendingWriteCount() > 0);
+        const auto copy = freshPath(QStringLiteral("Rescued"));
+        shell.dialogs->unsaved = ScriptedDialogs::UnsavedChoice::SaveCopy;
+        shell.dialogs->newWorkspace = copy;
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->session() != nullptr);
+        QCOMPARE(shell.window->session()->root(), copy);
+        QVERIFY(shell.ws().findElement(note->id) != nullptr);
+        QCOMPARE(shell.window->session()->pendingWriteCount(), std::size_t{0});
+        injectWriteFailure(path, false);
+    }
+
     void failedWritesAreNeverClosedOverSilently() {
         Shell shell(settings(QStringLiteral("unsaved")));
         const auto path = freshPath(QStringLiteral("Unsaved"));

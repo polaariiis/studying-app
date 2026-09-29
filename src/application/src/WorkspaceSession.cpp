@@ -698,6 +698,52 @@ Result<std::vector<persistence::BundleAsset>> bundleAssetsOf(persistence::AssetS
 
 } // namespace
 
+Result<void> WorkspaceSession::saveCopy(const std::filesystem::path& root) {
+    if (impl_->closed) {
+        return makeError(ErrorCode::Unsupported, "the workspace session is closed");
+    }
+    if (isInside(root, impl_->root)) {
+        return makeError(ErrorCode::InvalidArgument,
+                         "a copy cannot be saved inside the workspace directory");
+    }
+    const document::Workspace& ws = impl_->workspace;
+    document::WorkspaceInfo info = ws.info();
+    info.id = core::WorkspaceId::generate(*impl_->ids);
+    auto file = persistence::WorkspaceFile::create(root, info, core::build::kVersion);
+    if (!file) {
+        return forward(file);
+    }
+    // Assets keep their ids (the records reference them); files are copied and re-hashed.
+    persistence::AssetStore assets(file->database(), root);
+    std::vector<core::AssetId> used;
+    for (const core::NotebookId notebook : ws.notebooks()) {
+        const auto ofNotebook = assetsOf(ws, notebook);
+        used.insert(used.end(), ofNotebook.begin(), ofNotebook.end());
+    }
+    std::sort(used.begin(), used.end());
+    used.erase(std::unique(used.begin(), used.end()), used.end());
+    for (const core::AssetId asset : used) {
+        auto row = impl_->assets.find(asset);
+        auto path = impl_->assets.pathOf(asset);
+        if (!row || !*row || !path) {
+            return makeError(ErrorCode::NotFound, "asset " + asset.toString() + " is missing");
+        }
+        auto staged = persistence::AssetStore::stage(root, *path, asset.toString());
+        if (!staged) {
+            return forward(staged);
+        }
+        if (auto stored = assets.commit(*staged, (*row)->mediaType, asset, *impl_->clock);
+            !stored) {
+            return forward(stored);
+        }
+    }
+    persistence::WorkspaceStore store(file->database(), *impl_->clock);
+    if (auto written = store.write(document::commands::creationPatch(ws)); !written) {
+        return written;
+    }
+    return file->close();
+}
+
 bool WorkspaceSession::isInsideWorkspace(const std::filesystem::path& path) const {
     return isInside(path, impl_->root);
 }

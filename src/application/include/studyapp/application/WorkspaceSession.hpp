@@ -163,6 +163,11 @@ public:
     /// Writes a snapshot of the database to backups/ now (after flushing) and rotates old
     /// ones; returns the snapshot's path. Errors: Unsupported (read-only or closed), IoError.
     [[nodiscard]] core::Result<std::filesystem::path> backUpNow();
+    /// Writes the workspace as it is in memory — including changes that could not be saved
+    /// — into a new workspace directory `root` (missing or empty) with the assets it uses
+    /// (P3-01: the way out when this workspace's storage keeps failing). The copy is a new
+    /// workspace (new id, same name). Only reads this workspace's files.
+    [[nodiscard]] core::Result<void> saveCopy(const std::filesystem::path& root);
     /// Checks the database (`PRAGMA integrity_check`) and every asset file (exists, size,
     /// SHA-256). Only reads.
     [[nodiscard]] core::Result<IntegrityReport> checkIntegrity();

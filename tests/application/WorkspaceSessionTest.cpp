@@ -435,6 +435,42 @@ TEST_F(WorkspaceSessionTest, FailedCommandsChangeNothing) {
 
 // ---------------------------------------------------------------------------- write failures
 
+TEST_F(WorkspaceSessionTest, SaveCopyKeepsChangesTheDatabaseRefused) {
+    auto session = create();
+    ASSERT_NE(session, nullptr);
+    const auto layer = addPath(*session);
+    const auto source = dir / "photo.png";
+    std::ofstream(source, std::ios::binary) << "image bytes";
+    auto asset = session->importAsset(source, "image/png");
+    ASSERT_OK(asset);
+    addElement(*session, layer, document::Image{.asset = *asset, .size = {40, 30}});
+    {
+        auto other =
+            persistence::Database::open(root() / "workspace.db", persistence::OpenMode::ReadWrite);
+        ASSERT_OK(other);
+        ASSERT_OK(other->execute("CREATE TRIGGER inject_failure BEFORE INSERT ON element "
+                                 "BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;"));
+    }
+    const auto unsaved = addElement(*session, layer, makeText("only in memory"));
+    ASSERT_EQ(session->pendingWriteCount(), 1U);
+    // Not inside the failing workspace; then into a new directory.
+    EXPECT_FALSE(session->saveCopy(root() / "copy").has_value());
+    const auto copyRoot = dir / "Rescued.studyws";
+    ASSERT_OK(session->saveCopy(copyRoot));
+    auto copy = WorkspaceSession::open(copyRoot, {}, services());
+    ASSERT_OK(copy);
+    const document::Workspace& rescued = (*copy)->workspace();
+    EXPECT_NE(rescued.info().id, session->workspace().info().id); // a workspace of its own
+    EXPECT_EQ(rescued.info().name, session->workspace().info().name);
+    EXPECT_NE(rescued.findElement(unsaved), nullptr); // the change the database refused
+    EXPECT_EQ(rescued.elementCount(), session->workspace().elementCount());
+    auto copied = (*copy)->assetPath(*asset);
+    ASSERT_OK(copied);
+    EXPECT_TRUE(std::filesystem::exists(*copied));
+    EXPECT_TRUE((*copy)->checkIntegrity()->problems.empty());
+    ASSERT_OK((*copy)->close());
+}
+
 TEST_F(WorkspaceSessionTest, WriteFailureKeepsTheEditQueuedAndRetries) {
     auto session = create();
     ASSERT_NE(session, nullptr);

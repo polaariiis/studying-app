@@ -66,9 +66,10 @@ public:
     virtual bool confirmDelete(QWidget* parent, const QString& what) = 0;
 
     enum class UnsavedChoice {
-        Retry,   ///< try writing again
-        Discard, ///< close anyway; the unsaved changes are lost
-        Cancel,  ///< keep the workspace open
+        Retry,    ///< try writing again
+        Discard,  ///< close anyway; the unsaved changes are lost
+        Cancel,   ///< keep the workspace open
+        SaveCopy, ///< save everything, unsaved changes too, as a new workspace, then close
     };
     /// Closing, but `pending` changes could not be written.
     virtual UnsavedChoice askUnsavedChanges(QWidget* parent, std::size_t pending,

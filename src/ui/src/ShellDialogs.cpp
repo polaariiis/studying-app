@@ -188,12 +188,14 @@ public:
         QMessageBox box(QMessageBox::Warning, tr("Changes not saved"),
                         QCoreApplication::translate(
                             "ShellDialogs",
-                            "%n change(s) could not be saved to the workspace. Try again, or "
-                            "close anyway and lose them?",
+                            "%n change(s) could not be saved to the workspace. Try again, save "
+                            "everything as a copy in another folder, or close anyway and lose "
+                            "them?",
                             nullptr, static_cast<int>(pending)),
                         QMessageBox::NoButton, parent);
         box.setDetailedText(details);
         QPushButton* retry = box.addButton(tr("Try Again"), QMessageBox::AcceptRole);
+        QPushButton* copy = box.addButton(tr("Save a Copy\u2026"), QMessageBox::ActionRole);
         QPushButton* discard =
             box.addButton(tr("Close Without Saving"), QMessageBox::DestructiveRole);
         box.addButton(QMessageBox::Cancel);
@@ -201,6 +203,9 @@ public:
         box.exec();
         if (box.clickedButton() == retry) {
             return UnsavedChoice::Retry;
+        }
+        if (box.clickedButton() == copy) {
+            return UnsavedChoice::SaveCopy;
         }
         return box.clickedButton() == discard ? UnsavedChoice::Discard : UnsavedChoice::Cancel;
     }

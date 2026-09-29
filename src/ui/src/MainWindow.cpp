@@ -1153,6 +1153,7 @@ bool MainWindow::closeWorkspace() {
     }
     finishTextEditing(); // written (and flushed below) before the workspace closes
     planner_->finishEditing();
+    std::optional<std::filesystem::path> rescued; // a copy saved instead (P3-01)
     if (open_->owned) {
         // Writes are continuous; this only catches what a failed write left pending
         // (P3-01): never close silently over unsaved changes.
@@ -1168,6 +1169,22 @@ bool MainWindow::closeWorkspace() {
             case ShellDialogs::UnsavedChoice::Cancel:
                 updateStatus();
                 return false;
+            case ShellDialogs::UnsavedChoice::SaveCopy: {
+                // Everything as it is in memory, into a new workspace; then this one closes.
+                const auto target = dialogs_->chooseNewWorkspace(this);
+                if (!target) {
+                    continue; // ask again
+                }
+                if (auto saved = open_->session->saveCopy(*target); !saved) {
+                    dialogs_->showError(this, tr("The copy could not be saved."),
+                                        errorText(saved.error()));
+                    continue;
+                }
+                core::logWarning("ui", "closing a workspace whose changes could not be saved; "
+                                       "everything was saved as a copy instead");
+                rescued = *target;
+                break;
+            }
             case ShellDialogs::UnsavedChoice::Discard:
                 core::logError("ui", "closing without saving " +
                                          std::to_string(open_->session->pendingWriteCount()) +
@@ -1178,6 +1195,9 @@ bool MainWindow::closeWorkspace() {
         }
     }
     detach(true);
+    if (rescued && services_) {
+        (void)openWorkspace(*rescued); // carry on in the copy
+    }
     return true;
 }
 

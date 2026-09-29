@@ -335,6 +335,52 @@ createDocumentSection(const Workspace& workspace, core::NotebookId notebook, std
     return Created<core::SectionId>{id, makeCommand("Import PDF", std::move(changes))};
 }
 
+// ---------------------------------------------------------------------------- snapshot
+
+Patch creationPatch(const Workspace& workspace) {
+    Patch patch;
+    for (const core::TagId tag : workspace.tags()) {
+        patch.add(created(*workspace.findTag(tag)));
+    }
+    for (const core::NotebookId notebook : workspace.notebooks()) {
+        patch.add(created(*workspace.findNotebook(notebook)));
+        for (const core::SectionId section : workspace.sectionsOf(notebook)) {
+            patch.add(created(*workspace.findSection(section)));
+            for (const core::PageId page : workspace.pagesOf(section)) {
+                patch.add(created(*workspace.findPage(page)));
+                std::vector<const Element*> connectors; // after what they attach to
+                for (const core::LayerId layer : workspace.layersOf(page)) {
+                    patch.add(created(*workspace.findLayer(layer)));
+                    for (const core::ElementId id : workspace.elementsOf(layer)) {
+                        const Element* element = workspace.findElement(id);
+                        if (std::holds_alternative<Connector>(element->payload)) {
+                            connectors.push_back(element);
+                        } else {
+                            patch.add(created(*element));
+                        }
+                    }
+                }
+                for (const Element* connector : connectors) {
+                    patch.add(created(*connector));
+                }
+            }
+        }
+    }
+    for (const core::CourseId course : workspace.courses()) {
+        patch.add(created(*workspace.findCourse(course)));
+    }
+    for (const core::ProjectId project : workspace.projects()) {
+        patch.add(created(*workspace.findProject(project)));
+    }
+    for (const core::TaskId task : workspace.topLevelTasks()) {
+        patch.add(created(*workspace.findTask(task)));
+        for (const core::TaskId subtask : workspace.subtasksOf(task)) {
+            patch.add(created(*workspace.findTask(subtask)));
+        }
+    }
+    return patch;
+}
+
 // ---------------------------------------------------------------------------- import
 
 Result<Created<std::vector<core::NotebookId>>>

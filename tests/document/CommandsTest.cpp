@@ -278,6 +278,21 @@ TEST(CommandsTest, ImportingNotebooksRejectsInvalidRequests) {
     EXPECT_EQ(target.workspace.notebookCount(), 0U);
 }
 
+TEST(CommandsTest, CreationPatchReproducesTheWorkspace) {
+    ImportSource source; // notebooks, a PDF section, tags, shapes, an image, a connector
+    TestWorkspace& t = source.t;
+    const auto course = t.run(commands::createCourse(t.workspace, "Biology", t.clock, t.ids));
+    const auto project =
+        t.run(commands::createProject(t.workspace, "Lab report", course, t.clock, t.ids));
+    const auto task = t.run(commands::createTask(
+        t.workspace, {.title = "Write up", .course = course, .project = project}, t.clock, t.ids));
+    t.run(commands::createTask(t.workspace, {.title = "Figures", .parent = task}, t.clock, t.ids));
+    Workspace copy(t.workspace.info());
+    ASSERT_TRUE(copy.apply(commands::creationPatch(t.workspace)).has_value());
+    EXPECT_TRUE(copy == t.workspace);
+    EXPECT_TRUE(copy.validate().has_value());
+}
+
 TEST(CommandsTest, UnknownIdsFailWithNotFound) {
     TestWorkspace t;
     const core::NotebookId notebook{t.ids.next()};
