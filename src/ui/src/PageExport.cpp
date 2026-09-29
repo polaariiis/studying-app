@@ -23,6 +23,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <vector>
 
 namespace studyapp::ui {
 
@@ -175,12 +176,18 @@ void paintPattern(QPainter& painter, const document::PageBackground& background,
     }
     painter.save();
     if (background.pattern == document::BackgroundPattern::Dots) {
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(color);
+        // One line per row, dashed into round dots (a dash of almost no length with round
+        // caps): a row is one path in PDF and SVG instead of one ellipse per dot.
+        constexpr double kDotWidth = 2.5; // world units: dots of radius 1.25
+        constexpr double kDash = 1e-3;    // in pen widths
+        QPen pen(color);
+        pen.setWidthF(kDotWidth);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setDashPattern({kDash, spacing / kDotWidth - kDash});
+        painter.setPen(pen);
+        const double x0 = first(area.min.x);
         for (double y = first(area.min.y); y <= area.max.y; y += spacing) {
-            for (double x = first(area.min.x); x <= area.max.x; x += spacing) {
-                painter.drawEllipse(QPointF(x, y), 1.25, 1.25);
-            }
+            painter.drawLine(QPointF(x0, y), QPointF(area.max.x + kDotWidth, y));
         }
     } else {
         QPen pen(color);
@@ -218,6 +225,84 @@ void paintDocumentPage(QPainter& painter, const document::PageInfo& page, Resour
     }
 }
 
+/// Ink as stroked polylines — a few path operators per point instead of the tessellated
+/// triangles (PDF/SVG files several times smaller and faster to write and to render).
+/// Consecutive points whose width varies by at most kWidthTolerance form one run, drawn with
+/// round caps and joins at the run's mean width. Returns false (use the triangles) for
+/// translucent ink whose width varies: its runs would overlap at their ends and show darker
+/// there. Translucent ink of one width (highlighters) is a single path, so each point is
+/// covered once, as on screen.
+bool paintStrokeOutline(QPainter& painter, const document::Stroke& stroke) {
+    constexpr float kWidthTolerance = 1.05F; // largest / smallest width within a run
+    const auto& points = *stroke.points;
+    std::vector<QPointF> run;
+    run.reserve(points.size());
+    bool varies = false;
+    float first = -1.0F;
+    for (const document::StrokePoint& point : points) {
+        const float r = canvas::strokeRadius(stroke, point.pressure);
+        if (!(std::isfinite(point.x) && std::isfinite(point.y) && r > 0.0F)) {
+            continue;
+        }
+        if (first < 0.0F) {
+            first = r;
+        } else if (r != first) {
+            varies = true;
+        }
+    }
+    if (first < 0.0F) {
+        return true; // nothing drawable (the tessellation would be empty too)
+    }
+    if (varies && stroke.color.a != 255) {
+        return false;
+    }
+    const QColor color = toQColor(stroke.color);
+    const auto drawRun = [&](float smallest, float largest) {
+        const double width = static_cast<double>(smallest + largest); // 2 × mean radius
+        if (run.size() == 1) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(color);
+            painter.drawEllipse(run.front(), width / 2.0, width / 2.0);
+            return;
+        }
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPolyline(run.data(), static_cast<int>(run.size()));
+    };
+    float smallest = 0.0F;
+    float largest = 0.0F;
+    for (const document::StrokePoint& point : points) {
+        const float r = canvas::strokeRadius(stroke, point.pressure);
+        if (!(std::isfinite(point.x) && std::isfinite(point.y) && r > 0.0F)) {
+            continue;
+        }
+        const QPointF at(point.x, point.y);
+        if (!run.empty() && at == run.back()) {
+            continue; // consecutive duplicates add nothing
+        }
+        if (run.empty()) {
+            run.push_back(at);
+            smallest = largest = r;
+            continue;
+        }
+        const float low = std::min(smallest, r);
+        const float high = std::max(largest, r);
+        if (high > low * kWidthTolerance) {
+            drawRun(smallest, largest);
+            const QPointF joint = run.back(); // the next run continues from here
+            run.clear();
+            run.push_back(joint);
+            smallest = largest = r;
+        } else {
+            smallest = low;
+            largest = high;
+        }
+        run.push_back(at);
+    }
+    drawRun(smallest, largest);
+    return true;
+}
+
 void paintElement(QPainter& painter, const document::Element& element, Resources& resources,
                   double pixelsPerUnit) {
     painter.save();
@@ -239,6 +324,11 @@ void paintElement(QPainter& painter, const document::Element& element, Resources
             return;
         }
         // Missing or unreadable: the neutral frame, as on the canvas.
+    }
+    if (const auto* stroke = std::get_if<document::Stroke>(&element.payload);
+        stroke != nullptr && paintStrokeOutline(painter, *stroke)) {
+        painter.restore();
+        return;
     }
     painter.setPen(Qt::NoPen);
     for (const canvas::MeshPart& part : canvas::buildElementMeshes(element, kExportPixelsPerUnit)) {

@@ -59,6 +59,7 @@ target_include_directories(shell_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/ui/src
 target_link_libraries(shell_tests PRIVATE
     studyapp::ui
     studyapp::application
+    studyapp::canvas
     studyapp::persistence
     studyapp::platform
     studyapp::test_support

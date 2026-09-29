@@ -12,6 +12,7 @@
 #include <studyapp/application/PageNavigator.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/application/WorkspaceStructure.hpp>
+#include <studyapp/canvas/ElementGeometry.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/document/Editor.hpp>
 #include <studyapp/persistence/Database.hpp>
@@ -38,6 +39,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPdfDocument>
 #include <QPdfWriter>
 #include <QPrinter>
@@ -1886,6 +1888,12 @@ private Q_SLOTS:
             renderer.render(&painter);
         }
         QVERIFY(differingShare(drawing(image), drawing(fromSvg)) < 0.01);
+        // The dotted background is there in every format (a dot at a multiple of 24 units;
+        // its grey is within the tolerance above, so it is checked on its own).
+        for (const QImage* picture : std::array<const QImage*, 3>{&image, &fromPdf, &fromSvg}) {
+            QVERIFY(pixel(*picture, {240, 240}).red() < 240); // a dot
+            QVERIFY(pixel(*picture, {252, 252}).red() > 250); // between dots
+        }
 
         // Cancelled: nothing is written. Into the workspace folder: refused.
         const auto questions = shell.dialogs->questions;
@@ -2031,6 +2039,122 @@ private Q_SLOTS:
         QCOMPARE(shell.dialogs->errors.size(), 1);
         QCOMPARE(shell.window->session()->root(), restored);
         QVERIFY(shell.ws() == source);
+    }
+
+    // Exported ink is drawn as stroked polylines; it must cover what the canvas's own
+    // tessellation covers — also for pressure-varying pen strokes, translucent ones and
+    // single points.
+    void exportedInkMatchesTheCanvasGeometry() {
+        Shell shell(settings(QStringLiteral("exportink")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportInk"))));
+        const auto page = *shell.window->activePage();
+        const auto layer = shell.ws().layersOf(page).front();
+        std::vector<document::Element> elements;
+        const auto add = [&](document::Stroke stroke) {
+            auto created = document::commands::createElement(
+                shell.ws(), layer, {.payload = std::move(stroke)}, shell.ids);
+            QVERIFY(created.has_value());
+            QVERIFY(shell.window->session()->execute(std::move(created->command)).has_value());
+            elements.push_back(*shell.ws().findElement(created->id));
+        };
+        std::vector<document::StrokePoint> wave;
+        for (int i = 0; i <= 60; ++i) {
+            const float t = static_cast<float>(i);
+            wave.push_back({40.0F + t * 5.0F, 120.0F + 30.0F * std::sin(t * 0.2F),
+                            0.2F + 0.8F * std::abs(std::sin(t * 0.13F))});
+        }
+        add(document::Stroke{.color = core::Color::black(),
+                             .baseWidth = 10.0F,
+                             .points = document::makeStrokePoints(wave)});
+        for (auto& point : wave) {
+            point.y += 90.0F;
+        }
+        add(document::Stroke{.color = core::Color::fromRgba(20, 60, 200, 120),
+                             .baseWidth = 12.0F,
+                             .points = document::makeStrokePoints(wave)});
+        add(document::Stroke{.color = core::Color::black(),
+                             .baseWidth = 14.0F,
+                             .points = document::makeStrokePoints({{380, 60, 1}})});
+
+        const auto target = toPath(dir_.filePath(QStringLiteral("ink.png")));
+        shell.dialogs->exportTarget = target;
+        shell.action("actionExportPage")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        const QImage exported(QString::fromStdU16String(target.u16string()));
+        QVERIFY(!exported.isNull());
+        // The same page drawn from the canvas meshes (triangles, winding fill).
+        const core::DRect area = ui::exportArea(shell.ws(), page);
+        QImage reference(exported.size(), QImage::Format_ARGB32_Premultiplied);
+        reference.fill(Qt::white);
+        {
+            QPainter painter(&reference);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.scale(exported.width() / area.width(), exported.height() / area.height());
+            painter.translate(-area.min.x, -area.min.y);
+            painter.setPen(Qt::NoPen);
+            for (const document::Element& element : elements) {
+                const core::Affine2 m = canvas::meshToWorld(element);
+                painter.save();
+                painter.setTransform(QTransform(m.a, m.b, m.c, m.d, m.tx, m.ty), true);
+                for (const canvas::MeshPart& part : canvas::buildElementMeshes(element, 4.0F)) {
+                    QPainterPath path;
+                    path.setFillRule(Qt::WindingFill);
+                    const auto& v = part.mesh.vertices;
+                    for (std::size_t i = 0; i + 2 < part.mesh.indices.size(); i += 3) {
+                        QPointF a(v[part.mesh.indices[i]].x, v[part.mesh.indices[i]].y);
+                        QPointF b(v[part.mesh.indices[i + 1]].x, v[part.mesh.indices[i + 1]].y);
+                        const QPointF c(v[part.mesh.indices[i + 2]].x,
+                                        v[part.mesh.indices[i + 2]].y);
+                        const double cross =
+                            (b.x() - a.x()) * (c.y() - a.y()) - (b.y() - a.y()) * (c.x() - a.x());
+                        if (cross == 0.0) {
+                            continue;
+                        }
+                        if (cross < 0.0) {
+                            std::swap(a, b);
+                        }
+                        path.moveTo(a);
+                        path.lineTo(b);
+                        path.lineTo(c);
+                        path.closeSubpath();
+                    }
+                    const core::Color& k = part.color;
+                    painter.setBrush(QColor(k.r, k.g, k.b, k.a));
+                    painter.drawPath(path);
+                }
+                painter.restore();
+            }
+        }
+        // Compared on the ink only (the export also has the dotted paper).
+        qint64 inked = 0;
+        qint64 differing = 0;
+        for (int y = 0; y < reference.height(); ++y) {
+            for (int x = 0; x < reference.width(); ++x) {
+                const QColor want = reference.pixelColor(x, y);
+                const QColor got = exported.pixelColor(x, y);
+                if (want.red() > 235 && got.red() > 200) {
+                    continue; // paper (or a background dot) in both
+                }
+                ++inked;
+                // Anti-aliased edges may land a pixel apart: a pixel differs only if nothing
+                // within one pixel of it in the export matches it.
+                bool matched = false;
+                for (int dy = -1; dy <= 1 && !matched; ++dy) {
+                    for (int dx = -1; dx <= 1 && !matched; ++dx) {
+                        const QPoint near(std::clamp(x + dx, 0, exported.width() - 1),
+                                          std::clamp(y + dy, 0, exported.height() - 1));
+                        const QColor other = exported.pixelColor(near);
+                        matched = std::abs(want.red() - other.red()) <= 64 &&
+                                  std::abs(want.blue() - other.blue()) <= 64;
+                    }
+                }
+                differing += matched ? 0 : 1;
+            }
+        }
+        QVERIFY(inked > 1000);
+        QVERIFY2(
+            differing < inked / 200,
+            qPrintable(QStringLiteral("%1 of %2 ink pixels differ").arg(differing).arg(inked)));
     }
 
     // Untrusted PDFs: not a PDF, empty, a bare header — reported, nothing changes; a

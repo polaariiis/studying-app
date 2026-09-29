@@ -280,6 +280,42 @@ BENCHMARK(BM_ExportPage)
     ->Unit(benchmark::kMillisecond)
     ->Iterations(3);
 
+/// A bounded A4 page of 1 000 strokes (a dense handwritten page): the common case.
+void BM_ExportA4Page(benchmark::State& state) {
+    Fixture f;
+    {
+        auto format = document::commands::setPageFormat(
+            f.session->workspace(), f.page,
+            {.extent = document::PageExtent::Bounded,
+             .size = document::kA4PortraitSize,
+             .background = f.session->workspace().findPage(f.page)->background},
+            f.clock);
+        (void)f.session->execute(std::move(*format));
+    }
+    std::mt19937 random(11);
+    std::uniform_real_distribution<double> x(20.0, 740.0);
+    std::uniform_real_distribution<double> y(20.0, 1080.0);
+    std::vector<document::ElementPayload> payloads;
+    std::vector<core::DVec2> positions;
+    for (int i = 0; i < 1000; ++i) {
+        payloads.emplace_back(document::Stroke{
+            .baseWidth = 2.0F, .points = document::makeStrokePoints(handwritingStroke(random))});
+        positions.push_back({x(random), y(random)});
+    }
+    f.addAll(payloads, positions);
+    const auto format = static_cast<ui::ExportFormat>(state.range(0));
+    const char* extension[] = {".pdf", ".png", ".svg"};
+    const auto target = f.dir / (std::string("a4") + extension[state.range(0)]);
+    const ui::ExportSources sources{.assetPath = {}, .progress = {}};
+    const std::vector<core::PageId> pages{f.page};
+    for (auto _ : state) {
+        benchmark::DoNotOptimize(
+            ui::exportPages(f.session->workspace(), pages, target, format, sources));
+    }
+    state.counters["MB"] = static_cast<double>(std::filesystem::file_size(target)) / 1e6;
+}
+BENCHMARK(BM_ExportA4Page)->Arg(0)->Arg(1)->Arg(2)->Unit(benchmark::kMillisecond);
+
 // ---------------------------------------------------------------------------- bundles
 
 void BM_Bundle(benchmark::State& state) {
