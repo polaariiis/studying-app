@@ -73,30 +73,39 @@ jobs:
           cmake --build --preset package 2>&1 | tee -a build.log
 
       - name: Package (CPack)
+        if: runner.os != 'Linux'
         shell: bash
         run: |
           cd build/package
           cpack 2>&1 | tee cpack.log
 
-      - name: AppImage (linuxdeploy)
+      # Linux: linuxdeploy with its Qt plugin deploys Qt's libraries, plugins and qt.conf
+      # into an AppDir; the AppImage and the .tar.gz are made from that same AppDir.
+      - name: AppImage and archive (linuxdeploy)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          # The install tree already holds the deployed Qt (Deploy.cmake); linuxdeploy adds
-          # the remaining non-system libraries and writes the AppImage.
-          cmake --install build/package --prefix "$PWD/AppDir/usr"
-          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          chmod +x linuxdeploy
+          cmake --install build/package --prefix "$PWD/AppDir/usr" 2>&1 | tee -a build.log
+          base=https://github.com/linuxdeploy
+          curl -fsSL -o linuxdeploy "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          curl -fsSL -o linuxdeploy-plugin-qt "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
           export APPIMAGE_EXTRACT_AND_RUN=1
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export EXTRA_QT_MODULES="pdf;svg;printsupport"
+          export EXTRA_PLATFORM_PLUGINS="libqoffscreen.so"
           version=$(grep -oP 'CPACK_PACKAGE_VERSION "\K[^"]+' build/package/CPackConfig.cmake)
-          LINUXDEPLOY_OUTPUT_VERSION="$version" ./linuxdeploy --appdir AppDir \
+          LINUXDEPLOY_OUTPUT_VERSION="$version" ./linuxdeploy --appdir AppDir --plugin qt \
             --desktop-file AppDir/usr/share/applications/studyboard.desktop \
             --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/studyboard.png \
-            --output appimage
-          mv StudyBoard*.AppImage "build/package/StudyBoard-$version-linux-x86_64.AppImage"
-          sha256sum "build/package/StudyBoard-$version-linux-x86_64.AppImage" \
-            > "build/package/StudyBoard-$version-linux-x86_64.AppImage.sha256"
+            --output appimage 2>&1 | tee -a build.log
+          name="StudyBoard-$version-linux-x86_64"
+          mv StudyBoard*.AppImage "build/package/$name.AppImage"
+          mkdir -p "archive/$name" && cp -a AppDir/usr/. "archive/$name/"
+          tar -czf "build/package/$name.tar.gz" -C archive "$name"
+          (cd build/package && sha256sum "$name.AppImage" > "$name.AppImage.sha256" \
+            && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
 
       - name: Report errors as annotations
         if: failure()

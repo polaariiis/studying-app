@@ -534,6 +534,19 @@ schema v1 and stays empty until a workspace-scoped setting is needed.
   immutable and content-addressed, so DB snapshots stay valid as long as GC honours
   references from retained backups (GC grace period ≥ backup retention, or GC scans
   backups too — decide in Phase 9).
+
+  *Implemented (Phase 9, D49):* when a session that changed the workspace closes, a snapshot
+  `backups/auto-<fileTimestamp>.db` is written if the newest is at least 24 h old; File ▸
+  Back Up Now writes one at any time. Rotation (`persistence::backupsToRemove`) keeps the
+  newest snapshot of each of the last 7 days that have one and of each of the last 4 weeks.
+  A failed automatic backup is logged and never blocks closing. **Decision on GC:** the
+  application never runs asset garbage collection (`AssetStore::collectGarbage` exists for
+  a future explicit "Clean Up" command), so every retained snapshot's assets stay on disk;
+  the cost is that assets of undone imports remain until then. File ▸ Check Workspace runs
+  `PRAGMA integrity_check` and `AssetStore::verify` and lists what is wrong. When writes
+  keep failing, **Save a Copy** (in the unsaved-changes question) writes the in-memory
+  workspace — the unsaved changes included — into a new workspace with its assets
+  (`WorkspaceSession::saveCopy`, closing P3-01).
 * **Integrity check** (on demand, and `PRAGMA quick_check` after an unclean shutdown):
   SQLite check + asset file existence/hash verification.
 * **Trash purge**: pages/sections/notebooks in Trash for > 30 days are hard-deleted.

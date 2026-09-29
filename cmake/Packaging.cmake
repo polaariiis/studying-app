@@ -8,8 +8,9 @@
 #   Windows  ZIP (portable) and, when NSIS is installed, an NSIS installer (Start menu and
 #            desktop shortcuts, uninstaller); the MSVC runtime DLLs are included.
 #   macOS    a DMG holding studyapp.app (the Qt frameworks and plugins inside the bundle).
-#   Linux    a TGZ of the install tree (bin/, lib/, plugins/, share/); CI turns the same
-#            tree into an AppImage with linuxdeploy (.github/workflows/package.yml).
+#   Linux    a TGZ of the install tree for local use. Release packages (AppImage and
+#            .tar.gz) are made by linuxdeploy with its Qt plugin from the same install tree
+#            (.github/workflows/package.yml), which deploys Qt's plugins and qt.conf.
 #
 # Packages are not signed here; the release workflow signs them when certificates are
 # configured as repository secrets.

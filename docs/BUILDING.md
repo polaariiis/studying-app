@@ -272,14 +272,17 @@ Enforcement:
 
 ## 7. Continuous integration
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main`, on
-pull requests and manually:
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main` and to
+phase integration branches (`phase-*`), on pull requests and manually;
+[`package.yml`](../.github/workflows/package.yml) builds and smoke-tests the packages on the
+same pushes (§8):
 
 | Job | Runners | What it does |
 |---|---|---|
 | `format` | ubuntu-24.04 | clang-format 19.1.1 `--dry-run --Werror` on all tracked C++ files; `tools/check_boundaries.py` |
 | `core` | windows-2022, ubuntu-24.04, macos-14 | `cmake --workflow --preset ci-core`: Qt-free modules + tests, warnings as errors, **no Qt installed** |
 | `sanitizers` | ubuntu-24.04 (Clang) | `cmake --workflow --preset asan` |
+| `clang-tidy` | ubuntu-24.04 (Clang) | `tools/run_clang_tidy.py` with the curated `.clang-tidy` over the Qt-free modules; any finding fails (docs/CODING_STYLE.md) |
 | `full` | windows-2022, ubuntu-24.04, macos-14 | Installs Qt 6.8.3, runs `cmake --workflow --preset ci-full` (Release, warnings as errors, all tests incl. `gui` on the offscreen platform), then `cmake --install` to exercise Qt deployment |
 
 External actions and why:
@@ -293,8 +296,40 @@ External actions and why:
 Nothing in CI depends on a developer's machine: all paths come from the actions or from
 the presets.
 
-## 8. Packaging (Phase 9)
+## 8. Packaging
 
-CPack installers (Windows), signed/notarised DMG (macOS) and AppImage/Flatpak (Linux)
-are planned for Phase 9. Until then, `cmake --install` produces a runnable, self-contained
-directory.
+Implemented in Phase 9 (`cmake/Packaging.cmake`, `.github/workflows/package.yml`).
+
+```sh
+cmake --preset package && cmake --build --preset package   # Release, app only, no tests
+cd build/package && cpack                                   # the platform's packages
+build/package/app/studyapp --self-test                      # or run the installed copy
+```
+
+| Platform | Packages | Contents |
+|---|---|---|
+| Windows | `StudyBoard-<v>-windows-AMD64.exe` (NSIS installer: Start menu and desktop shortcuts, uninstaller, upgrade replaces the previous version) and `.zip` (portable) | `bin/studyapp.exe`, Qt (incl. Qt PDF, Svg, Print Support, platform/image-format plugins) via windeployqt, the MSVC runtime DLLs, licences |
+| macOS | `StudyBoard-<v>-macos-arm64.dmg` | `studyapp.app` with the Qt frameworks (macdeployqt) and the `.icns` built from the committed PNGs |
+| Linux | `StudyBoard-<v>-linux-x86_64.AppImage` and `.tar.gz` | `bin/`, Qt libraries and plugins, GCC's `libstdc++`/`libgcc_s` (newer than Ubuntu 22.04's), `.desktop` entry and icons; built on Ubuntu 22.04 (glibc 2.35) so it runs there and later |
+
+Every package is **smoke-tested in CI on a fresh runner without Qt or a compiler**
+(`package.yml`, job `smoke`): `studyapp --self-test` checks the Qt platform and
+image-format plugins, fonts, a SQLite workspace (create, edit, search, reopen), Qt PDF
+(write, inspect, import, render a tile), PDF/PNG/SVG export and printing, all in a
+temporary directory, and exits non-zero on any failure. On Windows the installer is run
+silently, tested, and uninstalled again (the uninstall must remove the application);
+Linux runs the archive and the AppImage under Xvfb on Ubuntu 22.04 and 24.04; macOS mounts
+the DMG. On Windows a GUI-subsystem program prints only when its output is redirected
+(`studyapp --self-test | more`).
+
+**Releases.** Pushing a tag `v<version>` runs `release.yml`: the same packages and smoke
+tests, then a **draft** GitHub release with the packages and `SHA256SUMS.txt`. Nothing is
+published without a person reviewing the draft.
+
+**Signing** is prepared but optional. `cmake/SignPackage.cmake` runs as CPack's pre- and
+post-build script and signs only when credentials are in the environment
+(`STUDYAPP_SIGN_PFX`/`STUDYAPP_SIGN_PASSWORD` for signtool; `STUDYAPP_CODESIGN_IDENTITY`
+for codesign with the hardened runtime); `release.yml` adds notarisation. The repository
+secrets it reads are listed at the top of the workflow. Without them — the current state —
+packages are **unsigned**: Windows SmartScreen and macOS Gatekeeper warn on first start
+(on macOS: right-click ▸ Open).

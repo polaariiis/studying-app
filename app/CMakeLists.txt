@@ -54,6 +54,8 @@ if(APPLE)
     target_sources(studyapp PRIVATE "${_icns}")
     set_source_files_properties("${_icns}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     set_target_properties(studyapp PROPERTIES MACOSX_BUNDLE_ICON_FILE studyboard.icns)
+    # The deployed Qt frameworks are inside the bundle (macdeployqt, Deploy.cmake).
+    set_target_properties(studyapp PROPERTIES INSTALL_RPATH "@executable_path/../Frameworks")
 endif()
 
 studyapp_install_app(studyapp)
