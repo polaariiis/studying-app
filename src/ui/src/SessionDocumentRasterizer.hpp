@@ -47,7 +47,7 @@ class SessionDocumentRasterizer final : public canvas::DocumentRasterizer {
 public:
     /// Rendered tiles the canvas has not collected yet are kept up to this many bytes (and
     /// kUncollectedTiles tiles), oldest dropped first.
-    static constexpr std::size_t kUncollectedBudgetBytes = 32U * 1024U * 1024U;
+    static constexpr std::size_t kUncollectedBudgetBytes = std::size_t{32} * 1024U * 1024U;
     static constexpr std::size_t kUncollectedTiles = 256;
     /// Documents kept open on the worker, least recently used closed first.
     static constexpr std::size_t kOpenDocuments = 4;

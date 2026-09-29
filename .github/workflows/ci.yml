@@ -39,6 +39,34 @@ jobs:
       - name: Check module include boundaries
         run: python tools/check_boundaries.py
 
+  # ---------------------------------------------------------------- static analysis
+  clang-tidy:
+    name: clang-tidy (Qt-free modules)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install clang-tidy (pinned)
+        run: pip install "clang-tidy==19.1.0"
+
+      - name: Configure (compile database) and build generated sources
+        run: |
+          cmake --preset core-only
+          cmake --build --preset core-only --target studyapp_core
+
+      - name: clang-tidy (.clang-tidy; any finding fails)
+        run: python tools/run_clang_tidy.py -p build/core-only --filter '/src/' --jobs 4
+
   # ---------------------------------------------------------------- Qt-free core
   core:
     name: Core (no Qt) / ${{ matrix.os }}

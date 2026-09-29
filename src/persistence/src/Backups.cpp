@@ -78,8 +78,12 @@ core::Result<std::vector<BackupFile>> listBackups(const WorkspaceLayout& layout,
         return backups;
     }
     const std::string prefix = std::string(label) + "-";
-    for (const auto& entry : std::filesystem::directory_iterator(layout.backups(), ec)) {
-        if (!entry.is_regular_file(ec) || entry.path().extension() != ".db") {
+    // increment(ec), not a range-for: operator++ throws on I/O errors.
+    for (auto it = std::filesystem::directory_iterator(layout.backups(), ec);
+         !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        const auto& entry = *it;
+        std::error_code typeError;
+        if (!entry.is_regular_file(typeError) || entry.path().extension() != ".db") {
             continue;
         }
         const std::string stem = detail::utf8(entry.path().stem());

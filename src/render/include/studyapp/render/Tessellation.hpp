@@ -39,7 +39,7 @@ struct TessellationOptions {
 /// Non-finite points and non-positive radii are skipped and consecutive duplicates are
 /// merged. An input without usable points gives an empty mesh. The output never contains
 /// NaN or infinity.
-[[nodiscard]] MeshData tessellatePolyline(std::span<const WidthPoint> points,
+[[nodiscard]] MeshData tessellatePolyline(std::span<const WidthPoint> input,
                                           const TessellationOptions& options = {});
 
 /// Filled convex polygon (triangle fan), e.g. rectangles and ellipses.

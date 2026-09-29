@@ -259,17 +259,29 @@ core::Result<BundleManifest> extractBundle(const std::filesystem::path& bundle,
     const bool existed = std::filesystem::exists(root, ec);
     const WorkspaceLayout layout{root};
     struct Cleanup {
-        const std::filesystem::path* root;
-        bool existed;
+        const std::filesystem::path* root = nullptr;
+        bool existed = false;
         bool keep = false;
+        Cleanup(const std::filesystem::path* dir, bool wasThere) : root(dir), existed(wasThere) {}
+        Cleanup(const Cleanup&) = delete;
+        Cleanup& operator=(const Cleanup&) = delete;
+        Cleanup(Cleanup&&) = delete;
+        Cleanup& operator=(Cleanup&&) = delete;
         ~Cleanup() {
             if (keep) {
                 return;
             }
             std::error_code error;
             if (existed) { // it was empty (checkCanCreate): empty it again
-                for (const auto& child : std::filesystem::directory_iterator(*root, error)) {
-                    std::filesystem::remove_all(child.path(), error);
+                // increment(error), not a range-for: operator++ throws, and this is a
+                // destructor.
+                std::vector<std::filesystem::path> children;
+                for (auto it = std::filesystem::directory_iterator(*root, error);
+                     !error && it != std::filesystem::directory_iterator(); it.increment(error)) {
+                    children.push_back(it->path());
+                }
+                for (const auto& child : children) {
+                    std::filesystem::remove_all(child, error);
                 }
             } else {
                 std::filesystem::remove_all(*root, error);

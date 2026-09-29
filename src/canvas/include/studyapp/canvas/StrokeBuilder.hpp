@@ -80,7 +80,7 @@ class StrokeBuilder {
 public:
     StrokeBuilder(const StrokeSample& first, double zoom, StrokeOptions options = {});
 
-    void add(const StrokeSample& sample);
+    void add(const StrokeSample& raw);
 
     /// Smoothed points so far (world space), for the live preview.
     [[nodiscard]] std::span<const StrokeSample> points() const noexcept { return points_; }

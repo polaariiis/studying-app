@@ -25,7 +25,7 @@ using detail::utf8;
 
 namespace {
 
-constexpr std::size_t kChunkSize = 64 * 1024;
+constexpr std::size_t kChunkSize = std::size_t{64} * 1024U;
 
 /// Removes a staged temporary file unless it was moved into place.
 class TemporaryFile {
@@ -228,6 +228,9 @@ Result<core::AssetId> AssetStore::commit(const StagedAsset& staged, std::string_
         auto info = find(*existing);
         if (!info) {
             return forward(info);
+        }
+        if (!*info) {
+            return makeError(ErrorCode::NotFound, "asset " + existing->toString() + " vanished");
         }
         relative = relativePath(digest, (*info)->mediaType);
     } else {

@@ -473,7 +473,7 @@ void ShapeTool::updatePreview(const core::DVec2& world, bool constrain,
                                               .z = core::FractionalIndex::first(),
                                               .transform = geometry->transform,
                                               .locked = false,
-                                              .payload = std::move(geometry->shape)};
+                                              .payload = geometry->shape};
 }
 
 void ShapeTool::onPointer(const PointerEvent& event, ToolContext& context) {
@@ -517,7 +517,7 @@ void ShapeTool::onPointer(const PointerEvent& event, ToolContext& context) {
         auto created = document::commands::createElement(
             context.document.workspace(), *layer,
             document::commands::NewElement{.transform = geometry->transform,
-                                           .payload = std::move(geometry->shape)},
+                                           .payload = geometry->shape},
             context.ids);
         if (!created) {
             context.commit(tl::unexpected(created.error()));

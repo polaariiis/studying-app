@@ -103,7 +103,7 @@ private:
     /// the index among the parent's children once moved; nullopt if not allowed.
     struct DropTarget {
         std::optional<Item> parent;
-        std::size_t index;
+        std::size_t index = 0;
     };
     [[nodiscard]] std::optional<DropTarget> dropTarget(const Item& item, int row,
                                                        const QModelIndex& parent) const;

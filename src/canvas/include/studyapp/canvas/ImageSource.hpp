@@ -17,7 +17,7 @@ namespace studyapp::canvas {
 /// Decoded textures never exceed this many pixels per side.
 inline constexpr int kMaxImageTexturePx = 4096;
 /// GPU memory kept for image textures; least recently drawn ones are released beyond it.
-inline constexpr std::size_t kImageTextureBudgetBytes = 256U * 1024U * 1024U;
+inline constexpr std::size_t kImageTextureBudgetBytes = std::size_t{256} * 1024U * 1024U;
 
 class ImageSource {
 public:

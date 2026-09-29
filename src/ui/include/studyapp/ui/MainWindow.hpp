@@ -312,7 +312,7 @@ private:
     // Ink tool styles (canvas::ToolSettings: the pen's and the highlighter's colour and
     // width), kept here across workspaces and remembered per user (QSettings).
     struct InkControls {
-        canvas::ToolKind tool;
+        canvas::ToolKind tool{};
         QColor color;
         float width = 0.0F;
         QActionGroup* colors = nullptr;

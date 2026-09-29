@@ -187,13 +187,13 @@ private:
     // Derived reference indexes, updated for every added (+1) or removed (-1) record.
     void track(const NotebookInfo& /*record*/, int /*delta*/) noexcept {}
     void track(const SectionInfo& /*record*/, int /*delta*/) noexcept {}
-    void track(const PageInfo& record, int delta);
+    void track(const PageInfo& page, int delta);
     void track(const Layer& /*record*/, int /*delta*/) noexcept {}
-    void track(const Element& record, int delta);
+    void track(const Element& element, int delta);
     void track(const study::Course& /*record*/, int /*delta*/) noexcept {}
-    void track(const study::Project& record, int delta);
-    void track(const study::Task& record, int delta);
-    void track(const study::Tag& record, int delta);
+    void track(const study::Project& project, int delta);
+    void track(const study::Task& task, int delta);
+    void track(const study::Tag& tag, int delta);
 
     WorkspaceInfo info_;
 

@@ -1,36 +1,58 @@
-# clang-tidy configuration. Run locally with a compile database, e.g.:
-#   run-clang-tidy -p build/debug src/core
-# Findings are advisory in Phase 1 (not yet gated in CI); see docs/BUILDING.md.
+# clang-tidy configuration (docs/CODING_STYLE.md §9). CI runs it on the Qt-free modules and
+# fails on any finding (tools/run_clang_tidy.py, the `clang-tidy` job). Locally:
+#   python tools/run_clang_tidy.py -p build/debug            (Windows: a VS developer prompt)
+#
+# The checks were chosen in Phase 9 from a full run over the code base: they find defects
+# (bugprone, performance, correctness of special members) or keep conventions the code
+# already follows (naming). Checks that contradict deliberate conventions are off, with the
+# reason:
+#   cppcoreguidelines-pro-bounds-pointer-arithmetic, -pro-type-reinterpret-cast,
+#   -pro-bounds-array-to-pointer-decay, *-avoid-c-arrays
+#       byte-level file formats (zip, SHA-256, stroke codec) and C APIs (SQLite, OpenGL)
+#   cppcoreguidelines-owning-memory      Qt parent/child ownership uses raw `new`
+#   cppcoreguidelines-pro-type-vararg    std::snprintf / std::fprintf in formatting and logging
+#   cppcoreguidelines-pro-type-static-cast-downcast   Qt event types
+#   cppcoreguidelines-macro-usage        Qt and profiling macros
+#   bugprone-unchecked-optional-access   reports values checked earlier in the same
+#       expression or guaranteed by a documented precondition (reviewed, Phase 9)
+#   bugprone-exception-escape            reports every function that may throw bad_alloc
+#   performance-enum-size                smaller enum storage: no measured benefit
+#   performance-unnecessary-value-param  sink parameters of rarely called commands
+#   bugprone-easily-swappable-parameters, readability-function-cognitive-complexity,
+#   readability-math-missing-parentheses, readability-avoid-nested-conditional-operator,
+#   modernize-use-ranges, modernize-return-braced-init-list, modernize-use-auto,
+#   misc-const-correctness, misc-use-internal-linkage, cppcoreguidelines-prefer-member-initializer
+#       style the code base does not follow (and CI would only enforce churn)
 ---
 Checks: >
   -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
-  cppcoreguidelines-*,
-  -cppcoreguidelines-avoid-magic-numbers,
-  -cppcoreguidelines-owning-memory,
-  -cppcoreguidelines-pro-bounds-constant-array-index,
-  -cppcoreguidelines-pro-type-vararg,
-  -cppcoreguidelines-non-private-member-variables-in-classes,
-  misc-*,
-  -misc-include-cleaner,
-  -misc-non-private-member-variables-in-classes,
-  -misc-no-recursion,
-  modernize-*,
-  -modernize-use-trailing-return-type,
-  -modernize-use-nodiscard,
-  -modernize-use-designated-initializers,
+  -bugprone-unchecked-optional-access,
+  -bugprone-exception-escape,
+  cppcoreguidelines-special-member-functions,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-virtual-class-destructor,
+  misc-definitions-in-headers,
+  misc-misplaced-const,
+  misc-redundant-expression,
+  misc-unused-using-decls,
+  misc-uniqueptr-reset-release,
+  modernize-use-override,
+  modernize-use-nullptr,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
   performance-*,
-  portability-*,
-  readability-*,
-  -readability-identifier-length,
-  -readability-magic-numbers,
-  -readability-uppercase-literal-suffix,
-  -readability-redundant-access-specifiers
-# cppcoreguidelines-owning-memory: Qt parent/child ownership uses raw `new`.
-# cppcoreguidelines-pro-type-vararg: std::fprintf in the default log sink.
+  -performance-unnecessary-value-param,
+  -performance-enum-size,
+  readability-inconsistent-declaration-parameter-name,
+  readability-misleading-indentation,
+  readability-identifier-naming,
+  readability-container-size-empty,
+  readability-redundant-string-cstr
 WarningsAsErrors: ''
-HeaderFilterRegex: '.*/(src|app|tests)/.*'
+HeaderFilterRegex: '.*[/\\](src|app)[/\\].*'
 FormatStyle: file
 CheckOptions:
   - key: readability-identifier-naming.NamespaceCase
@@ -59,7 +81,5 @@ CheckOptions:
     value: k
   - key: readability-identifier-naming.GlobalConstantCase
     value: CamelCase
-  - key: readability-function-cognitive-complexity.Threshold
-    value: 25
   - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
     value: true

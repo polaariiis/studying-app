@@ -244,7 +244,7 @@ Result<std::filesystem::path> WorkspaceFile::backup(std::string_view label, core
     if (auto created = createDirectory(layout_.backups()); !created) {
         return forward(created);
     }
-    const auto target = layout_.backups() / (std::string(label) + "-" + fileTimestamp(now) + ".db");
+    auto target = layout_.backups() / (std::string(label) + "-" + fileTimestamp(now) + ".db");
     if (auto saved = backupDatabase(database_, target); !saved) {
         return forward(saved);
     }

@@ -34,7 +34,7 @@ enum class HandleKind : std::uint8_t {
 };
 
 struct Handle {
-    HandleKind kind;
+    HandleKind kind{};
     core::DVec2 world;
 };
 

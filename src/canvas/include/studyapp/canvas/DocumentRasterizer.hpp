@@ -24,7 +24,7 @@ inline constexpr int kMaxDocumentLevel = 3;
 /// Coarsest level ever rendered.
 inline constexpr int kMinDocumentLevel = -8;
 /// GPU memory kept for document tiles; least recently drawn tiles are released beyond it.
-inline constexpr std::size_t kDocumentTextureBudgetBytes = 192U * 1024U * 1024U;
+inline constexpr std::size_t kDocumentTextureBudgetBytes = std::size_t{192} * 1024U * 1024U;
 
 struct DocumentTileKey {
     core::AssetId asset;

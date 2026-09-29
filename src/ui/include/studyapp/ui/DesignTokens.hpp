@@ -63,8 +63,8 @@ struct MetricTokens {
 /// neutral chrome palette, but kept few and muted so notes stay calm. `name` is stable
 /// (settings, object names); `label` is shown (translated in the "Ink" context).
 struct InkColor {
-    const char* name;
-    const char* label;
+    const char* name = nullptr;
+    const char* label = nullptr;
     core::Color color;
 };
 /// A pen width preset, in world units at pressure 1.
