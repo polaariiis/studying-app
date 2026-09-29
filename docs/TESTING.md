@@ -49,6 +49,22 @@ imported PDF with its pages and sizes, print ranges, cancel, refused targets, no
 changed), bundles through the shell (export notebook/workspace, import, a damaged bundle,
 open as a workspace).
 
+**Phase 9 additions.** `canvas_tests`: selection outlines are reused and translated while
+panning, rebuilt on zoom or selection change; the parallel mesh build keeps every earlier
+expectation (batch layout, rebuild counts, draw order). `document_tests`: `creationPatch`
+reproduces a workspace exactly. `persistence_tests` (`BackupsTest`): snapshot names round-trip,
+rotation keeps 7 daily and 4 weekly snapshots and the newest, listing ignores other files.
+`application_tests`: assets staged on other threads are stored once (deduplicated), discarded
+cleanly and refused read-only; closing after changes backs up at most daily, Back Up Now,
+read-only refusal; the integrity check names a damaged asset; Save a Copy keeps a change the
+database refused; the workspace directory is recognised however a path is spelled.
+`ui.ShellTest`: imports finishing after their workspace closed are dropped; exported ink matches
+the canvas geometry within a pixel and the dotted paper appears in PDF, PNG and SVG; Back Up Now
+and Check Workspace through the shell; Save a Copy from the unsaved-changes question opens the
+copy; every control has an accessible name (audited through `QAccessible` in every planner
+view); F6/Shift+F6 cycle the panes. Packages: `studyapp --self-test` on clean CI runners
+(docs/BUILDING.md §8). Static analysis: the curated `.clang-tidy` has no findings.
+
 Tests use the header-only targets in `tests/support`: `studyapp_test_support`
 (`testing::ManualClock` and `testing::SequentialIds` make every timestamp and id
 deterministic; `EXPECT_OK`/`ASSERT_OK`; `testing::TempDirectory`, a self-deleting

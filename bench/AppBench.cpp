@@ -23,6 +23,7 @@
 #include <QPdfWriter>
 
 #include <benchmark/benchmark.h>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -152,6 +153,28 @@ void BM_OpenWorkspace(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_OpenWorkspace)->Arg(10'000)->Unit(benchmark::kMillisecond);
+
+/// Moving every element of a 10 000-stroke page (Select All, drag): the command, applying
+/// it and writing it to SQLite (the autosave), all on the GUI thread.
+void BM_MoveAllAndSave(benchmark::State& state) {
+    Fixture f;
+    f.addStrokes(static_cast<int>(state.range(0)));
+    const auto ids = f.session->workspace().elementsOf(f.layer);
+    const std::vector<core::ElementId> all(ids.begin(), ids.end());
+    double dx = 1.0;
+    double commandMs = 0.0;
+    for (auto _ : state) {
+        const auto start = std::chrono::steady_clock::now();
+        auto move = document::commands::moveElements(f.session->workspace(), all, {dx, 0.0});
+        commandMs +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                .count();
+        benchmark::DoNotOptimize(f.session->execute(std::move(*move)));
+        dx = -dx;
+    }
+    state.counters["commandMs"] = commandMs / static_cast<double>(state.iterations());
+}
+BENCHMARK(BM_MoveAllAndSave)->Arg(10'000)->Unit(benchmark::kMillisecond);
 
 // ---------------------------------------------------------------------------- search
 

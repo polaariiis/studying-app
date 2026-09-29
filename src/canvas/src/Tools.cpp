@@ -571,7 +571,7 @@ void TextTool::onPointer(const PointerEvent& event, ToolContext& context) {
                                            tolerance)) {
                 const document::Element& element = *context.document.workspace().findElement(*hit);
                 if (const auto* box = std::get_if<document::TextBox>(&element.payload)) {
-                    context.beginTextEdit({.element = *hit,
+                    context.beginTextEdit({.element = hit,
                                            .position = element.transform.position,
                                            .width = box->size.x,
                                            .text = box->text});

@@ -107,7 +107,7 @@ jobs:
         shell: bash
         run: |
           # Sanitizer reports and failing tests first, then compiler errors.
-          { grep -E "runtime error:|ERROR: (Address|Leak)Sanitizer|SUMMARY: |\*\*\*Failed|\*\*\*Exception|\(Failed\)|\(SEGFAULT\)|\(Subprocess aborted\)|Timeout" workflow.log | head -30;
+          { grep -E "FAIL!|QFATAL|Received signal|Segmentation|runtime error:|ERROR: (Address|Leak)Sanitizer|SUMMARY: |\*\*\*Failed|\*\*\*Exception|\(Failed\)|\(SEGFAULT\)|\(Subprocess aborted\)|Timeout" workflow.log | head -30;
             grep -E "error:|FAILED:" workflow.log | head -60; } | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
   # ---------------------------------------------------------------- sanitizers
@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           # Sanitizer reports and failing tests first, then compiler errors.
-          { grep -E "runtime error:|ERROR: (Address|Leak)Sanitizer|SUMMARY: |\*\*\*Failed|\*\*\*Exception|\(Failed\)|\(SEGFAULT\)|\(Subprocess aborted\)|Timeout" workflow.log | head -30;
+          { grep -E "FAIL!|QFATAL|Received signal|Segmentation|runtime error:|ERROR: (Address|Leak)Sanitizer|SUMMARY: |\*\*\*Failed|\*\*\*Exception|\(Failed\)|\(SEGFAULT\)|\(Subprocess aborted\)|Timeout" workflow.log | head -30;
             grep -E "error:|FAILED:" workflow.log | head -60; } | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
   # ---------------------------------------------------------------- full build with Qt
@@ -197,7 +197,7 @@ jobs:
         shell: bash
         run: |
           # Sanitizer reports and failing tests first, then compiler errors.
-          { grep -E "runtime error:|ERROR: (Address|Leak)Sanitizer|SUMMARY: |\*\*\*Failed|\*\*\*Exception|\(Failed\)|\(SEGFAULT\)|\(Subprocess aborted\)|Timeout" workflow.log | head -30;
+          { grep -E "FAIL!|QFATAL|Received signal|Segmentation|runtime error:|ERROR: (Address|Leak)Sanitizer|SUMMARY: |\*\*\*Failed|\*\*\*Exception|\(Failed\)|\(SEGFAULT\)|\(Subprocess aborted\)|Timeout" workflow.log | head -30;
             grep -E "error:|FAILED:" workflow.log | head -60; } | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
       - name: Install (runs Qt deployment tooling)

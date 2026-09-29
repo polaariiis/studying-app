@@ -382,6 +382,19 @@ Zoomed-out views use LOD: strokes smaller than ~1 device pixel are skipped or dr
 simplified meshes; at extreme zoom-out a cached page raster can replace individual items
 (profile first).
 
+*Implemented (Phase 9, D47):* meshes that are new or changed in a frame are built together
+before the frame is assembled (`RenderCache::prebuild`: every visible element when
+unbatched, every element of the page when batched), split over up to 8 threads with at
+least 128 elements each; the merged meshes of rebuilt batch runs are built the same way,
+each into its own slot, and uploaded on the GUI thread. Results are identical to building
+them one by one (tessellation is pure), and new content is still never deferred to a later
+frame. Batch signatures hash whole 64-bit words with a final avalanche; run boundaries keep
+the byte-wise hash they were measured with (D40). Selection outlines are built once per
+zoom, selection and scene change relative to an anchor and only translated while panning
+(`Selection::revision()`). Measured (docs/PERFORMANCE.md): the first frame of a whole
+10 000-stroke page 237 → 88 ms, a frame while panning with 10 000 elements selected
+8.5–10.5 → 0.2–0.5 ms, a stroke's commit frame 4.5 → 3.4 ms.
+
 ## 12. Testing hooks
 
 Everything above is driven through `CanvasController` with synthetic events, a fake
