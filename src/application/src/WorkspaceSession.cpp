@@ -5,6 +5,7 @@
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/document/Editor.hpp>
 #include <studyapp/persistence/AssetStore.hpp>
+#include <studyapp/persistence/Backups.hpp>
 #include <studyapp/persistence/Bundle.hpp>
 #include <studyapp/persistence/Migrations.hpp>
 #include <studyapp/persistence/WorkspaceFile.hpp>
@@ -171,7 +172,51 @@ struct WorkspaceSession::Impl {
         return {};
     }
 
+    /// Snapshot + rotation. Old snapshots that cannot be removed are logged, not errors.
+    Result<std::filesystem::path> backUp() {
+        if (auto flushed = writePending(); !flushed) {
+            return forward(flushed);
+        }
+        // Snapshot names carry the time to the millisecond; a second one within the same
+        // millisecond takes the next free name.
+        auto target = file.backup(persistence::kAutoBackupLabel, clock->now());
+        for (int step = 1;
+             !target && target.error().code == ErrorCode::AlreadyExists && step < 1000; ++step) {
+            target = file.backup(persistence::kAutoBackupLabel,
+                                 clock->now() + std::chrono::milliseconds{step});
+        }
+        if (!target) {
+            return forward(target);
+        }
+        if (auto backups = persistence::listBackups(file.layout(), persistence::kAutoBackupLabel)) {
+            for (const auto& old :
+                 persistence::backupsToRemove(*backups, kBackupDays, kBackupWeeks)) {
+                std::error_code ec;
+                if (!std::filesystem::remove(old, ec) && ec) {
+                    core::logWarning(kLogCategory, "cannot remove an old backup: " + ec.message());
+                }
+            }
+        }
+        return target;
+    }
+
+    /// The automatic backup on close: only after changes, at most once per interval.
+    void backUpIfDue() {
+        if (!changed || file.isReadOnly()) {
+            return;
+        }
+        auto backups = persistence::listBackups(file.layout(), persistence::kAutoBackupLabel);
+        if (backups && !backups->empty() &&
+            clock->now() - backups->back().time < kAutoBackupInterval) {
+            return;
+        }
+        if (auto made = backUp(); !made) {
+            core::logWarning(kLogCategory, "automatic backup failed: " + made.error().message);
+        }
+    }
+
     void persist(document::Patch patch) {
+        changed = true;
         if (patch.empty()) {
             return;
         }
@@ -198,6 +243,7 @@ struct WorkspaceSession::Impl {
     PatchListener listener;
     bool recovered = false;
     bool closed = false;
+    bool changed = false; ///< an edit, undo or redo happened in this session
 };
 
 // ---------------------------------------------------------------------------- lifecycle
@@ -329,6 +375,7 @@ Result<void> WorkspaceSession::close() {
     if (auto flushed = impl_->writePending(); !flushed) {
         return flushed;
     }
+    impl_->backUpIfDue(); // never blocks closing: failures are logged
     if (auto closedFile = impl_->file.close(); !closedFile) {
         return closedFile;
     }
@@ -435,6 +482,48 @@ Result<core::AssetId> WorkspaceSession::importAsset(const std::filesystem::path&
         return forward(writable);
     }
     return impl_->assets.import(source, mediaType, *impl_->ids, *impl_->clock);
+}
+
+Result<std::filesystem::path> WorkspaceSession::backUpNow() {
+    if (auto writable = impl_->checkWritable(); !writable) {
+        return forward(writable);
+    }
+    return impl_->backUp();
+}
+
+Result<IntegrityReport> WorkspaceSession::checkIntegrity() {
+    if (impl_->closed) {
+        return makeError(ErrorCode::Unsupported, "the workspace session is closed");
+    }
+    IntegrityReport report;
+    auto check = impl_->file.database().prepare("PRAGMA integrity_check");
+    if (!check) {
+        return forward(check);
+    }
+    for (;;) {
+        auto row = check->step();
+        if (!row) {
+            return forward(row);
+        }
+        if (!*row) {
+            break;
+        }
+        if (const std::string line(check->columnText(0)); line != "ok") {
+            report.problems.push_back("Database: " + line);
+        }
+    }
+    auto assets = impl_->assets.verify();
+    if (!assets) {
+        return forward(assets);
+    }
+    for (const persistence::AssetProblem& problem : *assets) {
+        const char* what = problem.kind == persistence::AssetProblem::Kind::MissingFile ? "missing"
+                           : problem.kind == persistence::AssetProblem::Kind::WrongSize
+                               ? "has the wrong size"
+                               : "is damaged (its content does not match its hash)";
+        report.problems.push_back("Asset " + problem.asset.toString() + " " + what);
+    }
+    return report;
 }
 
 bool WorkspaceSession::isSearchIndexed() {

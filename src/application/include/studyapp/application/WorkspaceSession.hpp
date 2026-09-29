@@ -10,6 +10,7 @@
 #include <studyapp/document/Workspace.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -31,6 +32,18 @@ struct StagedAssetFile {
     std::uint64_t byteSize = 0;
     std::string originalName;
 };
+
+/// Result of WorkspaceSession::checkIntegrity(): empty when everything is fine.
+struct IntegrityReport {
+    std::vector<std::string> problems; ///< one line each, for the user
+};
+
+/// Automatic backups (Phase 9, docs/DATABASE_SCHEMA.md §9): when a session that changed the
+/// workspace is closed, a database snapshot is written to backups/ if the newest one is at
+/// least this old; kBackupDays daily and kBackupWeeks weekly snapshots are kept.
+inline constexpr std::chrono::hours kAutoBackupInterval{24};
+inline constexpr int kBackupDays = 7;
+inline constexpr int kBackupWeeks = 4;
 
 /// One full-text search hit (Phase 8): the indexed record and its bm25 score (lower is
 /// better). Resolve it against the session's Workspace (application::search does).
@@ -145,6 +158,14 @@ public:
                                                                 std::string_view mediaType);
     /// Removes a staged file that will not be stored.
     static void discardStagedAsset(const StagedAssetFile& staged) noexcept;
+
+    // ---- maintenance (Phase 9) --------------------------------------------------------------
+    /// Writes a snapshot of the database to backups/ now (after flushing) and rotates old
+    /// ones; returns the snapshot's path. Errors: Unsupported (read-only or closed), IoError.
+    [[nodiscard]] core::Result<std::filesystem::path> backUpNow();
+    /// Checks the database (`PRAGMA integrity_check`) and every asset file (exists, size,
+    /// SHA-256). Only reads.
+    [[nodiscard]] core::Result<IntegrityReport> checkIntegrity();
 
     // ---- bundles (Phase 8; docs/DATABASE_SCHEMA.md §12) ------------------------------------
     /// Writes a bundle (a zip archive) of the whole workspace — a consistent snapshot of the

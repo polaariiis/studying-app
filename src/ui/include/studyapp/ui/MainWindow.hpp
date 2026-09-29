@@ -213,6 +213,8 @@ private:
     void exportBundle(bool notebookOnly);
     void importNotebookBundle();
     void openBundleAsWorkspace();
+    void backUpNow();
+    void checkWorkspace();
     /// The current page, or every page of its section; empty without a page.
     [[nodiscard]] std::vector<core::PageId> pagesToExport(bool wholeSection) const;
     /// Asset files of the open workspace, and progress with Cancel for several `pages`.
@@ -299,6 +301,8 @@ private:
     QAction* exportNotebookAction_ = nullptr;
     QAction* importNotebookAction_ = nullptr;
     QAction* openBundleAction_ = nullptr;
+    QAction* backUpAction_ = nullptr;
+    QAction* checkWorkspaceAction_ = nullptr;
     QAction* moveUpAction_ = nullptr;
     QAction* moveDownAction_ = nullptr;
     QAction* previousPageAction_ = nullptr;

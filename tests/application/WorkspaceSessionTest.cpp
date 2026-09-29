@@ -206,6 +206,67 @@ TEST_F(WorkspaceSessionTest, AssetsStagedOnAnotherThreadAreStoredOnce) {
     EXPECT_FALSE(std::filesystem::exists(staged->file));
 }
 
+TEST_F(WorkspaceSessionTest, ClosingAfterChangesBacksUpAtMostDaily) {
+    const auto backups = [&] {
+        std::size_t count = 0;
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(root() / "backups", ec)) {
+            count += entry.path().filename().string().starts_with("auto-") ? 1 : 0;
+        }
+        return count;
+    };
+    auto session = create();
+    ASSERT_NE(session, nullptr);
+    ASSERT_OK(session->close()); // no change: no backup
+    EXPECT_EQ(backups(), 0U);
+    session = open();
+    run(*session, commands::createNotebook(session->workspace(), "Biology", clock, ids));
+    ASSERT_OK(session->close());
+    EXPECT_EQ(backups(), 1U);
+    // Again within a day: none.
+    session = open();
+    run(*session, commands::createNotebook(session->workspace(), "Physics", clock, ids));
+    ASSERT_OK(session->close());
+    EXPECT_EQ(backups(), 1U);
+    // A day later: another; the snapshot opens as the workspace it was.
+    clock.advance(std::chrono::hours{25});
+    session = open();
+    run(*session, commands::createNotebook(session->workspace(), "Chemistry", clock, ids));
+    ASSERT_OK(session->close());
+    EXPECT_EQ(backups(), 2U);
+    // Back Up Now at any time; read-only sessions cannot.
+    session = open();
+    auto now = session->backUpNow();
+    ASSERT_OK(now);
+    EXPECT_TRUE(std::filesystem::exists(*now));
+    auto snapshot = persistence::Database::open(*now, persistence::OpenMode::ReadOnly);
+    ASSERT_OK(snapshot);
+    EXPECT_EQ(snapshot->queryInt("SELECT count(*) FROM notebook").value_or(-1), 3);
+    ASSERT_OK(snapshot->close());
+    ASSERT_OK(session->close());
+    auto readOnly = open({.mode = AccessMode::ReadOnly});
+    EXPECT_FALSE(readOnly->backUpNow().has_value());
+}
+
+TEST_F(WorkspaceSessionTest, IntegrityCheckReportsDamagedAssets) {
+    auto session = create();
+    ASSERT_NE(session, nullptr);
+    const auto source = dir / "photo.png";
+    std::ofstream(source, std::ios::binary) << "image bytes";
+    auto asset = session->importAsset(source, "image/png");
+    ASSERT_OK(asset);
+    auto clean = session->checkIntegrity();
+    ASSERT_OK(clean);
+    EXPECT_TRUE(clean->problems.empty());
+    auto file = session->assetPath(*asset);
+    ASSERT_OK(file);
+    std::ofstream(*file, std::ios::binary) << "tampered!!!";
+    auto damaged = session->checkIntegrity();
+    ASSERT_OK(damaged);
+    ASSERT_EQ(damaged->problems.size(), 1U);
+    EXPECT_NE(damaged->problems.front().find(asset->toString()), std::string::npos);
+}
+
 TEST_F(WorkspaceSessionTest, CloseReleasesTheLock) {
     auto session = create();
     ASSERT_NE(session, nullptr);

@@ -152,6 +152,7 @@ public:
     int unsavedQuestions = 0;
     int deleteQuestions = 0;
     QStringList errors;
+    QStringList information;
 
     std::optional<std::filesystem::path> chooseNewWorkspace(QWidget*) override {
         ++questions;
@@ -233,6 +234,9 @@ public:
         return answer;
     }
     void showError(QWidget*, const QString& summary, const QString&) override { errors << summary; }
+    void showInformation(QWidget*, const QString& summary, const QString& details) override {
+        information << summary + QStringLiteral("\n") + details;
+    }
 };
 
 /// Makes every element insert fail (a trigger created from a second connection), or
@@ -2187,6 +2191,49 @@ private Q_SLOTS:
         QCOMPARE(shell.ws().notebookCount(), notebooks);
         QVERIFY(shell.ws().elementsOf(shell.ws().layersOf(page).front()).empty());
         QCOMPARE(*shell.window->activePage(), page);
+    }
+
+    // Phase 9: File ▸ Back Up Now writes a database snapshot; File ▸ Check Workspace
+    // reports a clean workspace, and a damaged stored file by name.
+    void backUpAndCheckThroughTheShell() {
+        Shell shell(settings(QStringLiteral("maintenance")));
+        const auto path = freshPath(QStringLiteral("Maintenance"));
+        QVERIFY(shell.window->createWorkspace(path));
+        shell.action("actionBackUp")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        std::size_t snapshots = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(path / "backups")) {
+            snapshots += entry.path().extension() == ".db" ? 1 : 0;
+        }
+        QCOMPARE(snapshots, std::size_t{1});
+        shell.action("actionCheckWorkspace")->trigger();
+        QCOMPARE(shell.dialogs->information.size(), 1);
+        QVERIFY(shell.dialogs->information.last().startsWith(QStringLiteral("No problems")));
+        QImage red(8, 8, QImage::Format_RGB32);
+        red.fill(Qt::red);
+        const QString png = dir_.filePath(QStringLiteral("check.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        shell.waitForImports();
+        const auto page = *shell.window->activePage();
+        const auto asset =
+            std::get<document::Image>(
+                shell.ws()
+                    .findElement(shell.ws().elementsOf(shell.ws().layersOf(page)[0])[0])
+                    ->payload)
+                .asset;
+        const auto stored = shell.window->session()->assetPath(asset);
+        QVERIFY(stored.has_value());
+        {
+            QFile file(QString::fromStdU16String(stored->u16string()));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("damaged");
+        }
+        shell.action("actionCheckWorkspace")->trigger();
+        QCOMPARE(shell.dialogs->information.size(), 2);
+        QVERIFY(
+            shell.dialogs->information.last().contains(QString::fromStdString(asset.toString())));
     }
 
     // Untrusted PDFs: not a PDF, empty, a bare header — reported, nothing changes; a

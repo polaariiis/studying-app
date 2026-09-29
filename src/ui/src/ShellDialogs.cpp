@@ -212,6 +212,15 @@ public:
         }
         box.exec();
     }
+
+    void showInformation(QWidget* parent, const QString& summary, const QString& details) override {
+        QMessageBox box(QMessageBox::Information, tr("StudyBoard"), summary, QMessageBox::Ok,
+                        parent);
+        if (!details.isEmpty()) {
+            box.setDetailedText(details);
+        }
+        box.exec();
+    }
 };
 
 } // namespace

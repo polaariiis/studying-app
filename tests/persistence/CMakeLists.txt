@@ -3,6 +3,7 @@
 studyapp_add_gtest(persistence_tests
     SOURCES
         AssetStoreTest.cpp
+        BackupsTest.cpp
         CodecTest.cpp
         DatabaseTest.cpp
         MigrationsTest.cpp

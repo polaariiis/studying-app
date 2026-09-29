@@ -334,6 +334,11 @@ void MainWindow::createActions() {
     importNotebookAction_ =
         make(tr("Import N&otebook\u2026"), QStringLiteral("actionImportNotebook"));
     connect(importNotebookAction_, &QAction::triggered, this, &MainWindow::importNotebookBundle);
+    backUpAction_ = make(tr("&Back Up Now"), QStringLiteral("actionBackUp"));
+    connect(backUpAction_, &QAction::triggered, this, &MainWindow::backUpNow);
+    checkWorkspaceAction_ =
+        make(tr("C&heck Workspace\u2026"), QStringLiteral("actionCheckWorkspace"));
+    connect(checkWorkspaceAction_, &QAction::triggered, this, &MainWindow::checkWorkspace);
     openBundleAction_ =
         make(tr("Open &Bundle as Workspace\u2026"), QStringLiteral("actionOpenBundle"));
     connect(openBundleAction_, &QAction::triggered, this, &MainWindow::openBundleAsWorkspace);
@@ -684,6 +689,9 @@ void MainWindow::createMenus() {
     fileMenu->addAction(exportNotebookAction_);
     fileMenu->addAction(importNotebookAction_);
     fileMenu->addAction(openBundleAction_);
+    fileMenu->addSeparator();
+    fileMenu->addAction(backUpAction_);
+    fileMenu->addAction(checkWorkspaceAction_);
     fileMenu->addSeparator();
     fileMenu->addAction(quitAction_);
 
@@ -2169,6 +2177,53 @@ void MainWindow::printPages() {
     }
 }
 
+// ---------------------------------------------------------------------------- maintenance
+
+void MainWindow::backUpNow() {
+    if (!open_ || open_->session->isReadOnly()) {
+        return;
+    }
+    finishTextEditing();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    auto backup = open_->session->backUpNow();
+    QApplication::restoreOverrideCursor();
+    if (!backup) {
+        dialogs_->showError(this, tr("The backup could not be written."),
+                            errorText(backup.error()));
+        return;
+    }
+    statusBar()->showMessage(
+        tr("Backed up to %1").arg(QString::fromStdU16String(backup->u16string())), 5000);
+}
+
+void MainWindow::checkWorkspace() {
+    if (!open_) {
+        return;
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    auto report = open_->session->checkIntegrity();
+    QApplication::restoreOverrideCursor();
+    if (!report) {
+        dialogs_->showError(this, tr("The workspace could not be checked."),
+                            errorText(report.error()));
+        return;
+    }
+    if (report->problems.empty()) {
+        dialogs_->showInformation(this, tr("No problems found."),
+                                  tr("The database and every stored file were checked."));
+        return;
+    }
+    QStringList lines;
+    for (const std::string& problem : report->problems) {
+        lines << toQString(problem);
+    }
+    dialogs_->showInformation(
+        this,
+        tr("%n problem(s) found. Backups of the database are in the workspace's backups folder.",
+           nullptr, static_cast<int>(lines.size())),
+        lines.join(QLatin1Char('\n')));
+}
+
 // ---------------------------------------------------------------------------- bundles
 
 void MainWindow::exportBundle(bool notebookOnly) {
@@ -2350,6 +2405,8 @@ void MainWindow::updateActions() {
     exportNotebookAction_->setEnabled(open && open_->session->workspace().notebookCount() > 0);
     importNotebookAction_->setEnabled(writable);
     openBundleAction_->setEnabled(canOpen);
+    backUpAction_->setEnabled(writable);
+    checkWorkspaceAction_->setEnabled(open);
 
     const auto label = [](std::string_view text) {
         return toQString(text);

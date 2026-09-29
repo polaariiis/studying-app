@@ -3,6 +3,7 @@
 studyapp_add_module(persistence
     SOURCES
         include/studyapp/persistence/AssetStore.hpp
+        include/studyapp/persistence/Backups.hpp
         include/studyapp/persistence/Bundle.hpp
         include/studyapp/persistence/CatalogStore.hpp
         include/studyapp/persistence/Database.hpp
@@ -19,6 +20,7 @@ studyapp_add_module(persistence
         include/studyapp/persistence/WorkspaceStore.hpp
         include/studyapp/persistence/Zip.hpp
         src/AssetStore.cpp
+        src/Backups.cpp
         src/Bundle.cpp
         src/CatalogStore.cpp
         src/Database.cpp

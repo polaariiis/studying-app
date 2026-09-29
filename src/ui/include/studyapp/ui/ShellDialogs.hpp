@@ -76,6 +76,9 @@ public:
 
     /// An operation failed: `summary` for the user, `details` for diagnosis.
     virtual void showError(QWidget* parent, const QString& summary, const QString& details) = 0;
+    /// A result the user asked for (e.g. a workspace check): `summary`, then `details`.
+    virtual void showInformation(QWidget* parent, const QString& summary,
+                                 const QString& details) = 0;
 
     /// A line of text (e.g. a new course name), starting from `text`; nullopt: cancelled.
     virtual std::optional<QString> askText(QWidget* parent, const QString& title,
