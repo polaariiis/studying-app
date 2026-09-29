@@ -31,6 +31,7 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     parser.add_argument("--filter", default=r"[\\/](src|app)[\\/]", help="regex of source files to check")
     parser.add_argument("--details", nargs="*", default=[], help="checks whose findings are listed")
+    parser.add_argument("--all-details", action="store_true", help="list every finding")
     args = parser.parse_args()
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,7 +61,7 @@ def main() -> int:
     print(f"{len(files)} files checked, {len(findings)} findings")
     for check, count in by_check.most_common():
         print(f"{count:6}  {check}")
-    for check in args.details:
+    for check in (sorted(by_check) if args.all_details else args.details):
         print(f"\n--- {check}")
         for (file, line, found), message in sorted(findings.items()):
             if found == check:

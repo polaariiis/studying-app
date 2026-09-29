@@ -2205,7 +2205,7 @@ private Q_SLOTS:
         QCOMPARE(shell.dialogs->errors.size(), 0);
         std::size_t snapshots = 0;
         for (const auto& entry : std::filesystem::directory_iterator(path / "backups")) {
-            snapshots += entry.path().extension() == ".db" ? 1 : 0;
+            snapshots += entry.path().extension() == ".db" ? 1U : 0U;
         }
         QCOMPARE(snapshots, std::size_t{1});
         shell.action("actionCheckWorkspace")->trigger();

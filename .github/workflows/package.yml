@@ -102,8 +102,9 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          cat build.log build/package/cpack.log 2>/dev/null | grep -E "error:|Error|FAILED:|CMake Error" \
-            | head -40 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
+          cat build.log build/package/cpack.log 2>/dev/null \
+            | grep -E -A3 "error:|FAILED:|CMake Error|CPack Error" \
+            | head -60 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -171,9 +172,13 @@ jobs:
             libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libfontconfig1 fonts-dejavu-core
           chmod +x packages/*.AppImage
-          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a packages/StudyBoard-*.AppImage --self-test
           mkdir tgz && tar -xzf packages/StudyBoard-*.tar.gz -C tgz
-          xvfb-run -a "$(find tgz -path '*/bin/studyapp' | head -1)" --self-test
+          binary="$(find tgz -path '*/bin/studyapp' | head -1)"
+          # Libraries the loader cannot find (none expected), for the log.
+          { ldd "$binary" | grep 'not found' || true; } 2>&1 | tee smoke.log
+          xvfb-run -a "$binary" --self-test 2>&1 | tee -a smoke.log
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a packages/StudyBoard-*.AppImage --self-test 2>&1 \
+            | tee -a smoke.log
 
       - name: macOS — DMG
         if: runner.os == 'macOS'
@@ -181,5 +186,11 @@ jobs:
         run: |
           set -euo pipefail
           hdiutil attach packages/StudyBoard-*.dmg -mountpoint /Volumes/StudyBoard -nobrowse
-          /Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --self-test
+          /Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --self-test 2>&1 | tee smoke.log
           hdiutil detach /Volumes/StudyBoard
+
+      # Job logs require sign-in; annotations are public.
+      - name: Report the smoke-test output as annotations
+        if: failure() && runner.os != 'Windows'
+        shell: bash
+        run: tail -n 40 smoke.log | sed -e 's/%/%25/g' -e 's/^/::error::/' || true

@@ -65,7 +65,14 @@ jobs:
           cmake --build --preset core-only --target studyapp_core
 
       - name: clang-tidy (.clang-tidy; any finding fails)
-        run: python tools/run_clang_tidy.py -p build/core-only --filter '/src/' --jobs 4
+        run: |
+          set -o pipefail
+          python tools/run_clang_tidy.py -p build/core-only --filter '/src/' --jobs 4 --all-details \
+            2>&1 | tee tidy.log
+
+      - name: Report findings as annotations
+        if: failure()
+        run: grep -E '^[^ ].*:[0-9]+: ' tidy.log | head -50 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
   # ---------------------------------------------------------------- Qt-free core
   core:
