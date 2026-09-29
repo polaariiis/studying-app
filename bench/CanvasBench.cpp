@@ -312,7 +312,8 @@ private:
 
 double percentile(std::vector<double> values, double q) {
     std::sort(values.begin(), values.end());
-    return values[std::min(values.size() - 1, static_cast<std::size_t>(q * values.size()))];
+    return values[std::min(values.size() - 1,
+                           static_cast<std::size_t>(q * static_cast<double>(values.size())))];
 }
 
 /// One freehand gesture on a 10 000-stroke page at zoom 1, with a frame after every pointer

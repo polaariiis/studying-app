@@ -80,3 +80,9 @@ if(WIN32)
     set_property(TEST ui.ShellTest APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()
+
+# Qt 6.8's QTRY_*_WITH_TIMEOUT macros narrow a std::chrono count to int inside the macro, which
+# GCC's -Wconversion reports in our files (Clang and MSVC do not). Qt Test executables only.
+foreach(qt_test_target IN ITEMS ui_tests canvas_widget_tests shell_tests)
+    target_compile_options(${qt_test_target} PRIVATE $<$<CXX_COMPILER_ID:GNU>:-Wno-conversion>)
+endforeach()

@@ -194,7 +194,7 @@ void BM_ImportImage(benchmark::State& state) {
     for (int y = 0; y < side; ++y) {
         auto* line = reinterpret_cast<QRgb*>(image.scanLine(y));
         for (int x = 0; x < side; ++x) {
-            line[x] = random(); // incompressible: a photo-sized file
+            line[x] = static_cast<QRgb>(random()); // incompressible: a photo-sized file
         }
     }
     const auto base = f.dir / "image.png";
