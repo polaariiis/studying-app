@@ -211,7 +211,7 @@ TEST_F(WorkspaceSessionTest, ClosingAfterChangesBacksUpAtMostDaily) {
         std::size_t count = 0;
         std::error_code ec;
         for (const auto& entry : std::filesystem::directory_iterator(root() / "backups", ec)) {
-            count += entry.path().filename().string().starts_with("auto-") ? 1 : 0;
+            count += entry.path().filename().string().starts_with("auto-") ? 1U : 0U;
         }
         return count;
     };

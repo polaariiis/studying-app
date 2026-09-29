@@ -72,10 +72,13 @@ if(UNIX AND NOT APPLE)
                 OUTPUT_VARIABLE runtime_path
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
             if(IS_ABSOLUTE "${runtime_path}" AND EXISTS "${runtime_path}")
-                install(FILES "${runtime_path}"
+                # The soname is usually a symlink: install the file it points to, named
+                # as the loader looks for it.
+                get_filename_component(runtime_file "${runtime_path}" REALPATH)
+                install(FILES "${runtime_file}"
                     DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-                    COMPONENT runtime
-                    FOLLOW_SYMLINK_CHAIN)
+                    RENAME "${runtime}"
+                    COMPONENT runtime)
             endif()
         endforeach()
     endif()

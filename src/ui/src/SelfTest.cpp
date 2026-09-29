@@ -170,9 +170,9 @@ std::vector<std::string> runSelfTest(const ShellServices& services, canvas::Text
         const auto pages = session->workspace().pagesOf(
             session->workspace().sectionsOf(session->workspace().notebooks().front()).front());
         const std::vector<core::PageId> first{pages.front()};
-        const std::pair<ExportFormat, const char*> formats[] = {
+        const std::pair<ExportFormat, const char*> exports[] = {
             {ExportFormat::Pdf, "pdf"}, {ExportFormat::Png, "png"}, {ExportFormat::Svg, "svg"}};
-        for (const auto& [format, extension] : formats) {
+        for (const auto& [format, extension] : exports) {
             const auto target = dir / (std::string("export.") + extension);
             auto written = exportPages(session->workspace(), first, target, format, sources);
             checks.check(written.has_value() && sizeOf(target) > 0,
