@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -265,6 +266,49 @@ TEST_F(WorkspaceSessionTest, IntegrityCheckReportsDamagedAssets) {
     ASSERT_OK(damaged);
     ASSERT_EQ(damaged->problems.size(), 1U);
     EXPECT_NE(damaged->problems.front().find(asset->toString()), std::string::npos);
+}
+
+TEST_F(WorkspaceSessionTest, DamagedDatabasesAreReportedNotRepairedOrCrashed) {
+    auto session = create();
+    ASSERT_NE(session, nullptr);
+    const auto layer = addPath(*session);
+    for (int i = 0; i < 50; ++i) {
+        addElement(*session, layer, makeText("note " + std::to_string(i)));
+    }
+    ASSERT_OK(session->close());
+    session.reset();
+    const auto database = root() / "workspace.db";
+    std::string bytes;
+    {
+        std::ifstream in(database, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    ASSERT_GT(bytes.size(), 8192U);
+    const auto tryOpen = [&](const std::string& content) {
+        std::ofstream(database, std::ios::binary | std::ios::trunc) << content;
+        std::filesystem::remove(root() / "workspace.db-wal");
+        std::filesystem::remove(root() / "workspace.db-shm");
+        auto opened = WorkspaceSession::open(root(), {}, services());
+        EXPECT_FALSE(opened.has_value());
+        // Nothing was written over the damaged file.
+        std::ifstream in(database, std::ios::binary);
+        const std::string after{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+        EXPECT_EQ(after, content);
+    };
+    tryOpen(std::string(bytes.size(), 'x'));    // not a database at all
+    tryOpen(bytes.substr(0, bytes.size() / 2)); // truncated
+    std::string scrambled = bytes;              // pages overwritten in the middle
+    for (std::size_t i = 4096; i < scrambled.size() - 100; i += 997) {
+        scrambled[i] = static_cast<char>(scrambled[i] ^ 0x5A);
+    }
+    std::ofstream(database, std::ios::binary | std::ios::trunc) << scrambled;
+    auto opened = WorkspaceSession::open(root(), {}, services());
+    if (opened) { // SQLite may read around damage it does not touch; the check finds it
+        auto report = (*opened)->checkIntegrity();
+        EXPECT_TRUE(!report.has_value() || !report->problems.empty());
+        (void)(*opened)->close();
+    }
 }
 
 TEST_F(WorkspaceSessionTest, CloseReleasesTheLock) {

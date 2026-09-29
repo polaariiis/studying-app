@@ -66,4 +66,64 @@ caches (meshes, text/image/PDF textures) are empty until content is shown.
 
 ## Phase 9 results
 
-(Filled in as each optimisation lands; see ROADMAP.md Phase 9.)
+Same machine, Release, same benchmarks; "before" is the baseline above.
+
+| Measure | Before | After | Change (decision) |
+|---|---|---|---|
+| First frame of a whole 10 000-stroke page | 237 ms | **88 ms** | parallel mesh build and batch merge (D47) |
+| Frame after pasting 10 000 strokes | 188 ms | **100 ms** | same |
+| Stroke commit frame (p50), 10 000-stroke page | 4.5 ms | **3.4 ms** | word-wise batch signatures |
+| Partial-erase commit (p50): writing order / 300 long strokes | 31.7 / 98 ms | **20.8 / 64 ms** | parallel rebuild of the cut strokes |
+| Frame while panning, 10 000 selected | 8.5–10.5 ms | **0.2–0.5 ms** | selection outlines built per zoom, translated while panning |
+| Import of a 50 MB image: GUI-thread time | 393 ms | **3 ms** | copy + hash on a pool thread (D48) |
+| Export 100-stroke page to PDF | 465 ms / 1.7 MB | **29 ms / 0.11 MB** | ink as polylines, dotted paper as dashed rows (D51) |
+| Export 10 000-stroke page: PDF / SVG | 10.2 s, 32 MB / 8.6 s, 142 MB | **2.4 s, 11 MB** / 5.0 s, 153 MB | same; SVG size is Qt's per-run elements |
+| Export 1 000-stroke A4 page: PDF / PNG / SVG | — | 0.29 s, 1.1 MB / 0.8 s / 0.48 s, 15 MB | new benchmark (the common case) |
+| Warm start to idle window | 154 ms | 150 ms | unchanged |
+| Working set after start | 259 MB | 260 MB | unchanged (mostly the OpenGL driver) |
+
+Measured and deliberately left as they are:
+
+* Moving all 10 000 elements of a page and saving it: 127 ms on the GUI thread once, when
+  the drag ends (command 16 ms, apply 3 ms, ≈ 100 ms for 10 000 prepared `UPDATE`s in one
+  transaction). A rare gesture; a bulk-update path is not worth its complexity now.
+* Text rasterisation: 0.12 ms per box at 1×, 1.1 ms at 4.2×, capped at ≈ 1 Mpx (≈ 4 ms) of
+  refinement per frame — inside the frame budget, so it stays on the GUI thread (no worker
+  would remove a measured stall).
+* Search: 19 ms for 100 000 text boxes when 12.5 % of them match (bm25 ranking over the
+  matches); debounced by 150 ms, so typing is not affected.
+* PNG export time grows with the page area (64 Mpx cap: ≈ 4 s for a 6 000-unit-wide page);
+  the zlib level made little difference (−20 % time, +90 % size) and was left at Qt's default.
+
+## Regression thresholds
+
+For comparisons on the reference machine (Release). A change that exceeds one of these is
+investigated before it is merged; the numbers are ≈ 1.5× the Phase 9 results, so ordinary
+noise does not trip them.
+
+| Benchmark | Threshold |
+|---|---|
+| `BM_FirstFrameWholePage` | 130 ms |
+| `BM_BuildFramePanning/15`, `BM_BuildFramePanningAllSelected/15` | 1 ms |
+| `BM_InkGesture/0/240` commit frame p50 | 5 ms |
+| `BM_PartialEraseGesture/0/120` commit frame p50 | 32 ms |
+| `BM_OpenWorkspace/10000` | 130 ms |
+| `BM_Search/10000` | 3 ms |
+| `BM_PlannerCreateTask/10000` | 0.5 ms |
+| `BM_ImportImageGuiPart/4096` | 5 ms |
+| `BM_ExportA4Page/0` (PDF) | 450 ms |
+| `BM_MoveAllAndSave/10000` | 190 ms |
+| Warm start (`tools/measure_startup.ps1`) | 250 ms |
+
+## Memory budgets
+
+| Cache | Limit | Eviction |
+|---|---|---|
+| Tessellated meshes (`RenderCache`) | the page shown (released on page switch) | per element on change; whole page on switch |
+| Image textures | 256 MB | least recently drawn |
+| Image decodes not yet collected | 256 MB | oldest first |
+| Text rasters | 1 Mpx of refinement per frame; released on page switch | per text box on change |
+| PDF tile textures | 192 MB; 512 entries without a texture | least recently drawn; out-of-view pending entries |
+| PDF tiles rendered, not yet collected | 32 MB / 256 tiles | oldest first; queued requests dropped on page switch |
+| Open PDF documents on the worker | 4 | least recently used; failures forgotten after each batch |
+| Automatic backups | 7 daily + 4 weekly | rotation on each backup |

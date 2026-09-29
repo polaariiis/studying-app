@@ -513,6 +513,34 @@ courses) — notebook bundles carry notebooks and their tags only.
 * Accessibility pass (keyboard navigation, screen-reader labels in UI chrome).
 * **Exit:** 1.0 release candidate on all three platforms.
 
+Status: **implemented** (decisions D47–D51; measurements in PERFORMANCE.md).
+
+1. ✅ Baseline and instrumentation: application-level benchmarks (`bench/AppBench.cpp`),
+   start-up/memory script, baseline and regression thresholds (PERFORMANCE.md).
+2. ✅ Profiling-driven optimisation: parallel mesh build and batch merge (10 000-stroke first
+   frame 237 → 88 ms), selection outlines translated while panning (8.5 → 0.2 ms per frame),
+   cheaper batch signatures, export ink as polylines (PDF 4× faster, 3× smaller), asset
+   staging off the GUI thread (50 MB image: 393 → 3 ms on the GUI thread). Text rasterisation
+   measured within the frame budget and left on the GUI thread.
+3. ✅ Backups and integrity: automatic backups on close (daily at most, 7 daily + 4 weekly),
+   Back Up Now, Check Workspace (database + every asset's hash); asset GC stays manual so
+   snapshots stay complete; Save a Copy when writes keep failing (closes P3-01).
+4. ✅ Crash-safe start: unchanged Phase 3/5 behaviour (stale lock → integrity check and
+   recovery, a failing start-up workspace is forgotten), verified; a damaged database is
+   reported, never repaired silently.
+5. ✅ Accessibility: every control has an accessible name (audited through QAccessible in
+   the shell and every planner view); F6 / Shift+F6 cycle the panes.
+6. ✅ Packaging and release: CPack (NSIS installer + ZIP, DMG), AppImage and archive via
+   linuxdeploy on Ubuntu 22.04, `--self-test` smoke-tested on clean CI runners on all three
+   platforms, signing/notarisation hooks active when certificates are configured, draft
+   releases from `v*` tags.
+7. ✅ Engineering: warnings-as-errors builds on GCC 13, Clang (macOS) and MSVC with every
+   test green in CI; curated clang-tidy gated in CI; `docs/CODING_STYLE.md`.
+
+Not in Phase 9 (known, non-blocking): packages are unsigned until certificates exist; no
+Flatpak; no x86_64 macOS build (arm64 only); the move of 10 000 elements still saves in
+≈ 100 ms on the GUI thread; asset garbage collection has no command yet.
+
 ## Later / candidate features
 
 Recurrence & reminders · study session timer & statistics · handwriting recognition and
