@@ -72,7 +72,8 @@ jobs:
 
       - name: Report findings as annotations
         if: failure()
-        run: grep -E '^[^ ].*:[0-9]+: ' tidy.log | head -50 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
+        run: |
+          grep -E '^[^ ].*:[0-9]+: ' tidy.log | head -50 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
   # ---------------------------------------------------------------- Qt-free core
   core:
