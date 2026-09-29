@@ -1,0 +1,148 @@
+name: Release
+
+# A tag `v<version>` builds, smoke-tests and publishes the packages as a draft GitHub
+# release (docs/BUILDING.md §8). Nothing is published automatically: the draft is reviewed
+# and published by hand.
+#
+# Signing is optional and happens only when these repository secrets exist:
+#   WINDOWS_SIGN_PFX_BASE64, WINDOWS_SIGN_PASSWORD      Authenticode (signtool, via CPack)
+#   MACOS_CODESIGN_IDENTITY, MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD,
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD         Developer ID + notarisation
+# Without them the packages are built unsigned, exactly as in package.yml.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    uses: ./.github/workflows/package.yml
+
+  signed-windows:
+    name: Signed Windows packages
+    needs: packages
+    runs-on: windows-2022
+    env:
+      HAVE_CERT: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 != '' }}
+      QT_VERSION: "6.8.3"
+    steps:
+      - uses: actions/checkout@v5
+        if: env.HAVE_CERT == 'true'
+      - uses: lukka/get-cmake@latest
+        if: env.HAVE_CERT == 'true'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: env.HAVE_CERT == 'true'
+        with:
+          arch: x64
+      - uses: jurplel/install-qt-action@v4
+        if: env.HAVE_CERT == 'true'
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtpdf
+          cache: true
+      - name: Build and sign (CPack pre/post-build scripts)
+        if: env.HAVE_CERT == 'true'
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          STUDYAPP_SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGN_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+          $env:STUDYAPP_SIGN_PFX = $pfx
+          cmake --preset package
+          cmake --build --preset package
+          Push-Location build/package; cpack; Pop-Location
+          Remove-Item $pfx
+      - uses: actions/upload-artifact@v4
+        if: env.HAVE_CERT == 'true'
+        with:
+          name: signed-Windows
+          path: |
+            build/package/StudyBoard-*.exe
+            build/package/StudyBoard-*.zip
+            build/package/StudyBoard-*.sha256
+
+  signed-macos:
+    name: Signed and notarised macOS package
+    needs: packages
+    runs-on: macos-14
+    env:
+      HAVE_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+      QT_VERSION: "6.8.3"
+    steps:
+      - uses: actions/checkout@v5
+        if: env.HAVE_CERT == 'true'
+      - uses: lukka/get-cmake@latest
+        if: env.HAVE_CERT == 'true'
+      - uses: jurplel/install-qt-action@v4
+        if: env.HAVE_CERT == 'true'
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: clang_64
+          modules: qtpdf
+          cache: true
+      - name: Import the signing certificate
+        if: env.HAVE_CERT == 'true'
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p temporary "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p temporary "$keychain"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+      - name: Build, sign, package and notarise
+        if: env.HAVE_CERT == 'true'
+        env:
+          STUDYAPP_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cmake --preset package
+          cmake --build --preset package
+          (cd build/package && cpack)
+          dmg=$(ls build/package/StudyBoard-*.dmg)
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$dmg"
+      - uses: actions/upload-artifact@v4
+        if: env.HAVE_CERT == 'true'
+        with:
+          name: signed-macOS
+          path: build/package/StudyBoard-*.dmg
+
+  publish:
+    name: Draft release
+    needs: [packages, signed-windows, signed-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Prefer signed packages where they exist
+        shell: bash
+        run: |
+          mkdir release
+          for dir in artifacts/packages-*; do cp "$dir"/* release/; done
+          for dir in artifacts/signed-*; do [ -d "$dir" ] && cp -f "$dir"/* release/ || true; done
+          (cd release && sha256sum StudyBoard-* | grep -v '\.sha256' > SHA256SUMS.txt)
+          ls -l release
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: release/*
