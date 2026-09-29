@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace studyapp::document::commands {
@@ -72,6 +73,36 @@ createPage(const Workspace& workspace, core::SectionId section, std::string titl
 [[nodiscard]] core::Result<Command> renamePage(const Workspace& workspace, core::PageId page,
                                                std::string title, const core::Clock& clock);
 [[nodiscard]] core::Result<Command> deletePage(const Workspace& workspace, core::PageId page);
+
+/// A section `title` appended to `notebook` holding one bounded page per page of the
+/// document `asset` (Phase 8: an imported PDF), each the size of its document page and
+/// showing it behind its content, with a first layer (one undoable command, "Import PDF").
+/// Page titles are "<title> · p. N". Errors: NotFound (notebook), InvalidArgument (blank
+/// title, no pages, a size that is not positive and finite).
+[[nodiscard]] core::Result<Created<core::SectionId>>
+createDocumentSection(const Workspace& workspace, core::NotebookId notebook, std::string title,
+                      core::AssetId asset, std::span<const core::DVec2> pageSizes,
+                      const core::Clock& clock, core::IdGenerator& ids);
+
+/// Copies `notebooks` of `source` — another workspace, e.g. one read from a bundle — into
+/// `workspace` with everything in them (sections, pages, layers, elements) and the tags
+/// their pages use, appended after the existing notebooks in the given order (one command,
+/// "Import notebook"; Phase 8, docs/ARCHITECTURE.md §11).
+///
+/// Conflicts are detected, never overwritten: if any copied record's id is already used in
+/// `workspace` (e.g. a notebook imported twice), every copied record gets a new id and all
+/// references (parents, connector ends) follow. A tag is matched by name (ASCII case
+/// ignored) and reused; otherwise it is created, with a new id if its id is taken. Assets
+/// (images, PDF pages) are referenced through `assets` (source asset -> the asset already
+/// imported into `workspace`). Order keys within notebooks, timestamps and content are kept.
+///
+/// Errors: NotFound (a notebook not in `source`, an asset missing from `assets`),
+/// InvalidArgument (no notebook, one listed twice).
+[[nodiscard]] core::Result<Created<std::vector<core::NotebookId>>>
+importNotebooks(const Workspace& workspace, const Workspace& source,
+                std::span<const core::NotebookId> notebooks,
+                const std::unordered_map<core::AssetId, core::AssetId>& assets,
+                core::IdGenerator& ids);
 
 // ---- ordering -------------------------------------------------------------------------
 // Moves change only the record's parent, order key and modified time; the subtree moves

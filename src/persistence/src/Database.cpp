@@ -257,6 +257,18 @@ Result<void> Database::configureConnection() {
                    "PRAGMA cache_size = -32768;");
 }
 
+Result<void> Database::hardenForUntrustedFile() {
+    // SQLite's advice for database files from untrusted sources
+    // (https://sqlite.org/security.html): defensive mode, no functions from the schema,
+    // extra corruption checks.
+    if (connection_ == nullptr ||
+        sqlite3_db_config(connection_, SQLITE_DBCONFIG_DEFENSIVE, 1, nullptr) != SQLITE_OK) {
+        return makeError(ErrorCode::Internal, "cannot enable SQLite's defensive mode");
+    }
+    return execute("PRAGMA trusted_schema = OFF;"
+                   "PRAGMA cell_size_check = ON;");
+}
+
 Database::~Database() {
     if (connection_ != nullptr) {
         cache_.clear(); // finalise cached statements first

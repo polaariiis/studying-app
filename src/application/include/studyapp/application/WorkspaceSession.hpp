@@ -10,14 +10,29 @@
 #include <studyapp/document/Workspace.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace studyapp::application {
+
+/// One full-text search hit (Phase 8): the indexed record and its bm25 score (lower is
+/// better). Resolve it against the session's Workspace (application::search does).
+struct SearchHit {
+    enum class Kind : std::uint8_t {
+        PageTitle,
+        TextBox,
+        Task
+    };
+    Kind kind = Kind::PageTitle;
+    core::Uuid owner; ///< page, text box element or task
+    double score = 0.0;
+};
 
 /// Services a session needs from its environment (constructor injection; the clock and
 /// id generator are deterministic in tests).
@@ -108,6 +123,41 @@ public:
     [[nodiscard]] core::Result<core::AssetId> importAsset(const std::filesystem::path& source,
                                                           std::string_view mediaType);
     [[nodiscard]] core::Result<std::filesystem::path> assetPath(core::AssetId asset);
+
+    // ---- bundles (Phase 8; docs/DATABASE_SCHEMA.md §12) ------------------------------------
+    /// Writes a bundle (a zip archive) of the whole workspace — a consistent snapshot of the
+    /// database after flushing, and every asset — or, with `notebook`, of that notebook with
+    /// the tags and assets it uses. Only reads the workspace (also when it is read-only);
+    /// `target` must lie outside the workspace directory and is replaced only when complete.
+    [[nodiscard]] core::Result<void>
+    exportBundle(const std::filesystem::path& target,
+                 std::optional<core::NotebookId> notebook = std::nullopt);
+    /// Copies every notebook of a bundle (workspace or notebook bundle) into this workspace
+    /// as one undoable command ("Import notebook"), with the assets and tags they use;
+    /// conflicting ids are remapped (document::commands::importNotebooks). The bundle is
+    /// checked before anything is changed (persistence::extractBundle). Returns the new
+    /// notebooks. Errors: those of extractBundle, InvalidArgument (no notebook in it). Assets
+    /// are imported before the command; if it then fails they stay unreferenced until asset
+    /// garbage collection removes them (as after an undone image insertion).
+    [[nodiscard]] core::Result<std::vector<core::NotebookId>>
+    importBundle(const std::filesystem::path& bundle);
+    /// True if `path` lies inside this workspace's directory — or cannot be resolved, so
+    /// that callers refuse to write there (exports and bundles never write into it).
+    [[nodiscard]] bool isInsideWorkspace(const std::filesystem::path& path) const;
+    /// Unpacks a bundle as a new workspace directory `root` (missing or empty), checked as by
+    /// persistence::extractBundle; open() it afterwards.
+    [[nodiscard]] static core::Result<void> extractBundle(const std::filesystem::path& bundle,
+                                                          const std::filesystem::path& root);
+
+    /// Full-text search over page titles, text boxes and tasks (docs/DATABASE_SCHEMA.md §6):
+    /// up to `limit` hits, best first. The index is kept in step with every written patch;
+    /// a workspace opened read-write whose index is missing or outdated is re-indexed once
+    /// when opened. A read-only session searches the index as it is on disk.
+    /// False for a workspace from before Phase 8 opened read-only: its index is built the
+    /// first time it is opened for editing, and until then search finds nothing.
+    [[nodiscard]] bool isSearchIndexed();
+    [[nodiscard]] core::Result<std::vector<SearchHit>> search(std::string_view text,
+                                                              std::size_t limit);
 
     /// Flushes, closes the database and releases the lock. If flushing fails the session
     /// stays open (nothing is lost) and the error is returned.

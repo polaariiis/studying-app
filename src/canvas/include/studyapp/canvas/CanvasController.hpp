@@ -3,6 +3,7 @@
 #include <studyapp/canvas/Camera.hpp>
 #include <studyapp/canvas/CanvasScene.hpp>
 #include <studyapp/canvas/DocumentPort.hpp>
+#include <studyapp/canvas/DocumentRasterizer.hpp>
 #include <studyapp/canvas/ImageSource.hpp>
 #include <studyapp/canvas/Input.hpp>
 #include <studyapp/canvas/RenderBatches.hpp>
@@ -78,6 +79,9 @@ struct CanvasStats {
     std::size_t imageTextures = 0; ///< decoded assets held as textures (one per asset)
     std::size_t imageTextureBytes = 0;
     std::uint32_t imagesDecodedLastFrame = 0;
+    std::size_t documentTiles = 0; ///< document (PDF) tiles held as textures
+    std::size_t documentTileBytes = 0;
+    std::uint32_t documentTilesUploadedLastFrame = 0;
 };
 
 /// The canvas engine (docs/CANVAS.md): routes plain input events to tools, owns the
@@ -161,10 +165,18 @@ public:
     /// centred in the view, on the page's target layer, selected. One command.
     core::Result<void> insertImage(core::AssetId asset, const core::Vec2& pixelSize);
 
+    // ---- document pages (PDF, Phase 8; docs/CANVAS.md §10) -----------------------------
+    /// Renders the pages of imported documents shown behind page content (not owned).
+    /// Without one, a document page shows only its paper.
+    void setDocumentRasterizer(DocumentRasterizer* rasterizer);
+
     // ---- actions -------------------------------------------------------------------------
     /// Deletes the selected elements as one command. No-op for an empty selection.
     [[nodiscard]] core::Result<void> deleteSelection();
     void selectAll();
+    /// Selects `element` (on the shown page) and centres the view on it unless it is already
+    /// entirely in view (e.g. a search result). Returns false if it is not on this page.
+    bool revealElement(core::ElementId element);
 
     // ---- clipboard (docs/CANVAS.md §7) ---------------------------------------------------
     // The canvas clipboard holds copies of elements of this controller's workspace (it is
@@ -312,6 +324,29 @@ private:
     double imageRefinedPixels_ = 0.0;
     std::uint32_t imagesDecoded_ = 0;
     bool imageRefinementPending_ = false;
+
+    // Document pages: tiles as textures, least recently drawn released beyond the budget.
+    struct DocumentTile {
+        render::TextureHandle texture{};
+        bool failed = false; ///< the rasterizer could not render it: not retried
+        std::uint64_t lastFrame = 0;
+        std::size_t bytes = 0;
+    };
+    /// New tiles turned into textures per frame; the rest arrive in the next frames.
+    static constexpr std::uint32_t kDocumentTileUploadsPerFrame = 8;
+    /// Tile entries kept before those without a texture that are out of view are dropped.
+    static constexpr std::size_t kDocumentTileEntries = 512;
+    void drawDocumentPage(const document::PageInfo& page, render::Renderer& renderer);
+    /// The tile's texture (invalid while it is being rendered, or if it failed).
+    render::TextureHandle documentTile(const DocumentTileKey& key, render::Renderer& renderer);
+    void releaseDocumentTiles();
+    void trimDocumentTiles(render::Renderer& renderer);
+    DocumentRasterizer* documents_ = nullptr;
+    std::unordered_map<DocumentTileKey, DocumentTile, DocumentTileKeyHash> documentTiles_;
+    std::size_t documentTileBytes_ = 0;
+    std::uint32_t documentTilesUploaded_ = 0;
+    bool documentTilesPending_ = false;
+    std::vector<DocumentTileKey> wantedTiles_; ///< tiles asked for this frame (reused)
 
     // Text.
     struct TextTexture {

@@ -3,7 +3,9 @@
 // edits through the session, undo across pages, locks, no save questions. Runs on the
 // offscreen platform (the canvas has no OpenGL there; everything else is real).
 
+#include "PageExport.hpp"
 #include "PlannerPanel.hpp"
+#include "SessionDocumentRasterizer.hpp"
 #include "SessionImageSource.hpp"
 #include "WorkspaceTreeModel.hpp"
 
@@ -26,6 +28,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QCursor>
 #include <QDir>
 #include <QFile>
@@ -34,8 +37,13 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
+#include <QPainter>
+#include <QPdfDocument>
+#include <QPdfWriter>
+#include <QPrinter>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QSvgRenderer>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextEdit>
@@ -121,6 +129,17 @@ public:
     std::optional<std::filesystem::path> newWorkspace;
     std::optional<std::filesystem::path> openWorkspace;
     std::optional<std::filesystem::path> insertImage;
+    std::optional<std::filesystem::path> importDocument;
+    std::optional<std::filesystem::path> exportTarget;
+    std::optional<std::filesystem::path> bundleTarget;
+    std::optional<std::filesystem::path> bundleToOpen;
+    QStringList exportSuggestions;
+    bool exportPdfOnly = false;
+    std::optional<QString> printTo;                 ///< nullopt: printing is cancelled
+    std::optional<QPrinter::PrintRange> printRange; ///< nullopt: the default (all)
+    int printFrom = 0;
+    int printToPage = 0;
+    int printPages = 0;
     bool openReadOnly = true;
     StaleLockChoice staleLock = StaleLockChoice::Recover;
     bool confirmDeletes = true;
@@ -143,6 +162,41 @@ public:
     std::optional<std::filesystem::path> chooseImageToInsert(QWidget*) override {
         ++questions;
         return insertImage;
+    }
+    std::optional<std::filesystem::path> chooseDocumentToImport(QWidget*) override {
+        ++questions;
+        return importDocument;
+    }
+    std::optional<std::filesystem::path> chooseExportTarget(QWidget*, const QString& name,
+                                                            bool pdfOnly) override {
+        ++questions;
+        exportSuggestions << name;
+        exportPdfOnly = pdfOnly;
+        return exportTarget;
+    }
+    std::optional<std::filesystem::path> chooseBundleTarget(QWidget*,
+                                                            const QString& name) override {
+        ++questions;
+        exportSuggestions << name;
+        return bundleTarget;
+    }
+    std::optional<std::filesystem::path> chooseBundleToOpen(QWidget*) override {
+        ++questions;
+        return bundleToOpen;
+    }
+    bool setUpPrinter(QWidget*, QPrinter& printer, int pages) override {
+        ++questions;
+        printPages = pages;
+        if (printRange) {
+            printer.setPrintRange(*printRange);
+            printer.setFromTo(printFrom, printToPage);
+        }
+        if (!printTo) {
+            return false;
+        }
+        printer.setOutputFormat(QPrinter::PdfFormat); // "print" into a PDF file
+        printer.setOutputFileName(*printTo);
+        return true;
     }
     bool confirmOpenReadOnly(QWidget*, const QString&) override {
         ++questions;
@@ -1378,6 +1432,109 @@ private Q_SLOTS:
         QCOMPARE(titlesIn(tasks).size(), 2);
     }
 
+    // Phase 8: search from the navigation panel. Results replace the tree while a query is
+    // shown, follow the workspace, and jump to the page (selecting the text box) or to the
+    // task in the planner; Esc returns to the tree.
+    void searchThroughTheShell() {
+        Shell shell(settings(QStringLiteral("search")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Search"))));
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        const auto& ws = shell.ws();
+        const auto first = *shell.window->activePage();
+        auto box = document::commands::createElement(
+            ws, ws.layersOf(first).front(),
+            {.transform = {.position = {5000, 5000}}, // off screen: revealing centres it
+             .payload = document::TextBox{.size = {200, 40}, .text = "Thylakoid membranes"}},
+            shell.ids);
+        QVERIFY(box.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(box->command)).has_value());
+        shell.action("actionNewPage")->trigger();
+        QVERIFY(*shell.window->activePage() != first);
+
+        auto* field = shell.window->findChild<QLineEdit*>(QStringLiteral("searchField"));
+        auto* results = shell.window->findChild<QTreeWidget*>(QStringLiteral("searchResults"));
+        QVERIFY(field != nullptr && results != nullptr);
+        shell.action("actionFind")->trigger();
+        QTRY_VERIFY(field->hasFocus());
+        QTest::keyClicks(field, QStringLiteral("thylak"));
+        QTRY_COMPARE(results->topLevelItemCount(), 1);
+        QVERIFY(results->isVisible());
+        QVERIFY(
+            results->topLevelItem(0)->text(0).startsWith(QStringLiteral("Thylakoid membranes")));
+        const auto undoBefore = shell.window->session()->history().undoCount();
+        QTest::keyClick(field, Qt::Key_Return); // opens the first result
+        QCOMPARE(*shell.window->activePage(), first);
+        QCOMPARE(shell.window->session()->history().undoCount(), undoBefore); // no edit
+
+        // The results follow the workspace: the word is gone after an edit.
+        auto edit = document::commands::editText(ws, box->id, "Stroma", {200, 40});
+        QVERIFY(edit.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(*edit)).has_value());
+        QTRY_COMPARE(results->topLevelItem(0)->text(0), QStringLiteral("No results"));
+
+        // A task hit opens the planner on it.
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        auto task = planner.createTask({.title = "Quiz on the stroma"});
+        QVERIFY(task.has_value());
+        field->setFocus();
+        field->selectAll();
+        QTest::keyClicks(field, QStringLiteral("quiz"));
+        QTRY_VERIFY(results->topLevelItem(0) != nullptr &&
+                    results->topLevelItem(0)->text(0).startsWith(QStringLiteral("Quiz")));
+        QCOMPARE(results->topLevelItemCount(), 1);
+        results->setCurrentItem(results->topLevelItem(0));
+        Q_EMIT results->itemActivated(results->topLevelItem(0), 0);
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(panel->isVisible());
+        QCOMPARE(panel->selectedTask(), *task);
+
+        // Esc: back to the tree.
+        field->setFocus();
+        QTest::keyClick(field, Qt::Key_Escape);
+        QVERIFY(field->text().isEmpty());
+        QVERIFY(!results->isVisible());
+        QVERIFY(shell.window->findChild<QTreeView*>(QStringLiteral("workspaceTree"))->isVisible());
+    }
+
+    // Search results are refreshed by edits that change what search shows (text, titles),
+    // not by ink: drawing with the results open keeps the list and the chosen result.
+    void searchResultsIgnoreInk() {
+        Shell shell(settings(QStringLiteral("searchink")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("SearchInk"))));
+        const auto page = *shell.window->activePage();
+        const auto layer = shell.ws().layersOf(page).front();
+        const auto add = [&](document::ElementPayload payload) {
+            auto created = document::commands::createElement(
+                shell.ws(), layer, {.payload = std::move(payload)}, shell.ids);
+            QVERIFY(created.has_value());
+            QVERIFY(shell.window->session()->execute(std::move(created->command)).has_value());
+        };
+        add(document::TextBox{.size = {200, 40}, .text = "Osmosis one"});
+        add(document::TextBox{.size = {200, 40}, .text = "Osmosis two"});
+        auto* field = shell.window->findChild<QLineEdit*>(QStringLiteral("searchField"));
+        auto* results = shell.window->findChild<QTreeWidget*>(QStringLiteral("searchResults"));
+        field->setFocus();
+        QTest::keyClicks(field, QStringLiteral("osmosis"));
+        QTRY_COMPARE(results->topLevelItemCount(), 2);
+        // A one-line box: its text, then where it is (not the same text twice).
+        const QStringList lines = results->topLevelItem(0)->text(0).split(u'\n');
+        QCOMPARE(lines.size(), 2);
+        QVERIFY(lines[0].startsWith(QStringLiteral("Osmosis")));
+        QVERIFY(lines[1].contains(QStringLiteral(" › ")));
+        QTreeWidgetItem* chosen = results->topLevelItem(1);
+        results->setCurrentItem(chosen);
+        add(document::Stroke{.points = document::makeStrokePoints({{0, 0, 1}, {9, 9, 1}})});
+        QTest::qWait(300);                          // longer than the search delay
+        QCOMPARE(results->topLevelItem(1), chosen); // not rebuilt
+        // A text edit refreshes the list and keeps the chosen result chosen.
+        const QVariant key = chosen->data(0, Qt::UserRole);
+        add(document::TextBox{.size = {200, 40}, .text = "Osmosis three"});
+        QTRY_COMPARE(results->topLevelItemCount(), 3);
+        QVERIFY(results->currentItem() != nullptr);
+        QCOMPARE(results->currentItem()->data(0, Qt::UserRole), key);
+    }
+
     // Decoded images wait for the canvas to collect them; ones it never collects (the page
     // changed or the zoom asked for another size meanwhile) are kept only within a budget,
     // and a dropped one is decoded again when asked for.
@@ -1415,6 +1572,502 @@ private Q_SLOTS:
         QCOMPARE(source.uncollectedBytes(), std::size_t{0}); // collecting the 64 dropped the 128
         QVERIFY(!source.load(asset, 128).has_value());
         QVERIFY(source.load(core::AssetId{shell.ids.next()}, 64)->empty()); // unknown asset
+    }
+
+    /// A PDF of three pages (400 × 300, 300 × 500 and 400 × 300 pt), a black 100 pt square
+    /// at the top left of the first page, nothing else.
+    QString writePdf(const QString& name) {
+        const QString file = dir_.filePath(name);
+        QPdfWriter writer(file);
+        writer.setResolution(72); // one unit per point
+        writer.setPageMargins(QMarginsF(0, 0, 0, 0));
+        writer.setPageSize(QPageSize(QSizeF(400, 300), QPageSize::Point));
+        QPainter painter(&writer);
+        painter.fillRect(QRectF(0, 0, 100, 100), Qt::black);
+        writer.setPageSize(QPageSize(QSizeF(300, 500), QPageSize::Point));
+        writer.newPage();
+        writer.setPageSize(QPageSize(QSizeF(400, 300), QPageSize::Point));
+        writer.newPage();
+        painter.end();
+        return file;
+    }
+
+    static QByteArray sha256Of(const QString& file) {
+        QFile in(file);
+        if (!in.open(QIODevice::ReadOnly)) {
+            return {};
+        }
+        return QCryptographicHash::hash(in.readAll(), QCryptographicHash::Sha256);
+    }
+
+    // Phase 8, step 3: File ▸ Import PDF adds a section with one bounded page per PDF page
+    // (one undo step), the PDF is copied into the assets and never written, and its pages
+    // are rendered in tiles on a worker thread.
+    void importPdfThroughTheShell() {
+        Shell shell(settings(QStringLiteral("pdf")));
+        const auto path = freshPath(QStringLiteral("Pdf"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const QString pdf = writePdf(QStringLiteral("Lecture notes.pdf"));
+        const QByteArray original = sha256Of(pdf);
+        QVERIFY(!original.isEmpty());
+
+        const auto info = ui::inspectPdf(toPath(pdf));
+        QVERIFY(info.has_value());
+        QCOMPARE(info->pageSizes.size(), std::size_t{3});
+        QCOMPARE(info->pageSizes[1].x, 300.0 * document::kUnitsPerPoint);
+        QCOMPARE(info->pageSizes[1].y, 500.0 * document::kUnitsPerPoint);
+
+        const auto notebooks = shell.ws().notebookCount();
+        shell.dialogs->importDocument = toPath(pdf);
+        shell.action("actionImportPdf")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QCOMPARE(shell.ws().notebookCount(), notebooks); // into the current notebook
+        const auto page = *shell.window->activePage();
+        const document::PageInfo& first = *shell.ws().findPage(page);
+        QCOMPARE(QString::fromStdString(shell.ws().findSection(first.section)->title),
+                 QStringLiteral("Lecture notes"));
+        const auto span = shell.ws().pagesOf(first.section);
+        const std::vector<core::PageId> pages(span.begin(), span.end()); // outlives a reopen
+        QCOMPARE(pages.size(), std::size_t{3});
+        QVERIFY(first.document.has_value());
+        QCOMPARE(first.document->index, 0);
+        QCOMPARE(first.extent, document::PageExtent::Bounded);
+        QCOMPARE(first.size, info->pageSizes[0]);
+        QCOMPARE(shell.ws().findPage(pages[2])->document->index, 2);
+        QCOMPARE(QString::fromStdString(shell.window->session()->history().nextUndo()->label),
+                 QStringLiteral("Import PDF"));
+        const core::AssetId asset = first.document->asset;
+        const core::DVec2 size = first.size;
+
+        // Rendering: the preview of the whole page, then a tile at the right edge.
+        ui::SessionDocumentRasterizer rasterizer(*shell.window->session());
+        const int preview = canvas::documentPreviewLevel(size);
+        const canvas::DocumentTileKey whole{.asset = asset, .page = 0, .level = preview};
+        QVERIFY(!rasterizer.tile(whole).has_value()); // rendering
+        QVERIFY(!rasterizer.tile(whole).has_value()); // not queued twice
+        QVERIFY(rasterizer.queuedTiles() <= 1U);
+        rasterizer.waitForTiles();
+        const auto pixels = rasterizer.tile(whole);
+        QVERIFY(pixels.has_value() && !pixels->empty());
+        QCOMPARE(pixels->width,
+                 static_cast<int>(std::ceil(size.x * canvas::documentScale(preview))));
+        QCOMPARE(pixels->height,
+                 static_cast<int>(std::ceil(size.y * canvas::documentScale(preview))));
+        const auto at = [](const render::ImageData& image, int x, int y) {
+            const std::size_t i =
+                (static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) +
+                 static_cast<std::size_t>(x)) *
+                4U;
+            return std::array<int, 4>{image.pixels[i], image.pixels[i + 1], image.pixels[i + 2],
+                                      image.pixels[i + 3]};
+        };
+        QCOMPARE(at(*pixels, 5, 5), (std::array<int, 4>{0, 0, 0, 255})); // the black square
+        // Unpainted paper is opaque white (it covers the coarse preview under the tile).
+        QCOMPARE(at(*pixels, pixels->width - 5, pixels->height - 5),
+                 (std::array<int, 4>{255, 255, 255, 255}));
+        QCOMPARE(rasterizer.uncollectedBytes(), std::size_t{0});
+        const canvas::DocumentTileKey edge{.asset = asset, .page = 0, .level = 0, .column = 1};
+        QVERIFY(!rasterizer.tile(edge).has_value());
+        rasterizer.waitForTiles();
+        const auto right = rasterizer.tile(edge);
+        QVERIFY(right.has_value());
+        QCOMPARE(right->width, static_cast<int>(std::ceil(size.x)) - canvas::kDocumentTilePx);
+        QCOMPARE(right->height, static_cast<int>(std::ceil(size.y)));
+        // Out of the page, a missing page, a negative page: nothing to draw.
+        for (const canvas::DocumentTileKey& bad :
+             {canvas::DocumentTileKey{.asset = asset, .page = 0, .level = 0, .column = 5},
+              canvas::DocumentTileKey{.asset = asset, .page = 7, .level = 0},
+              canvas::DocumentTileKey{.asset = asset, .page = -1, .level = 0}}) {
+            QVERIFY(!rasterizer.tile(bad).has_value());
+            rasterizer.waitForTiles();
+            const auto none = rasterizer.tile(bad);
+            QVERIFY(none.has_value() && none->empty());
+        }
+        // An unknown asset: at once.
+        const auto unknown = rasterizer.tile({.asset = core::AssetId{shell.ids.next()}});
+        QVERIFY(unknown.has_value() && unknown->empty());
+        // Requests the canvas no longer wants are dropped before they are rendered.
+        const std::size_t rendered = rasterizer.renderedTiles();
+        for (int i = 0; i < 12; ++i) {
+            (void)rasterizer.tile(
+                {.asset = asset, .page = 1, .level = 3, .column = i % 4, .row = i / 4});
+        }
+        rasterizer.keepOnly({});
+        rasterizer.waitForTiles();
+        QVERIFY(rasterizer.renderedTiles() - rendered < 12U);
+        QCOMPARE(rasterizer.queuedTiles(), std::size_t{0});
+
+        // The source file is untouched; the workspace has its own identical copy.
+        QCOMPARE(sha256Of(pdf), original);
+        const auto stored = shell.window->session()->assetPath(asset);
+        QVERIFY(stored.has_value());
+        QCOMPARE(sha256Of(QString::fromStdU16String(stored->u16string())), original);
+
+        // One undo step removes the import.
+        shell.action("actionUndo")->trigger();
+        QVERIFY(shell.ws().findPage(page) == nullptr);
+        shell.action("actionRedo")->trigger();
+        QVERIFY(shell.ws().findPage(page) != nullptr);
+
+        // Step 4: annotations are the page's own elements, above the PDF; they survive a
+        // reopen, and the PDF (source and stored copy) stays byte-identical.
+        const auto layer = shell.ws().layersOf(pages[1]).front();
+        auto note = document::commands::createElement(
+            shell.ws(), layer,
+            {.transform = {.position = {40, 60}},
+             .payload = document::TextBox{.size = {200, 40}, .text = "see figure 2"}},
+            shell.ids);
+        QVERIFY(note.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(note->command)).has_value());
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        const document::PageInfo* reopened = shell.ws().findPage(pages[1]);
+        QVERIFY(reopened != nullptr && reopened->document.has_value());
+        QCOMPARE(reopened->document->index, 1);
+        QCOMPARE(shell.ws().elementsOf(shell.ws().layersOf(pages[1]).front()).size(),
+                 std::size_t{1});
+        QCOMPARE(sha256Of(pdf), original);
+        const auto storedAgain = shell.window->session()->assetPath(asset);
+        QVERIFY(storedAgain.has_value());
+        QCOMPARE(sha256Of(QString::fromStdU16String(storedAgain->u16string())), original);
+    }
+
+    /// Share of pixels that differ clearly (any channel by more than 64) between two images
+    /// of the same size.
+    static double differingShare(const QImage& a, const QImage& b) {
+        if (a.size() != b.size() || a.isNull()) {
+            return 1.0;
+        }
+        const QImage x = a.convertToFormat(QImage::Format_RGB32);
+        const QImage y = b.convertToFormat(QImage::Format_RGB32);
+        qint64 differing = 0;
+        for (int row = 0; row < x.height(); ++row) {
+            const auto* p = reinterpret_cast<const QRgb*>(x.constScanLine(row));
+            const auto* q = reinterpret_cast<const QRgb*>(y.constScanLine(row));
+            for (int column = 0; column < x.width(); ++column) {
+                if (std::abs(qRed(p[column]) - qRed(q[column])) > 64 ||
+                    std::abs(qGreen(p[column]) - qGreen(q[column])) > 64 ||
+                    std::abs(qBlue(p[column]) - qBlue(q[column])) > 64) {
+                    ++differing;
+                }
+            }
+        }
+        return static_cast<double>(differing) / (static_cast<double>(x.width()) * x.height());
+    }
+
+    static QImage renderPdfPage(const QString& file, int page, QSize size) {
+        QPdfDocument pdf;
+        if (pdf.load(file) != QPdfDocument::Error::None) {
+            return {};
+        }
+        QImage image = pdf.render(page, size);
+        QImage flat(image.size(), QImage::Format_RGB32);
+        flat.fill(Qt::white);
+        QPainter(&flat).drawImage(0, 0, image);
+        return flat;
+    }
+
+    // Phase 8, step 5: File ▸ Export Page writes PDF, PNG or SVG of the page as the canvas
+    // shows it; Export Section as PDF writes every page of the section; Print prints the
+    // section, a range or the current page. Exporting never changes the workspace, never
+    // writes into the workspace folder and asks for the target once.
+    void exportAndPrintPages() {
+        Shell shell(settings(QStringLiteral("export")));
+        const auto path = freshPath(QStringLiteral("Export"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const auto page = *shell.window->activePage();
+        const auto layer = shell.ws().layersOf(page).front();
+        const auto add = [&](document::ElementPayload payload, core::DVec2 at = {}) {
+            auto created = document::commands::createElement(
+                shell.ws(), layer, {.transform = {.position = at}, .payload = std::move(payload)},
+                shell.ids);
+            QVERIFY(created.has_value());
+            QVERIFY(shell.window->session()->execute(std::move(created->command)).has_value());
+        };
+        add(document::Stroke{.color = core::Color::black(),
+                             .baseWidth = 12.0F,
+                             .points = document::makeStrokePoints({{100, 200, 1}, {300, 200, 1}})});
+        // A translucent highlighter doubling back on itself: overlaps are not darker.
+        add(document::Stroke{
+            .brush = document::Brush::Highlighter,
+            .color = core::Color::fromRgba(250, 200, 0, 128),
+            .baseWidth = 20.0F,
+            .points = document::makeStrokePoints({{100, 300, 1}, {300, 300, 1}, {100, 310, 1}})});
+        add(document::TextBox{.size = {220, 40}, .text = "Export text"}, {100, 400});
+
+        const document::Workspace before = shell.ws();
+        const auto undoCount = shell.window->session()->history().undoCount();
+        const core::DRect area = ui::exportArea(shell.ws(), page);
+        const auto exportTo = [&](const QString& name, const char* action = "actionExportPage") {
+            const QString file = dir_.filePath(name);
+            shell.dialogs->exportTarget = toPath(file);
+            shell.action(action)->trigger();
+            return file;
+        };
+
+        // PNG: 2 pixels per unit.
+        const QString png = exportTo(QStringLiteral("page.png"));
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QVERIFY(!shell.dialogs->exportPdfOnly);
+        const QImage image(png);
+        QVERIFY(!image.isNull());
+        QCOMPARE(image.width(), static_cast<int>(std::ceil(area.width() * 2.0)));
+        const auto pixel = [&](const QImage& from, core::DVec2 world) {
+            const double sx = from.width() / area.width();
+            const double sy = from.height() / area.height();
+            return from.pixelColor(static_cast<int>((world.x - area.min.x) * sx),
+                                   static_cast<int>((world.y - area.min.y) * sy));
+        };
+        QVERIFY(pixel(image, {200, 200}).red() < 60);  // the stroke
+        QVERIFY(pixel(image, {205, 250}).red() > 230); // paper
+        // Text is laid out as on the canvas (platform::QtTextLayout's raster at 2 px/unit).
+        {
+            const render::ImageData raster =
+                shell.textLayout.rasterize("Export text", {220, 40}, 2.0F);
+            QImage canvasText(raster.pixels.data(), raster.width, raster.height,
+                              QImage::Format_RGBA8888_Premultiplied);
+            QImage onPaper(canvasText.size(), QImage::Format_RGB32);
+            onPaper.fill(Qt::white);
+            QPainter(&onPaper).drawImage(0, 0, canvasText);
+            // With real fonts the glyphs match exactly; the fallback boxes drawn where the test
+            // platform has no fonts may land one unit (2 px) off, so the best match within that
+            // counts. The dot pattern shows around the glyphs in the export only.
+            double best = 1.0;
+            for (int dx = -2; dx <= 2; ++dx) {
+                for (int dy = -2; dy <= 2; ++dy) {
+                    const QImage exported =
+                        image.copy(static_cast<int>((100 - area.min.x) * 2) + dx,
+                                   static_cast<int>((400 - area.min.y) * 2) + dy, onPaper.width(),
+                                   onPaper.height());
+                    best = std::min(best, differingShare(onPaper, exported));
+                }
+            }
+            QVERIFY(best < 0.02);
+        }
+        const QColor once = pixel(image, {120, 292});  // one part of the highlighter
+        const QColor twice = pixel(image, {200, 305}); // where it overlaps itself
+        QVERIFY(once.blue() < 200);                    // it is there
+        QVERIFY(std::abs(once.blue() - twice.blue()) <= 3);
+        QVERIFY(std::abs(once.red() - twice.red()) <= 3);
+
+        // PDF: one page of the area's size in points, the same picture as the PNG.
+        const QString pdf = exportTo(QStringLiteral("page.pdf"));
+        {
+            QPdfDocument document;
+            QCOMPARE(document.load(pdf), QPdfDocument::Error::None);
+            QCOMPARE(document.pageCount(), 1);
+            QVERIFY(std::abs(document.pagePointSize(0).width() - area.width() * 0.75) < 1.0);
+            QVERIFY(std::abs(document.pagePointSize(0).height() - area.height() * 0.75) < 1.0);
+        }
+        const QImage fromPdf = renderPdfPage(pdf, 0, image.size());
+        // Compared above the text box: glyphs differ where the test platform has no fonts.
+        const auto drawing = [&](const QImage& from) {
+            return from.copy(
+                0, 0, from.width(),
+                static_cast<int>((380.0 - area.min.y) * from.height() / area.height()));
+        };
+        QVERIFY(differingShare(drawing(image), drawing(fromPdf)) < 0.01);
+        QVERIFY(std::abs(pixel(fromPdf, {120, 292}).blue() - pixel(fromPdf, {200, 305}).blue()) <=
+                4);
+
+        // SVG: vector text, the same picture.
+        const QString svg = exportTo(QStringLiteral("page.svg"));
+        QFile svgFile(svg);
+        QVERIFY(svgFile.open(QIODevice::ReadOnly));
+        const QByteArray svgText = svgFile.readAll();
+        QVERIFY(svgText.contains("<svg"));
+        QVERIFY(svgText.contains("Export text"));
+        QSvgRenderer renderer(svg);
+        QVERIFY(renderer.isValid());
+        QImage fromSvg(image.size(), QImage::Format_RGB32);
+        fromSvg.fill(Qt::white);
+        {
+            QPainter painter(&fromSvg);
+            renderer.render(&painter);
+        }
+        QVERIFY(differingShare(drawing(image), drawing(fromSvg)) < 0.01);
+
+        // Cancelled: nothing is written. Into the workspace folder: refused.
+        const auto questions = shell.dialogs->questions;
+        shell.dialogs->exportTarget.reset();
+        shell.action("actionExportPage")->trigger();
+        QCOMPARE(shell.dialogs->questions, questions + 1); // asked once
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        const auto inside = path / "export.pdf";
+        shell.dialogs->exportTarget = inside;
+        shell.action("actionExportPage")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 1);
+        QVERIFY(!std::filesystem::exists(inside));
+        // An unwritable target is reported.
+        shell.dialogs->exportTarget = toPath(dir_.filePath(QStringLiteral("no/such/dir/x.pdf")));
+        shell.action("actionExportPage")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 2);
+
+        // A section of an imported PDF: its pages, their sizes, the PDF behind the ink.
+        const QString source = writePdf(QStringLiteral("Slides.pdf"));
+        const QByteArray sourceHash = sha256Of(source);
+        shell.dialogs->importDocument = toPath(source);
+        shell.action("actionImportPdf")->trigger();
+        const auto pdfPage = *shell.window->activePage();
+        const auto pdfLayer = shell.ws().layersOf(pdfPage).front();
+        auto ink = document::commands::createElement(
+            shell.ws(), pdfLayer,
+            {.payload = document::Stroke{.color = core::Color::black(),
+                                         .baseWidth = 8.0F,
+                                         .points = document::makeStrokePoints(
+                                             {{300, 300, 1}, {450, 300, 1}})}},
+            shell.ids);
+        QVERIFY(ink.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(ink->command)).has_value());
+        const document::Workspace beforeSection = shell.ws();
+        const auto undoSection = shell.window->session()->history().undoCount();
+        const QString section = exportTo(QStringLiteral("section.pdf"), "actionExportSection");
+        QVERIFY(shell.dialogs->exportPdfOnly);
+        QCOMPARE(shell.dialogs->exportSuggestions.last(), QStringLiteral("Slides"));
+        {
+            QPdfDocument document;
+            QCOMPARE(document.load(section), QPdfDocument::Error::None);
+            QCOMPARE(document.pageCount(), 3);
+            QVERIFY(std::abs(document.pagePointSize(0).width() - 400.0) < 0.5);
+            QVERIFY(std::abs(document.pagePointSize(1).height() - 500.0) < 0.5);
+            // One pixel per point: the PDF's black square and the ink (at 300..450 units).
+            const QImage first = renderPdfPage(section, 0, QSize(400, 300));
+            QVERIFY(first.pixelColor(20, 20).red() < 60);
+            QVERIFY(
+                first.pixelColor(static_cast<int>(375 * 0.75), static_cast<int>(300 * 0.75)).red() <
+                60);
+            QVERIFY(first.pixelColor(300, 100).red() > 230);
+        }
+        QVERIFY(shell.ws() == beforeSection);
+        QCOMPARE(shell.window->session()->history().undoCount(), undoSection);
+        QCOMPARE(sha256Of(source), sourceHash);
+
+        // Print: the whole section by default, a range, or the current page.
+        const auto printed = [&](const QString& name) {
+            QPdfDocument document;
+            return document.load(dir_.filePath(name)) == QPdfDocument::Error::None
+                       ? document.pageCount()
+                       : -1;
+        };
+        shell.dialogs->printTo = dir_.filePath(QStringLiteral("print-all.pdf"));
+        shell.action("actionPrint")->trigger();
+        QCOMPARE(shell.dialogs->printPages, 3);
+        QCOMPARE(printed(QStringLiteral("print-all.pdf")), 3);
+        shell.dialogs->printTo = dir_.filePath(QStringLiteral("print-range.pdf"));
+        shell.dialogs->printRange = QPrinter::PageRange;
+        shell.dialogs->printFrom = 2;
+        shell.dialogs->printToPage = 3;
+        shell.action("actionPrint")->trigger();
+        QCOMPARE(printed(QStringLiteral("print-range.pdf")), 2);
+        shell.dialogs->printTo = dir_.filePath(QStringLiteral("print-current.pdf"));
+        shell.dialogs->printRange = QPrinter::CurrentPage;
+        shell.action("actionPrint")->trigger();
+        QCOMPARE(printed(QStringLiteral("print-current.pdf")), 1);
+        shell.dialogs->printTo.reset(); // cancelled
+        shell.action("actionPrint")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 2);
+
+        // Nothing of this changed the first page or the history.
+        QVERIFY(*shell.ws().findPage(page) == *before.findPage(page));
+        QCOMPARE(shell.ws().elementsOf(layer).size(), before.elementsOf(layer).size());
+        QVERIFY(shell.window->session()->history().undoCount() > undoCount); // the import only
+    }
+
+    // Phase 8, step 6: File ▸ Export Notebook / Export Workspace write bundles; Import
+    // Notebook copies a bundle's notebooks into the open workspace (one undo step); Open
+    // Bundle as Workspace unpacks one into a new workspace and opens it.
+    void bundlesThroughTheShell() {
+        Shell shell(settings(QStringLiteral("bundles")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("BundleSource"))));
+        const auto page = *shell.window->activePage();
+        const auto layer = shell.ws().layersOf(page).front();
+        auto note = document::commands::createElement(
+            shell.ws(), layer, {.payload = document::TextBox{.size = {200, 40}, .text = "Mitosis"}},
+            shell.ids);
+        QVERIFY(note.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(note->command)).has_value());
+        const document::Workspace source = shell.ws();
+
+        const auto notebookBundle = toPath(dir_.filePath(QStringLiteral("notebook.studybundle")));
+        shell.dialogs->bundleTarget = notebookBundle;
+        shell.action("actionExportNotebook")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QVERIFY(std::filesystem::exists(notebookBundle));
+        const auto workspaceBundle = toPath(dir_.filePath(QStringLiteral("workspace.studybundle")));
+        shell.dialogs->bundleTarget = workspaceBundle;
+        shell.action("actionExportWorkspace")->trigger();
+        QVERIFY(std::filesystem::exists(workspaceBundle));
+        QVERIFY(shell.ws() == source); // exporting changed nothing
+
+        // Import the notebook into a new workspace: it opens on the imported page.
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("BundleTarget"))));
+        const auto notebooks = shell.ws().notebookCount();
+        shell.dialogs->bundleToOpen = notebookBundle;
+        shell.action("actionImportNotebook")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QCOMPARE(shell.ws().notebookCount(), notebooks + 1);
+        QCOMPARE(*shell.window->activePage(), page); // ids kept: no conflict here
+        QCOMPARE(shell.ws().elementsOf(shell.ws().layersOf(page).front()).size(), std::size_t{1});
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(shell.ws().notebookCount(), notebooks);
+
+        // A damaged bundle is reported and changes nothing.
+        const QString junk = dir_.filePath(QStringLiteral("junk.studybundle"));
+        {
+            QFile out(junk);
+            QVERIFY(out.open(QIODevice::WriteOnly));
+            out.write("not a bundle");
+        }
+        shell.dialogs->bundleToOpen = toPath(junk);
+        shell.action("actionImportNotebook")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 1);
+        QCOMPARE(shell.ws().notebookCount(), notebooks);
+
+        // Open the workspace bundle as a workspace of its own.
+        const auto restored = freshPath(QStringLiteral("Restored"));
+        shell.dialogs->bundleToOpen = workspaceBundle;
+        shell.dialogs->newWorkspace = restored;
+        shell.action("actionOpenBundle")->trigger();
+        QCOMPARE(shell.dialogs->errors.size(), 1);
+        QCOMPARE(shell.window->session()->root(), restored);
+        QVERIFY(shell.ws() == source);
+    }
+
+    // Untrusted PDFs: not a PDF, empty, a bare header — reported, nothing changes; a
+    // truncated one never crashes.
+    void invalidPdfsAreRejected() {
+        Shell shell(settings(QStringLiteral("badpdf")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("BadPdf"))));
+        const QString valid = writePdf(QStringLiteral("valid.pdf"));
+        QFile in(valid);
+        QVERIFY(in.open(QIODevice::ReadOnly));
+        const QByteArray bytes = in.readAll();
+        const auto write = [&](const QString& name, const QByteArray& content) {
+            const QString file = dir_.filePath(name);
+            QFile out(file);
+            if (!out.open(QIODevice::WriteOnly)) {
+                qFatal("cannot write %s", qPrintable(file));
+            }
+            out.write(content);
+            return file;
+        };
+        const QStringList bad{write(QStringLiteral("text.pdf"), "just some text, no PDF"),
+                              write(QStringLiteral("empty.pdf"), QByteArray()),
+                              write(QStringLiteral("header.pdf"), "%PDF-1.7\n%%EOF\n")};
+        const auto undoCount = shell.window->session()->history().undoCount();
+        for (const QString& file : bad) {
+            QVERIFY(!ui::inspectPdf(toPath(file)).has_value());
+            shell.dialogs->importDocument = toPath(file);
+            shell.action("actionImportPdf")->trigger();
+        }
+        QCOMPARE(shell.dialogs->errors.size(), bad.size());
+        QCOMPARE(shell.window->session()->history().undoCount(), undoCount);
+        QVERIFY(!ui::inspectPdf(toPath(dir_.filePath(QStringLiteral("missing.pdf")))).has_value());
+        const QString truncated =
+            write(QStringLiteral("truncated.pdf"), bytes.left(bytes.size() / 2));
+        if (const auto info = ui::inspectPdf(toPath(truncated))) {
+            QVERIFY(!info->pageSizes.empty()); // repaired by PDFium
+        }
     }
 
     // Phase 6, step 9: Edit ▸ Cut/Copy/Paste (Ctrl+X/C/V on the canvas) duplicate elements

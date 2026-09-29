@@ -8,6 +8,7 @@
 #include <studyapp/core/Vec2.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -75,6 +76,19 @@ struct PageBackground {
 /// A4 portrait in world units (96 units per inch).
 inline constexpr core::DVec2 kA4PortraitSize{794.0, 1123.0};
 
+/// World units (1/96 in) per PDF point (1/72 in).
+inline constexpr double kUnitsPerPoint = 96.0 / 72.0;
+
+/// A page of an imported document (a PDF) shown as a page's background (Phase 8). The
+/// document is a content-addressed asset: the source file itself is never modified;
+/// annotations are the page's elements (docs/DATA_MODEL.md §3).
+struct PageDocument {
+    core::AssetId asset;    ///< non-null
+    std::int32_t index = 0; ///< page of the document, 0-based
+
+    [[nodiscard]] friend bool operator==(const PageDocument&, const PageDocument&) = default;
+};
+
 struct PageInfo {
     core::PageId id;
     core::SectionId section; ///< parent
@@ -83,7 +97,8 @@ struct PageInfo {
     PageExtent extent = PageExtent::Infinite;
     core::DVec2 size{}; ///< used when `extent == Bounded`; both components > 0
     PageBackground background{};
-    std::vector<core::TagId> tags; ///< sorted, unique, existing tags (Phase 7)
+    std::vector<core::TagId> tags;        ///< sorted, unique, existing tags (Phase 7)
+    std::optional<PageDocument> document; ///< a PDF page behind the content (Phase 8)
     core::Timestamp created{};
     core::Timestamp modified{};
 

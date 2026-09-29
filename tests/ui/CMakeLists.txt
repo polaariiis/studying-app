@@ -62,6 +62,9 @@ target_link_libraries(shell_tests PRIVATE
     studyapp::persistence
     studyapp::platform
     studyapp::test_support
+    Qt6::Pdf
+    Qt6::PrintSupport
+    Qt6::Svg
     Qt6::Test
     studyapp_project_options
     studyapp_warnings)

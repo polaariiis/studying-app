@@ -3,9 +3,12 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPrintDialog>
+#include <QPrinter>
 #include <QPushButton>
 #include <QStandardPaths>
 
@@ -23,6 +26,28 @@ std::filesystem::path toPath(const QString& text) {
 
 QString documentsDirectory() {
     return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+}
+
+/// A save dialog whose default suffix follows the chosen filter, so a name typed without an
+/// extension gets it *before* the dialog asks whether to replace an existing file.
+std::optional<std::filesystem::path> saveFile(QWidget* parent, const QString& title,
+                                              const QString& suggestedName,
+                                              const QStringList& filters,
+                                              const QStringList& suffixes) {
+    QFileDialog dialog(
+        parent, title,
+        QDir(documentsDirectory()).filePath(suggestedName + QLatin1Char('.') + suffixes.front()));
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    dialog.setNameFilters(filters);
+    dialog.setDefaultSuffix(suffixes.front());
+    QObject::connect(&dialog, &QFileDialog::filterSelected, &dialog, [&](const QString& filter) {
+        dialog.setDefaultSuffix(suffixes.value(filters.indexOf(filter), suffixes.front()));
+    });
+    if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
+        return std::nullopt;
+    }
+    return toPath(dialog.selectedFiles().front());
 }
 
 class QtShellDialogs final : public ShellDialogs {
@@ -59,6 +84,52 @@ public:
             return std::nullopt;
         }
         return toPath(chosen);
+    }
+
+    std::optional<std::filesystem::path> chooseDocumentToImport(QWidget* parent) override {
+        const QString chosen =
+            QFileDialog::getOpenFileName(parent, tr("Import PDF"), documentsDirectory(),
+                                         tr("PDF documents (*.pdf);;All files (*)"));
+        if (chosen.isEmpty()) {
+            return std::nullopt;
+        }
+        return toPath(chosen);
+    }
+
+    std::optional<std::filesystem::path>
+    chooseExportTarget(QWidget* parent, const QString& suggestedName, bool pdfOnly) override {
+        QStringList filters{tr("PDF document (*.pdf)")};
+        QStringList suffixes{QStringLiteral("pdf")};
+        if (!pdfOnly) {
+            filters << tr("PNG image (*.png)") << tr("SVG image (*.svg)");
+            suffixes << QStringLiteral("png") << QStringLiteral("svg");
+        }
+        return saveFile(parent, pdfOnly ? tr("Export Section as PDF") : tr("Export Page"),
+                        suggestedName, filters, suffixes);
+    }
+
+    std::optional<std::filesystem::path> chooseBundleTarget(QWidget* parent,
+                                                            const QString& suggestedName) override {
+        return saveFile(parent, tr("Export Bundle"), suggestedName,
+                        {tr("StudyBoard bundle (*.studybundle)")}, {QStringLiteral("studybundle")});
+    }
+
+    std::optional<std::filesystem::path> chooseBundleToOpen(QWidget* parent) override {
+        const QString chosen =
+            QFileDialog::getOpenFileName(parent, tr("Choose Bundle"), documentsDirectory(),
+                                         tr("StudyBoard bundle (*.studybundle);;All files (*)"));
+        if (chosen.isEmpty()) {
+            return std::nullopt;
+        }
+        return toPath(chosen);
+    }
+
+    bool setUpPrinter(QWidget* parent, QPrinter& printer, int pages) override {
+        QPrintDialog dialog(&printer, parent);
+        dialog.setMinMax(1, pages);
+        dialog.setOption(QAbstractPrintDialog::PrintCurrentPage, true);
+        dialog.setOption(QAbstractPrintDialog::PrintPageRange, pages > 1);
+        return dialog.exec() == QDialog::Accepted;
     }
 
     bool confirmOpenReadOnly(QWidget* parent, const QString& details) override {

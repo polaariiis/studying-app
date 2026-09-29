@@ -280,6 +280,213 @@ Result<Command> deletePage(const Workspace& workspace, core::PageId page) {
     return makeCommand("Delete page", std::move(changes));
 }
 
+Result<Created<core::SectionId>>
+createDocumentSection(const Workspace& workspace, core::NotebookId notebook, std::string title,
+                      core::AssetId asset, std::span<const core::DVec2> pageSizes,
+                      const core::Clock& clock, core::IdGenerator& ids) {
+    if (workspace.findNotebook(notebook) == nullptr) {
+        return tl::unexpected(notFound("notebook", notebook));
+    }
+    if (auto check = validateName(title, "section title"); !check) {
+        return tl::unexpected(check.error());
+    }
+    if (pageSizes.empty()) {
+        return makeError(ErrorCode::InvalidArgument, "the document has no pages");
+    }
+    const auto now = clock.now();
+    SectionInfo section{
+        .id = core::SectionId::generate(ids),
+        .notebook = notebook,
+        .title = title,
+        .order = appendKey(workspace.sectionsOf(notebook),
+                           [&](core::SectionId id) { return workspace.findSection(id)->order; }),
+        .created = now,
+        .modified = now,
+    };
+    std::vector<AnyChange> changes;
+    changes.reserve(1 + 2 * pageSizes.size());
+    changes.push_back(created(section));
+    std::optional<FractionalIndex> order;
+    for (std::size_t i = 0; i < pageSizes.size(); ++i) {
+        const core::DVec2 size = pageSizes[i];
+        if (!(std::isfinite(size.x) && std::isfinite(size.y) && size.x > 0.0 && size.y > 0.0)) {
+            return makeError(ErrorCode::InvalidArgument, "a document page has no valid size");
+        }
+        order = order ? FractionalIndex::after(*order) : FractionalIndex::first();
+        PageInfo page{
+            .id = core::PageId::generate(ids),
+            .section = section.id,
+            .title = title + " · p. " + std::to_string(i + 1),
+            .order = *order,
+            .extent = PageExtent::Bounded,
+            .size = size,
+            .document = PageDocument{.asset = asset, .index = static_cast<std::int32_t>(i)},
+            .created = now,
+            .modified = now,
+        };
+        Layer layer{.id = core::LayerId::generate(ids),
+                    .page = page.id,
+                    .name = "Layer 1",
+                    .order = FractionalIndex::first()};
+        changes.push_back(created(std::move(page)));
+        changes.push_back(created(std::move(layer)));
+    }
+    const auto id = section.id;
+    return Created<core::SectionId>{id, makeCommand("Import PDF", std::move(changes))};
+}
+
+// ---------------------------------------------------------------------------- import
+
+Result<Created<std::vector<core::NotebookId>>>
+importNotebooks(const Workspace& workspace, const Workspace& source,
+                std::span<const core::NotebookId> notebooks,
+                const std::unordered_map<core::AssetId, core::AssetId>& assets,
+                core::IdGenerator& ids) {
+    if (notebooks.empty()) {
+        return makeError(ErrorCode::InvalidArgument, "there is no notebook to import");
+    }
+    std::unordered_set<core::NotebookId> listed;
+    for (const core::NotebookId notebook : notebooks) {
+        if (source.findNotebook(notebook) == nullptr) {
+            return tl::unexpected(notFound("notebook", notebook));
+        }
+        if (!listed.insert(notebook).second) {
+            return makeError(ErrorCode::InvalidArgument, "a notebook is listed twice");
+        }
+    }
+    // Conflict detection: one id already in use means every copied record gets a new one.
+    bool remap = false;
+    for (const core::NotebookId notebook : notebooks) {
+        remap = remap || workspace.findNotebook(notebook) != nullptr;
+        for (const core::SectionId section : source.sectionsOf(notebook)) {
+            remap = remap || workspace.findSection(section) != nullptr;
+            for (const core::PageId page : source.pagesOf(section)) {
+                remap = remap || workspace.findPage(page) != nullptr;
+                for (const core::LayerId layer : source.layersOf(page)) {
+                    remap = remap || workspace.findLayer(layer) != nullptr;
+                    for (const core::ElementId element : source.elementsOf(layer)) {
+                        remap = remap || workspace.findElement(element) != nullptr;
+                    }
+                }
+            }
+        }
+    }
+    const auto idFor = [&](auto id) {
+        using Id = decltype(id);
+        return remap ? Id::generate(ids) : id;
+    };
+    const auto assetFor = [&](core::AssetId asset) -> Result<core::AssetId> {
+        const auto it = assets.find(asset);
+        if (it == assets.end()) {
+            return makeError(ErrorCode::NotFound, "asset " + asset.toString() + " is missing");
+        }
+        return it->second;
+    };
+
+    std::vector<AnyChange> tagChanges; // before the pages that use them
+    std::vector<AnyChange> changes;
+    std::unordered_map<core::TagId, core::TagId> tagIds;
+    std::unordered_map<core::ElementId, core::ElementId> elementIds;
+    std::vector<core::NotebookId> created;
+    std::optional<FractionalIndex> order;
+    if (const auto existing = workspace.notebooks(); !existing.empty()) {
+        order = workspace.findNotebook(existing.back())->order;
+    }
+    for (const core::NotebookId notebookId : notebooks) {
+        NotebookInfo notebook = *source.findNotebook(notebookId);
+        notebook.id = idFor(notebook.id);
+        order = order ? FractionalIndex::after(*order) : FractionalIndex::first();
+        notebook.order = *order;
+        created.push_back(notebook.id);
+        const core::NotebookId newNotebook = notebook.id;
+        changes.push_back(document::created(std::move(notebook)));
+        for (const core::SectionId sectionId : source.sectionsOf(notebookId)) {
+            SectionInfo section = *source.findSection(sectionId);
+            section.id = idFor(section.id);
+            section.notebook = newNotebook;
+            const core::SectionId newSection = section.id;
+            changes.push_back(document::created(std::move(section)));
+            for (const core::PageId pageId : source.pagesOf(sectionId)) {
+                PageInfo page = *source.findPage(pageId);
+                page.id = idFor(page.id);
+                page.section = newSection;
+                if (page.document) {
+                    auto asset = assetFor(page.document->asset);
+                    if (!asset) {
+                        return tl::unexpected(asset.error());
+                    }
+                    page.document->asset = *asset;
+                }
+                for (core::TagId& tag : page.tags) {
+                    auto [it, inserted] = tagIds.try_emplace(tag);
+                    if (inserted) {
+                        const study::Tag& from = *source.findTag(tag);
+                        if (const study::Tag* existing = workspace.findTagByName(from.name)) {
+                            it->second = existing->id;
+                        } else {
+                            study::Tag copy = from;
+                            if (workspace.findTag(copy.id) != nullptr) {
+                                copy.id = core::TagId::generate(ids);
+                            }
+                            it->second = copy.id;
+                            tagChanges.push_back(document::created(std::move(copy)));
+                        }
+                    }
+                    tag = it->second;
+                }
+                std::sort(page.tags.begin(), page.tags.end());
+                const core::PageId newPage = page.id;
+                changes.push_back(document::created(std::move(page)));
+                for (const core::LayerId layerId : source.layersOf(pageId)) {
+                    Layer layer = *source.findLayer(layerId);
+                    layer.id = idFor(layer.id);
+                    layer.page = newPage;
+                    const core::LayerId newLayer = layer.id;
+                    changes.push_back(document::created(std::move(layer)));
+                    for (const core::ElementId elementId : source.elementsOf(layerId)) {
+                        Element element = *source.findElement(elementId);
+                        element.id = idFor(element.id);
+                        element.layer = newLayer;
+                        if (remap) {
+                            elementIds.emplace(elementId, element.id);
+                        }
+                        if (auto* image = std::get_if<Image>(&element.payload)) {
+                            auto asset = assetFor(image->asset);
+                            if (!asset) {
+                                return tl::unexpected(asset.error());
+                            }
+                            image->asset = *asset;
+                        }
+                        changes.push_back(document::created(std::move(element)));
+                    }
+                }
+            }
+        }
+    }
+    // Connector ends attach to elements of the same page, all copied above.
+    if (remap) {
+        for (AnyChange& change : changes) {
+            auto* elementChange = std::get_if<ElementChange>(&change);
+            if (elementChange == nullptr) {
+                continue;
+            }
+            if (auto* connector = std::get_if<Connector>(&elementChange->after->payload)) {
+                for (ConnectorEnd* end : {&connector->start, &connector->end}) {
+                    if (end->attachedTo) {
+                        end->attachedTo = elementIds.at(*end->attachedTo);
+                    }
+                }
+            }
+        }
+    }
+    tagChanges.insert(tagChanges.end(), std::make_move_iterator(changes.begin()),
+                      std::make_move_iterator(changes.end()));
+    return Created<std::vector<core::NotebookId>>{
+        std::move(created),
+        makeCommand(notebooks.size() == 1 ? "Import notebook" : "Import notebooks",
+                    std::move(tagChanges))};
+}
+
 // ---------------------------------------------------------------------------- ordering
 
 Result<Command> moveNotebook(const Workspace& workspace, core::NotebookId notebook,

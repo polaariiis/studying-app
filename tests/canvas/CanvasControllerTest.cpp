@@ -1521,6 +1521,191 @@ TEST(CanvasControllerTest, ImageTexturesStayWithinTheMemoryBudget) {
     EXPECT_EQ(images.loads, 5);
 }
 
+// ---------------------------------------------------------------------------- documents
+
+struct FakeRasterizer final : DocumentRasterizer {
+    void notify() const { notifyReady(); }
+    bool asynchronous = false; ///< the first request of each tile is "not ready"
+    bool broken = false;
+    std::vector<DocumentTileKey> rendered;
+    std::vector<DocumentTileKey> pending;
+    std::vector<DocumentTileKey> kept; ///< the last keepOnly
+    std::optional<render::ImageData> tile(const DocumentTileKey& key) override {
+        if (asynchronous && std::find(pending.begin(), pending.end(), key) == pending.end()) {
+            pending.push_back(key);
+            return std::nullopt;
+        }
+        rendered.push_back(key);
+        if (broken) {
+            return render::ImageData{};
+        }
+        render::ImageData image{.width = 16, .height = 16, .pixels = {}};
+        image.pixels.assign(16U * 16U * 4U, 255);
+        return image;
+    }
+    void keepOnly(std::span<const DocumentTileKey> wanted) override {
+        kept.assign(wanted.begin(), wanted.end());
+    }
+};
+
+/// A document section of one US-letter page (612 × 792 pt) shown in the controller.
+core::PageId showDocumentPage(CanvasFixture& f, core::AssetId asset) {
+    const core::DVec2 size{612.0 * document::kUnitsPerPoint, 792.0 * document::kUnitsPerPoint};
+    const auto notebook = f.doc.addNotebook("Documents");
+    auto created = document::commands::createDocumentSection(
+        f.doc.workspace, notebook, "Paper", asset, std::span{&size, 1}, f.doc.clock, f.doc.ids);
+    EXPECT_TRUE(created.has_value());
+    EXPECT_TRUE(f.port.execute(std::move(created->command)).has_value());
+    const core::PageId page = f.doc.workspace.pagesOf(created->id).front();
+    f.controller.setPage(page);
+    return page;
+}
+
+TEST(CanvasControllerTest, DocumentPagesDrawAPreviewAndOnlyTheTilesInView) {
+    CanvasFixture f;
+    FakeRasterizer pdf;
+    f.controller.setDocumentRasterizer(&pdf);
+    const core::AssetId asset{f.doc.ids.next()};
+    const core::PageId page = showDocumentPage(f, asset);
+    (void)f.frame();
+    // Fitted into 800 × 600: the whole page is in view, preview plus the tiles of its level.
+    const std::size_t fitted = textureItems(f.renderer.lastContent);
+    EXPECT_GE(fitted, 2U);
+    EXPECT_EQ(pdf.kept.size(), fitted);
+    for (const DocumentTileKey& key : pdf.kept) {
+        EXPECT_EQ(key.asset, asset);
+        EXPECT_EQ(key.page, 0);
+    }
+    const int preview = documentPreviewLevel(f.doc.workspace.findPage(page)->size);
+    EXPECT_EQ(pdf.kept.front().level, preview); // drawn first, under the finer tiles
+    // Unchanged frames render nothing again.
+    const std::size_t renders = pdf.rendered.size();
+    (void)f.frame();
+    EXPECT_EQ(pdf.rendered.size(), renders);
+    // Zoomed far in: the preview and the few tiles in view, not the whole page at that level.
+    f.controller.zoomBy(8.0);
+    for (int i = 0; i < 4; ++i) {
+        (void)f.frame();
+    }
+    const int level = documentLevelFor(f.controller.camera().zoom());
+    const double tileWorld = kDocumentTilePx / documentScale(level);
+    const core::DVec2 view = f.controller.camera().visibleWorldRect().size();
+    const auto across = [&](double length) {
+        return static_cast<std::size_t>(std::ceil(length / tileWorld)) + 1;
+    };
+    EXPECT_LE(pdf.kept.size(), 1U + across(view.x) * across(view.y));
+    EXPECT_EQ(textureItems(f.renderer.lastContent), pdf.kept.size());
+    EXPECT_LE(f.controller.stats().documentTileBytes, kDocumentTextureBudgetBytes);
+    // Another page: the tiles are released.
+    f.controller.setPage(f.page);
+    (void)f.frame();
+    EXPECT_TRUE(f.renderer.textures.empty());
+    EXPECT_EQ(f.controller.stats().documentTiles, 0U);
+}
+
+TEST(CanvasControllerTest, DocumentTilesRenderedElsewhereAppearWhenReady) {
+    CanvasFixture f;
+    FakeRasterizer pdf;
+    pdf.asynchronous = true;
+    f.controller.setDocumentRasterizer(&pdf);
+    showDocumentPage(f, core::AssetId{f.doc.ids.next()});
+    (void)f.frame(); // nothing rendered yet: the paper, no stall
+    EXPECT_EQ(textureItems(f.renderer.lastContent), 0U);
+    EXPECT_FALSE(pdf.kept.empty());
+    int redraws = 0;
+    f.controller.setRedrawCallback([&] { ++redraws; });
+    pdf.notify();
+    EXPECT_EQ(redraws, 1);
+    (void)f.frame();
+    EXPECT_EQ(textureItems(f.renderer.lastContent), pdf.kept.size());
+}
+
+TEST(CanvasControllerTest, UnreadableDocumentPagesShowThePaperAndAreNotRetried) {
+    CanvasFixture f;
+    FakeRasterizer pdf;
+    pdf.broken = true;
+    f.controller.setDocumentRasterizer(&pdf);
+    showDocumentPage(f, core::AssetId{f.doc.ids.next()});
+    (void)f.frame();
+    const std::size_t renders = pdf.rendered.size();
+    EXPECT_GT(renders, 0U);
+    EXPECT_EQ(textureItems(f.renderer.lastContent), 0U);
+    (void)f.frame();
+    (void)f.frame();
+    EXPECT_EQ(pdf.rendered.size(), renders);
+}
+
+TEST(CanvasControllerTest, DocumentTilesAreUploadedOverFramesThenRenderingIsIdle) {
+    CanvasFixture f;
+    FakeRasterizer pdf;
+    f.controller.setDocumentRasterizer(&pdf);
+    showDocumentPage(f, core::AssetId{f.doc.ids.next()});
+    f.controller.setViewport({3000.0, 2000.0}, 2.0); // many tiles in view at once
+    int redraws = 0;
+    f.controller.setRedrawCallback([&] { ++redraws; });
+    (void)f.frame();
+    EXPECT_LE(f.controller.stats().documentTilesUploadedLastFrame, 8U);
+    int frames = 1;
+    while (redraws > 0 && frames < 50) {
+        redraws = 0;
+        (void)f.frame();
+        ++frames;
+    }
+    EXPECT_GT(frames, 2);
+    EXPECT_LT(frames, 50); // idle once every tile is there
+    EXPECT_EQ(textureItems(f.renderer.lastContent), pdf.kept.size());
+}
+
+TEST(CanvasControllerTest, LeavingADocumentPageDropsItsQueuedTiles) {
+    CanvasFixture f;
+    FakeRasterizer pdf;
+    pdf.asynchronous = true; // never ready: everything stays queued
+    f.controller.setDocumentRasterizer(&pdf);
+    showDocumentPage(f, core::AssetId{f.doc.ids.next()});
+    (void)f.frame();
+    EXPECT_FALSE(pdf.kept.empty());
+    f.controller.setPage(f.page); // an ordinary page
+    (void)f.frame();
+    EXPECT_TRUE(pdf.kept.empty());
+}
+
+TEST(CanvasControllerTest, TileEntriesWithoutTexturesStayBounded) {
+    CanvasFixture f;
+    FakeRasterizer pdf;
+    pdf.asynchronous = true; // never ready: no tile ever gets a texture
+    f.controller.setDocumentRasterizer(&pdf);
+    // A huge page seen closely from many places.
+    const core::DVec2 size{19000.0, 19000.0};
+    const auto notebook = f.doc.addNotebook("Maps");
+    auto created = document::commands::createDocumentSection(
+        f.doc.workspace, notebook, "Map", core::AssetId{f.doc.ids.next()}, std::span{&size, 1},
+        f.doc.clock, f.doc.ids);
+    ASSERT_TRUE(created.has_value());
+    ASSERT_TRUE(f.port.execute(std::move(created->command)).has_value());
+    f.controller.setPage(f.doc.workspace.pagesOf(created->id).front());
+    std::size_t most = 0;
+    for (int i = 0; i < 150; ++i) {
+        f.controller.setView({300.0 + 900.0 * (i % 20), 300.0 + 900.0 * (i / 20)}, 4.0);
+        (void)f.frame();
+        most = std::max(most, f.controller.stats().documentTiles);
+    }
+    EXPECT_GT(pdf.pending.size(), 512U); // far more tiles were asked for over time
+    EXPECT_LE(most, 512U + pdf.kept.size());
+}
+
+TEST(CanvasControllerTest, DocumentLevelsFollowTheResolution) {
+    EXPECT_EQ(documentLevelFor(1.0), 0);
+    EXPECT_EQ(documentLevelFor(1.5), 1);
+    EXPECT_EQ(documentLevelFor(2.0), 1);
+    EXPECT_EQ(documentLevelFor(0.3), -1);
+    EXPECT_EQ(documentLevelFor(1000.0), kMaxDocumentLevel);
+    EXPECT_EQ(documentLevelFor(0.0), kMinDocumentLevel);
+    EXPECT_EQ(documentLevelFor(std::numeric_limits<double>::quiet_NaN()), kMinDocumentLevel);
+    EXPECT_EQ(documentPreviewLevel({816.0, 1056.0}), -2); // 1056 / 4 = 264 ≤ 512
+    EXPECT_EQ(documentPreviewLevel({400.0, 300.0}), 0);
+    EXPECT_EQ(documentPreviewLevel({0.0, 0.0}), kMinDocumentLevel);
+}
+
 TEST(CanvasControllerTest, InsertImageFitsTheViewAsOneSelectedElement) {
     CanvasFixture f;
     const core::AssetId asset{f.doc.ids.next()};

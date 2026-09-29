@@ -341,6 +341,25 @@ hit testing; locked layers are drawn but not hit-testable by editing tools.
   (ARCHITECTURE planned the decoder in `platform`; `ui` may not depend on `platform`, so
   it lives next to `SessionDocumentPort`.)
 
+* **Implemented (Phase 8, D44): PDF pages.** File ▸ Import PDF… reads the file with QtPdf
+  (`ui::inspectPdf`: at most 5 000 pages of at most 14 400 pt; password-protected, damaged
+  or non-PDF files are refused with a message), imports it as an asset (the original is
+  never written) and adds one section with one bounded page per PDF page, sized in world
+  units (96/72 per point), as one undo step (`createDocumentSection`, via
+  `WorkspaceStructure::importDocument`). The page's `document` names the asset and page;
+  annotations are the page's own elements on its layers. The canvas asks a
+  `DocumentRasterizer` for tiles: a whole-page preview (the coarsest level at which the page
+  fits one 512 px tile) always drawn first, then the 512 px tiles in view at
+  `ceil(log2(zoom × DPR))` (levels −8…3, at most 8 px per unit). `SessionDocumentRasterizer`
+  renders them on one worker thread (PDFium is serialized anyway) in request order, keeps a
+  few documents open, drops queued tiles the canvas no longer wants (`keepOnly`, once per
+  frame) and keeps uncollected results within 32 MB / 256 tiles. The controller uploads at
+  most 8 tiles per frame (then asks for another frame, until done), keeps tile textures in
+  a 192 MB LRU and releases them on a page switch or graphics reset. Unreadable pages show
+  the paper and are not retried. Measured (release, integrated GPU laptop): importing a
+  200-page PDF takes 106 ms (78 ms of it reading page sizes), a page preview renders in
+  ≈ 16 ms and a 512 px tile in ≈ 12 ms off the GUI thread. The dark theme's display
+  transform applies to PDF pages like images (D33).
 * Images: decoded off-thread by `ImageDecoder` (Qt), uploaded as mip-mapped textures;
   very large images are downscaled to a level appropriate for the current zoom.
 * PDF backgrounds: `DocumentRasterizer` (QtPdf in `platform`) renders **tiles** of a PDF

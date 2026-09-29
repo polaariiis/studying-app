@@ -74,6 +74,8 @@ public:
 
     [[nodiscard]] core::Result<std::optional<AssetInfo>> find(core::AssetId id);
     [[nodiscard]] core::Result<bool> exists(core::AssetId id);
+    /// Every asset row, ordered by id (bundles, Phase 8).
+    [[nodiscard]] core::Result<std::vector<AssetInfo>> list();
 
     /// Absolute path of the asset's file.
     [[nodiscard]] core::Result<std::filesystem::path> pathOf(core::AssetId id);

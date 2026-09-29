@@ -8,6 +8,8 @@
 #include <studyapp/document/Commands.hpp>
 
 #include <cstddef>
+#include <optional>
+#include <span>
 #include <string>
 #include <variant>
 
@@ -52,6 +54,18 @@ public:
     /// A section (appended to `notebook`) with a first page (one undo step).
     [[nodiscard]] core::Result<NewSection> createSection(core::NotebookId notebook,
                                                          std::string title = {});
+    struct ImportedDocument {
+        core::NotebookId notebook;
+        core::SectionId section;
+        core::PageId firstPage;
+    };
+    /// A section holding one page per page of the imported document `asset` (a PDF;
+    /// `pageSizes` in world units), appended to `notebook` — or, with no notebook given, to
+    /// a new notebook "Documents" (one undo step, "Import PDF"; Phase 8). A blank title
+    /// becomes "Document". The asset must have been imported (WorkspaceSession::importAsset).
+    [[nodiscard]] core::Result<ImportedDocument>
+    importDocument(std::optional<core::NotebookId> notebook, std::string title, core::AssetId asset,
+                   std::span<const core::DVec2> pageSizes);
     /// A page appended to `section`.
     [[nodiscard]] core::Result<core::PageId> createPage(core::SectionId section,
                                                         std::string title = {});

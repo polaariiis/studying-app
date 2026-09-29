@@ -184,6 +184,9 @@ Result<void> WorkspaceStore::write(const document::Patch& patch) {
                 }
             },
             changes[i]);
+        if (written) {
+            written = search_.apply(*transaction, changes[i]); // same transaction (§6)
+        }
         if (!written) {
             return makeError(written.error().code,
                              "writing change " + std::to_string(i) +

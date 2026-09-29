@@ -249,22 +249,10 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
     return id;
 }
 
-Result<std::optional<AssetInfo>> AssetStore::find(core::AssetId id) {
-    auto statement = database_->cached(
-        "SELECT id, sha256, media_type, byte_size, original_name, created_at FROM asset "
-        "WHERE id = ?1");
-    if (!statement) {
-        return forward(statement);
-    }
-    (*statement)->bindId(1, id);
-    auto row = (*statement)->step();
-    if (!row) {
-        return forward(row);
-    }
-    if (!*row) {
-        return std::optional<AssetInfo>{};
-    }
-    const Statement& s = **statement;
+namespace {
+
+/// An `asset` row selected as (id, sha256, media_type, byte_size, original_name, created_at).
+Result<AssetInfo> decodeAsset(const Statement& s) {
     detail::RowDecoder decode(s, "asset");
     AssetInfo info{.id = decode.id<core::AssetId>(0),
                    .sha256 = {},
@@ -283,7 +271,55 @@ Result<std::optional<AssetInfo>> AssetStore::find(core::AssetId id) {
     if (auto status = decode.status(); !status) {
         return forward(status);
     }
-    return std::optional<AssetInfo>(std::move(info));
+    return info;
+}
+
+} // namespace
+
+Result<std::optional<AssetInfo>> AssetStore::find(core::AssetId id) {
+    auto statement = database_->cached(
+        "SELECT id, sha256, media_type, byte_size, original_name, created_at FROM asset "
+        "WHERE id = ?1");
+    if (!statement) {
+        return forward(statement);
+    }
+    (*statement)->bindId(1, id);
+    auto row = (*statement)->step();
+    if (!row) {
+        return forward(row);
+    }
+    if (!*row) {
+        return std::optional<AssetInfo>{};
+    }
+    auto info = decodeAsset(**statement);
+    if (!info) {
+        return forward(info);
+    }
+    return std::optional<AssetInfo>(std::move(*info));
+}
+
+Result<std::vector<AssetInfo>> AssetStore::list() {
+    auto statement = database_->prepare(
+        "SELECT id, sha256, media_type, byte_size, original_name, created_at FROM asset "
+        "ORDER BY id");
+    if (!statement) {
+        return forward(statement);
+    }
+    std::vector<AssetInfo> assets;
+    for (;;) {
+        auto row = statement->step();
+        if (!row) {
+            return forward(row);
+        }
+        if (!*row) {
+            return assets;
+        }
+        auto info = decodeAsset(*statement);
+        if (!info) {
+            return forward(info);
+        }
+        assets.push_back(std::move(*info));
+    }
 }
 
 Result<bool> AssetStore::exists(core::AssetId id) {

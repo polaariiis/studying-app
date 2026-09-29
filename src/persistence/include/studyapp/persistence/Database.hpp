@@ -176,6 +176,10 @@ public:
     /// connection open) if statements owned by callers are still alive.
     [[nodiscard]] core::Result<void> close();
 
+    /// For database files from untrusted sources (bundles): SQLite's defensive mode,
+    /// `trusted_schema = OFF` and `cell_size_check = ON`. Call before any other query.
+    [[nodiscard]] core::Result<void> hardenForUntrustedFile();
+
 private:
     Database(sqlite3* connection, std::filesystem::path file, bool readOnly) noexcept
         : connection_(connection), file_(std::move(file)), readOnly_(readOnly) {}

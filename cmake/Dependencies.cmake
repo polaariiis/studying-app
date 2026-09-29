@@ -101,7 +101,9 @@ endif()
 
 # ---------------------------------------------------------------------------- Qt
 if(STUDYAPP_BUILD_APP)
-    set(_studyapp_qt_components Core Gui Widgets OpenGL OpenGLWidgets)
+    # Phase 8: Pdf (QtPdf, PDFium) renders imported PDFs; PrintSupport and Svg export and
+    # print pages (LGPL-3.0 like the rest of Qt; see THIRD_PARTY_NOTICES.md).
+    set(_studyapp_qt_components Core Gui Widgets OpenGL OpenGLWidgets Pdf PrintSupport Svg)
     if(STUDYAPP_BUILD_TESTS)
         list(APPEND _studyapp_qt_components Test)
     endif()
@@ -113,7 +115,9 @@ if(STUDYAPP_BUILD_APP)
             "  * set the QT_ROOT_DIR environment variable, e.g. C:/Qt/6.8.3/msvc2022_64\n"
             "  * create CMakeUserPresets.json from cmake/CMakeUserPresets.example.json\n"
             "  * pass -DCMAKE_PREFIX_PATH=<qt-dir>\n"
-            "or build without Qt using the `core-only` preset. See docs/BUILDING.md.")
+            "or build without Qt using the `core-only` preset. See docs/BUILDING.md.
+"
+            "Besides the default modules, the add-on module Qt PDF (qtpdf) is needed.")
     endif()
     message(STATUS "Using Qt ${Qt6_VERSION} from ${Qt6_DIR}")
 endif()

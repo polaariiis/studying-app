@@ -19,9 +19,13 @@ studyapp_add_module(ui
         src/MainWindow.cpp
         src/NavigationPanel.cpp
         src/NavigationPanel.hpp
+        src/PageExport.cpp
+        src/PageExport.hpp
         src/PlannerPanel.cpp
         src/PlannerPanel.hpp
         src/SessionDocumentPort.hpp
+        src/SessionDocumentRasterizer.cpp
+        src/SessionDocumentRasterizer.hpp
         src/SessionImageSource.cpp
         src/SessionImageSource.hpp
         src/ShellDialogs.cpp
@@ -35,6 +39,9 @@ studyapp_add_module(ui
         studyapp::core
     PRIVATE_DEPS
         Qt6::OpenGLWidgets
+        Qt6::Pdf
+        Qt6::PrintSupport
+        Qt6::Svg
         studyapp::application
         studyapp::canvas
         studyapp::render_gl

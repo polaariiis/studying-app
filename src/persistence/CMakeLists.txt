@@ -3,10 +3,12 @@
 studyapp_add_module(persistence
     SOURCES
         include/studyapp/persistence/AssetStore.hpp
+        include/studyapp/persistence/Bundle.hpp
         include/studyapp/persistence/CatalogStore.hpp
         include/studyapp/persistence/Database.hpp
         include/studyapp/persistence/Migrations.hpp
         include/studyapp/persistence/PageStore.hpp
+        include/studyapp/persistence/SearchIndex.hpp
         include/studyapp/persistence/Sha256.hpp
         include/studyapp/persistence/SqliteLibrary.hpp
         include/studyapp/persistence/StrokeCodec.hpp
@@ -15,7 +17,9 @@ studyapp_add_module(persistence
         include/studyapp/persistence/WorkspaceFile.hpp
         include/studyapp/persistence/WorkspaceLayout.hpp
         include/studyapp/persistence/WorkspaceStore.hpp
+        include/studyapp/persistence/Zip.hpp
         src/AssetStore.cpp
+        src/Bundle.cpp
         src/CatalogStore.cpp
         src/Database.cpp
         src/EmbeddedFiles.hpp
@@ -23,6 +27,7 @@ studyapp_add_module(persistence
         src/FileIo.hpp
         src/Migrations.cpp
         src/PageStore.cpp
+        src/SearchIndex.cpp
         src/RowDecoder.hpp
         src/Sha256.cpp
         src/SqliteError.hpp
@@ -34,6 +39,7 @@ studyapp_add_module(persistence
         src/Utf8Path.hpp
         src/WorkspaceFile.cpp
         src/WorkspaceStore.cpp
+        src/Zip.cpp
     PUBLIC_DEPS
         studyapp::document
         studyapp::study

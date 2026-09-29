@@ -47,18 +47,20 @@ default compiler is GCC 11, so building *on* 22.04 needs GCC 13 (e.g. from the
 1. Visual Studio 2022 with the *Desktop development with C++* workload (includes CMake and Ninja).
 2. Qt 6.8 for `msvc2022_64`, either with the Qt Online Installer or with
    [aqtinstall](https://github.com/miurahr/aqtinstall):
-   `pip install aqtinstall` then `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -O C:\Qt`.
+   `pip install aqtinstall` then `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtpdf -O C:\Qt`.
+   Since Phase 8 the add-on module **Qt PDF** (`qtpdf`) is required besides the default
+   modules (Qt Svg and Qt Print Support are part of them).
 3. Build from a **Developer PowerShell / Developer Command Prompt for VS 2022** (so `cl.exe`
    and `ninja` are on `PATH`), or open the folder in Visual Studio, which uses the presets
    directly.
 
 **macOS**
 1. Xcode 15+ command-line tools, `brew install cmake ninja`.
-2. Qt 6.8 (Qt Online Installer or `aqt install-qt mac desktop 6.8.3 clang_64 -O ~/Qt`).
+2. Qt 6.8 with Qt PDF (Qt Online Installer or `aqt install-qt mac desktop 6.8.3 clang_64 -m qtpdf -O ~/Qt`).
 
 **Linux (Ubuntu/Debian)**
 1. `sudo apt install build-essential g++-13 cmake ninja-build libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfontconfig1`
-2. Qt 6.8 via `aqt install-qt linux desktop 6.8.3 linux_gcc_64 -O ~/Qt` (distribution Qt
+2. Qt 6.8 with Qt PDF via `aqt install-qt linux desktop 6.8.3 linux_gcc_64 -m qtpdf -O ~/Qt` (distribution Qt
    packages are usually older than 6.8).
 
 ## 3. Telling CMake where Qt is

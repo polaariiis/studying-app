@@ -14,8 +14,11 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <vector>
 
 class QAction;
+class QTimer;
+class QTreeWidgetItem;
 class QActionGroup;
 class QLabel;
 class QMenu;
@@ -50,6 +53,7 @@ class TimeZone;
 namespace studyapp::ui {
 
 class CanvasPlaceholder;
+struct ExportSources;
 class CanvasWidget;
 class PlannerPanel;
 class NavigationPanel;
@@ -150,6 +154,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     struct OpenWorkspace;
@@ -173,6 +178,10 @@ private:
     /// Writes the text being typed on the canvas, if any (before the page changes or the
     /// workspace closes).
     void finishTextEditing();
+    // Search (Phase 8): the field in the navigation panel, results in place of the tree.
+    void runSearch();
+    void activateSearchResult(QTreeWidgetItem* item);
+    void clearSearch();
     void revealPage(std::optional<core::PageId> page);
     void syncTreeToActivePage();
     void onTreeCurrentChanged();
@@ -191,6 +200,20 @@ private:
     void moveCurrent(int delta);
     void setPageFormat(int backgroundPattern, bool bounded);
     void insertImage();
+    void importPdf();
+    /// File ▸ Export Page (PDF, PNG, SVG) or, `wholeSection`, Export Section as PDF.
+    void exportPages(bool wholeSection);
+    void printPages();
+    /// File ▸ Export Workspace or (`notebookOnly`) Export Notebook: a bundle file.
+    void exportBundle(bool notebookOnly);
+    void importNotebookBundle();
+    void openBundleAsWorkspace();
+    /// The current page, or every page of its section; empty without a page.
+    [[nodiscard]] std::vector<core::PageId> pagesToExport(bool wholeSection) const;
+    /// Asset files of the open workspace, and progress with Cancel for several `pages`.
+    [[nodiscard]] ExportSources exportSources(std::size_t pages);
+    /// The notebook of the tree's current item or the open page.
+    [[nodiscard]] std::optional<core::NotebookId> currentNotebook() const;
     struct InkControls;
     void createInkActions(InkControls& ink);
     /// Hands the pen and highlighter styles to the canvas (canvas::ToolSettings).
@@ -253,6 +276,8 @@ private:
     QAction* pasteAction_ = nullptr;
     QAction* deleteAction_ = nullptr;
     QAction* selectAllAction_ = nullptr;
+    QAction* findAction_ = nullptr;
+    QTimer* searchDelay_ = nullptr;
     // Notebook (structure).
     QAction* newPageAction_ = nullptr;
     QAction* newSectionAction_ = nullptr;
@@ -260,6 +285,14 @@ private:
     QAction* renameAction_ = nullptr;
     QAction* deleteItemAction_ = nullptr;
     QAction* insertImageAction_ = nullptr;
+    QAction* importPdfAction_ = nullptr;
+    QAction* exportPageAction_ = nullptr;
+    QAction* exportSectionAction_ = nullptr;
+    QAction* printAction_ = nullptr;
+    QAction* exportWorkspaceAction_ = nullptr;
+    QAction* exportNotebookAction_ = nullptr;
+    QAction* importNotebookAction_ = nullptr;
+    QAction* openBundleAction_ = nullptr;
     QAction* moveUpAction_ = nullptr;
     QAction* moveDownAction_ = nullptr;
     QAction* previousPageAction_ = nullptr;

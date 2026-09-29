@@ -268,6 +268,23 @@ images, PDF page backgrounds). This yields vector output, which a GPU mesh path 
 The export code reuses the `render` tessellation's outline generation so on-screen and
 exported ink match.
 
+*Implemented (Phase 8, D45)* in `ui::PageExport` rather than `platform`: File ▸ Export Page…
+(Ctrl+E; PDF, PNG or SVG by extension), Export Section as PDF… and Print… (Ctrl+P: the
+section, a page range or the current page). The exported area is a bounded page's
+rectangle, or an infinite page's content bounds plus 24 units. Paper colour, the pattern
+(1-device-pixel lines, 1.25-unit dots, as on screen, bounded in count), the PDF page (as an
+image at 200 dpi, at most 8 192 px), then every visible layer's elements with the layer's
+opacity: meshes of `buildElementMeshes` subdivided for 4 px/unit as counter-clockwise triangles with
+the winding rule (a highlighter doubling back is not darker), text boxes as vector text laid
+out exactly like `QtTextLayout`, images from their assets. PDF pages are sized in points
+(96 world units = 72 pt), PNG uses 2 px/unit (at most 16 384 px per side and 64 Mpx). The
+light look is always exported (stored colours). Targets are written with `QSaveFile`, never
+inside the workspace directory; the workspace is only read. Tests compare PNG, PDF (rendered
+back with QtPdf) and SVG (QSvgRenderer) pixel by pixel. Measured (release, a 10 000-stroke page): PDF 3.5 s / 9.9 MB,
+PNG 1.7 s, SVG 5.0 s / 87 MB — linear in the triangles; exporting stroke outlines instead of
+triangles would shrink vector output further (Phase 9 candidate). A section export or print
+opens each PDF once and shows progress with Cancel when it has several pages.
+
 ## 10. Profiling plan
 
 | Measurement | Mechanism |

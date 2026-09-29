@@ -3,6 +3,9 @@
 #include <QWidget>
 
 class QLabel;
+class QLineEdit;
+class QStackedWidget;
+class QTreeWidget;
 class QMenu;
 class QToolButton;
 class QTreeView;
@@ -21,6 +24,13 @@ public:
     NavigationPanel(WorkspaceTreeModel& model, QWidget* parent = nullptr);
 
     [[nodiscard]] QTreeView* tree() const noexcept { return tree_; }
+    /// The search field above the tree and the list that replaces the tree while a search
+    /// is shown (Phase 8; filled by the MainWindow).
+    [[nodiscard]] QLineEdit* searchField() const noexcept { return searchField_; }
+    [[nodiscard]] QTreeWidget* searchResults() const noexcept { return results_; }
+    /// Shows the search results (true) or the tree.
+    void showSearchResults(bool show);
+    [[nodiscard]] bool isShowingSearchResults() const noexcept;
     void setWorkspaceName(const QString& name);
     /// The menu behind the header's "New" button (the owner fills it).
     [[nodiscard]] QMenu* newMenu() const noexcept { return newMenu_; }
@@ -33,6 +43,9 @@ private:
     QToolButton* newButton_ = nullptr;
     QMenu* newMenu_ = nullptr;
     QTreeView* tree_ = nullptr;
+    QLineEdit* searchField_ = nullptr;
+    QTreeWidget* results_ = nullptr;
+    QStackedWidget* views_ = nullptr;
 };
 
 } // namespace studyapp::ui

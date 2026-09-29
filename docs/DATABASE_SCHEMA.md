@@ -424,6 +424,16 @@ A `rebuildSearchIndex()` maintenance routine regenerates everything from source 
 empty; index maintenance is implemented with search in Phase 8, whose first step runs
 `rebuildSearchIndex()` over existing workspaces (decision D28).
 
+*Implemented (Phase 8, D43):* `persistence::SearchIndex` indexes page titles, text boxes and
+tasks (title + notes); notebook and section titles are shown as the result's context
+instead. `WorkspaceStore::write` calls `SearchIndex::apply` for every change inside the
+patch's transaction, so edits, undo and redo keep the index exact; only changes of indexed
+text touch it (moves, strokes and styling cost nothing). `workspace_meta.search_index_version`
+(1) is written by `rebuild()`; a workspace opened read-write whose version differs is
+re-indexed once (read-only sessions search what is there). Queries quote every word, add a
+prefix `*` to the last and rank with `bm25(search_index, 5.0, 1.0)`; the application layer
+resolves hits against the in-memory workspace and drops any that no longer exist.
+
 ## 7. Persistence strategy
 
 ### 7.1 Write path
@@ -624,3 +634,22 @@ is migrated if needed (backup first), `last_written_by_version` is recorded, and
 `temporary/` is emptied. Taking over a stale lock additionally runs `PRAGMA quick_check` +
 `PRAGMA foreign_key_check` and refuses to open on problems. Read-only takes no lock and
 never writes.
+
+## 12. Bundles (Phase 8)
+
+A bundle (`.studybundle`, D46) is a zip archive of a workspace in the workspace layout:
+`studyboard-bundle.txt` (manifest: `format=studyboard-bundle`, `version=1`,
+`kind=workspace|notebook`, `schema=<user_version>`), `workspace.db` (a `VACUUM INTO`
+snapshot after flushing) and `assets/ab/cd/<sha256>.<ext>` for every asset row. Entries are
+stored (assets are compressed media; the archive stays < 4 GiB, ≤ 65 535 entries).
+
+Reading (`persistence::extractBundle`) treats the archive as hostile and unpacks into a
+missing or empty directory, removing it again on any failure: offsets and sizes are checked
+against the file and the entries together may not exceed it; only the manifest, the
+database and exact asset paths are accepted (no traversal, absolute paths or other names);
+every CRC-32 is verified; the database must be a StudyBoard database of the manifest's
+version passing `integrity_check` whose `sqlite_schema` equals what the built-in migrations
+create (no extra triggers, views or tables); every asset row must have its file with the
+right size and SHA-256. The unpacked directory is then an ordinary workspace:
+`WorkspaceSession::open` (Open Bundle as Workspace) or a read-only source for
+`WorkspaceSession::importBundle` (Import Notebook).

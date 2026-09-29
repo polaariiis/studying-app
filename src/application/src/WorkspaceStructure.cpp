@@ -169,6 +169,51 @@ Result<WorkspaceStructure::NewSection> WorkspaceStructure::createSection(core::N
     return NewSection{.section = *section, .page = *page};
 }
 
+Result<WorkspaceStructure::ImportedDocument>
+WorkspaceStructure::importDocument(std::optional<core::NotebookId> notebook, std::string title,
+                                   core::AssetId asset, std::span<const core::DVec2> pageSizes) {
+    const document::Workspace& ws = session_->workspace();
+    if (isBlank(title)) {
+        title = "Document";
+    }
+    const auto firstPage = [](const document::Workspace& after, core::SectionId section) {
+        return after.pagesOf(section).front(); // the command creates at least one page
+    };
+    if (notebook) {
+        if (ws.findNotebook(*notebook) == nullptr) {
+            return makeError(ErrorCode::NotFound, "the notebook does not exist");
+        }
+        auto created = commands::createDocumentSection(ws, *notebook, std::move(title), asset,
+                                                       pageSizes, *clock_, *ids_);
+        if (!created) {
+            return tl::unexpected(created.error());
+        }
+        if (auto executed = session_->execute(std::move(created->command)); !executed) {
+            return tl::unexpected(executed.error());
+        }
+        return ImportedDocument{.notebook = *notebook,
+                                .section = created->id,
+                                .firstPage = firstPage(session_->workspace(), created->id)};
+    }
+    Compound compound(ws);
+    auto newNotebook =
+        compound.add(commands::createNotebook(compound.workspace(), "Documents", *clock_, *ids_));
+    if (!newNotebook) {
+        return tl::unexpected(newNotebook.error());
+    }
+    auto section = compound.add(commands::createDocumentSection(
+        compound.workspace(), *newNotebook, std::move(title), asset, pageSizes, *clock_, *ids_));
+    if (!section) {
+        return tl::unexpected(section.error());
+    }
+    if (auto executed = session_->execute(std::move(compound).command("Import PDF")); !executed) {
+        return tl::unexpected(executed.error());
+    }
+    return ImportedDocument{.notebook = *newNotebook,
+                            .section = *section,
+                            .firstPage = firstPage(session_->workspace(), *section)};
+}
+
 Result<core::PageId> WorkspaceStructure::createPage(core::SectionId section, std::string title) {
     const document::Workspace& ws = session_->workspace();
     if (ws.findSection(section) == nullptr) {

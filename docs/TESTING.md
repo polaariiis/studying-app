@@ -22,6 +22,33 @@
 | `ui.MainWindowTest` | `gui` | Qt Test (offscreen) | Main window structure, theme switching, theme actions, settings persistence, application icon resources, neutral palette (zero-saturation tokens), stylesheet template fully resolved |
 | `ui.ShellTest` | `gui` | Qt Test (offscreen) | Navigation tree model (`QAbstractItemModelTester`; renames are `dataChanged` only, structure changes are row inserts/removals/moves, canvas edits emit nothing; active page; drag-and-drop validation); the window with real sessions, locks and scripted dialogs: new workspace starts on a page, navigation and New Page/Section/Notebook, undo shows the undone page, rename/delete (confirmation)/move, closing asks nothing, a workspace in use opens read-only, invalid workspace reported, stale lock (cancel / read-only / recover), a failing start-up workspace is forgotten, opening an empty workspace writes nothing, a collapsed section stays collapsed while drawing, theme toggle icon, navigation toggle, dropped page stays visible, failed writes are never closed over silently (cancel / retry / close without saving), the pen style decides new strokes and is remembered, the highlighter tool with its own remembered style (style button follows the ink tool, choosing is not an edit, undo), tool letters do not fire while the tree has focus; eraser modes through the shell (partial default, whole strokes, remembered); shapes through the shell (kind, ink, width, fill, one undo step each, remembered); Insert Image through the shell (one stored copy per content, selected element, non-images refused, undo); text through the shell (editor overlay, letters and Ctrl+Z stay in the editor, Escape and focus-out finish, re-editing, undo; typed text is written when the page changes or the workspace closes from the keyboard, a popup keeps the edit); uncollected image decodes are bounded and decoded again when asked for; cut/copy/paste through the shell (Ctrl+A/C/V on the canvas, one undo step, Select tool chosen, Cut action, the same keys in the text editor edit its text); the planner through the shell (off by default, a course from the New menu, quick-added task in the scope and selected, title and due date edits, Today shows it, ticking completes and Undo reopens, page tags by name and a page-linked backlink, letters in its lists are not tool shortcuts, a canvas stroke rebuilds nothing, tags typed before a page switch stay with their page, a title typed before closing is saved, everything after reopening); every window workflow runs under `QAbstractItemModelTester` |
 
+**Phase 8 additions.** `document_tests`: `createDocumentSection` (one bounded page per PDF
+page, titles, sizes, one undo step; invalid input and null assets rejected atomically) and
+`importNotebooks` (ids kept when free, every id remapped when one is taken, connectors
+re-attached to the copies, tags reused by name or created, assets mapped, one undo step,
+invalid requests). `persistence_tests`: document pages round-trip (`bg_asset_id`,
+`bg_page_index`) through undo/redo, with annotations; the asset is protected by its foreign
+key. `canvas_tests`: document pages draw a preview then only the tiles in view (bounded,
+nothing re-rendered on unchanged frames), tiles rendered elsewhere appear when ready,
+unreadable pages are not retried, uploads spread over frames then idle, leaving a PDF page
+drops its queued tiles, textureless tile entries stay bounded, level selection.
+`application_tests` (`SearchTest`, `BundleTest`): the index follows edit/undo/redo/move/
+rename/delete, tasks, Unicode and diacritics, reopen, re-indexing of an older workspace
+(read-only sessions report it), limits and snippets; a workspace bundle opens as an equal
+workspace; notebook bundles import as one step and twice as a copy, survive reopen;
+targets inside the workspace are refused however they are spelled; hostile bundles (path
+traversal, absolute and backslash names, an injected trigger, flipped bytes, truncation,
+foreign manifest, newer schema, tampered asset, non-empty target) are refused and leave
+nothing behind. `ui.ShellTest`: search through the shell (debounce, jump to page, text box
+and task, results follow edits but not ink), Import PDF (inspection, section, tiles from a
+generated PDF, rendered pixels, out-of-range tiles, dropped requests, the source and the
+stored copy byte-identical, annotation survives reopen), invalid PDFs (text, empty, bare
+header, missing, truncated), export and print (PNG, PDF and SVG compared pixel by pixel,
+highlighter overlap not darker, text laid out as the canvas raster, section export of an
+imported PDF with its pages and sizes, print ranges, cancel, refused targets, nothing
+changed), bundles through the shell (export notebook/workspace, import, a damaged bundle,
+open as a workspace).
+
 Tests use the header-only targets in `tests/support`: `studyapp_test_support`
 (`testing::ManualClock` and `testing::SequentialIds` make every timestamp and id
 deterministic; `EXPECT_OK`/`ASSERT_OK`; `testing::TempDirectory`, a self-deleting

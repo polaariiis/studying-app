@@ -481,6 +481,30 @@ multi-column week grid.
 * Workspace/notebook export bundles and import.
 * **Exit:** annotate a 200-page PDF smoothly; exported PDF matches on-screen content.
 
+Status: **implemented** (see the Phase 8 report; decisions D43–D46).
+
+1. ✅ Search engine (D43): FTS5 index maintained in the write transaction (page titles, text
+   boxes, tasks), rebuilt once for older workspaces, hits resolved against the workspace.
+   Measured (release): indexing 10 000 documents 190 ms, a query < 1 ms; 100 000 documents
+   2.1 s to index, queries ≤ 9.3 ms (8 334 hits).
+2. ✅ Search UI: field above the navigation tree (Edit ▸ Find, Ctrl+F), 150 ms debounce,
+   results replace the tree, Enter/click opens the page and reveals the text box or selects
+   the task in the planner; results follow edits; Esc returns to the tree.
+3. ✅ PDF import and rendering (D44): File ▸ Import PDF…, one bounded page per PDF page in a
+   new section (one undo step), tiled rendering off the GUI thread with bounded caches.
+   Measured: a 200-page PDF imports in 106 ms; previews ≈ 16 ms, tiles ≈ 12 ms on the worker.
+4. ✅ Annotation: every tool works on PDF pages (ordinary elements); annotations survive
+   reopen; the source file and the stored copy stay byte-identical (SHA-256 tested).
+5. ✅ Export/print (D45): Export Page (PDF/PNG/SVG), Export Section as PDF, Print (section,
+   range, current page); PNG, PDF and SVG output match pixel by pixel (tested).
+6. ✅ Bundles (D46): Export Workspace / Export Notebook (`.studybundle`), Import Notebook (one
+   undo step, ids remapped on conflict), Open Bundle as Workspace; hostile bundles refused.
+
+Not in Phase 8: PDF text extraction/search inside PDFs, PDF outlines/links, rotated PDF
+pages (`/Rotate` is rendered as QtPdf reports the page), vector PDF pages in exports (drawn
+as 200 dpi images), zip64 bundles (> 4 GiB), importing a bundle's planner data (tasks,
+courses) — notebook bundles carry notebooks and their tags only.
+
 ## Phase 9 — Hardening & release
 
 * Profiling-driven optimisation (batching/arenas, LOD, texture budgets, page-load
@@ -508,11 +532,11 @@ Qt Quick tablet UI · spaced-repetition flashcards from notes.
 | Renderer | **OpenGL 3.3 core** only; QRhi/Vulkan/Metal/D3D are a future extension point, not planned |
 | Threading | Introduced in stages; single-threaded through Phase 2 |
 | Workspace locking | Exclusive writer with stale-lock detection and read-only fallback (Phase 3) |
+| PDF library | **QtPdf (PDFium)**, LGPL-3.0/BSD, dynamically linked (Phase 8, D44) |
 
 ## Still open
 
-1. **PDF library** (Phase 8): QtPdf (PDFium-based) is the default proposal; MuPDF
-   (AGPL/commercial) and Poppler (GPL) have licence implications for an MIT project.
+1. ~~PDF library~~ — resolved: QtPdf (see above).
 2. **Workspaces in cloud-synced folders**: proposed "unsupported for the live workspace,
    supported for backups/exports". Phase 3 does not detect such folders; still to confirm
    (and to surface in the UI) with the workspace UI in Phase 5.

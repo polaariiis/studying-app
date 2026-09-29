@@ -2,9 +2,11 @@
 # persistence is linked directly only for fault injection (a second connection).
 studyapp_add_gtest(application_tests
     SOURCES
+        BundleTest.cpp
         CanvasSessionTest.cpp
         ComponentVersionsTest.cpp
         PlannerTest.cpp
+        SearchTest.cpp
         ShellWorkflowTest.cpp
         WorkspaceSessionTest.cpp
     LIBS

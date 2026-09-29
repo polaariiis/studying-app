@@ -6,6 +6,7 @@ studyapp_add_module(canvas
         include/studyapp/canvas/CanvasController.hpp
         include/studyapp/canvas/CanvasScene.hpp
         include/studyapp/canvas/DocumentPort.hpp
+        include/studyapp/canvas/DocumentRasterizer.hpp
         include/studyapp/canvas/ElementGeometry.hpp
         include/studyapp/canvas/ImageSource.hpp
         include/studyapp/canvas/Input.hpp
@@ -22,6 +23,7 @@ studyapp_add_module(canvas
         src/Camera.cpp
         src/CanvasController.cpp
         src/CanvasScene.cpp
+        src/DocumentRasterizer.cpp
         src/ElementGeometry.cpp
         src/RenderBatches.cpp
         src/RenderCache.cpp

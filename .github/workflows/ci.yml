@@ -140,6 +140,8 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: ${{ matrix.qt_arch }}
+          # QtPdf (PDFium) renders imported PDFs (Phase 8); an add-on module.
+          modules: qtpdf
           cache: true
 
       - name: Configure, build and test (ci-full preset)

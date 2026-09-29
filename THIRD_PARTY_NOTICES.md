@@ -7,6 +7,7 @@ following third-party software, each under its own license. Versions are pinned 
 | Component | Version | License | Used for | Shipped in the application? |
 |---|---|---|---|---|
 | [Qt](https://www.qt.io/) | 6.8 (LTS) | LGPL-3.0 (open-source edition; commercial licenses also exist) | UI, platform integration, OpenGL context | Yes — dynamically linked, deployed as shared libraries |
+| [Qt PDF](https://doc.qt.io/qt-6/qtpdf-index.html) with [PDFium](https://pdfium.googlesource.com/pdfium/) | 6.8 (LTS) | LGPL-3.0 (Qt PDF); BSD-3-Clause / Apache-2.0 (PDFium and its bundled libraries) | Reading and rendering imported PDFs (Phase 8) | Yes — dynamically linked Qt module (`Qt6Pdf`) |
 | [SQLite](https://sqlite.org/) | 3.50.4 | Public domain | Persistence | Yes — statically linked (unless `STUDYAPP_USE_SYSTEM_SQLITE=ON`) |
 | [tl::expected](https://github.com/TartanLlama/expected) | 1.1.0 | CC0-1.0 | `Result<T>` in `core` | Yes — header-only |
 | [GoogleTest](https://github.com/google/googletest) | 1.17.0 | BSD-3-Clause | Unit tests | No — test builds only |
@@ -18,6 +19,12 @@ StudyBoard links Qt dynamically, so users can replace the Qt libraries shipped w
 application with their own builds, as the LGPL requires. Qt's source code is available
 from <https://download.qt.io/> and <https://code.qt.io/>. Installed builds include Qt's
 license texts via Qt's deployment tooling.
+
+Qt PDF, Qt Svg and Qt Print Support (Phase 8: PDF import, SVG export, printing) are Qt
+modules under the same terms. Qt PDF contains PDFium (BSD-3-Clause, Apache-2.0 for parts)
+and the third-party libraries PDFium uses (e.g. FreeType, libjpeg-turbo, OpenJPEG, lcms2,
+zlib), each under its permissive license; their notices ship inside the Qt PDF module and
+are reproduced by Qt's deployment tooling (see Qt's "Licenses Used in Qt" documentation).
 
 ## tl::expected (CC0-1.0)
 

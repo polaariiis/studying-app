@@ -7,6 +7,7 @@
 #include <studyapp/persistence/CatalogStore.hpp>
 #include <studyapp/persistence/Database.hpp>
 #include <studyapp/persistence/PageStore.hpp>
+#include <studyapp/persistence/SearchIndex.hpp>
 #include <studyapp/persistence/StudyStore.hpp>
 
 namespace studyapp::persistence {
@@ -28,7 +29,7 @@ class WorkspaceStore {
 public:
     WorkspaceStore(Database& database, const core::Clock& clock) noexcept
         : database_(&database), clock_(&clock), catalog_(database), pages_(database),
-          study_(database) {}
+          study_(database), search_(database) {}
 
     [[nodiscard]] core::Result<document::Workspace> load();
 
@@ -37,6 +38,7 @@ public:
     [[nodiscard]] CatalogStore& catalog() noexcept { return catalog_; }
     [[nodiscard]] PageStore& pages() noexcept { return pages_; }
     [[nodiscard]] StudyStore& study() noexcept { return study_; }
+    [[nodiscard]] SearchIndex& search() noexcept { return search_; }
 
 private:
     Database* database_;
@@ -44,6 +46,7 @@ private:
     CatalogStore catalog_;
     PageStore pages_;
     StudyStore study_;
+    SearchIndex search_;
 };
 
 } // namespace studyapp::persistence

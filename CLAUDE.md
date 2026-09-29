@@ -102,7 +102,19 @@ Phase 6: COMPLETE (final audit passed with non-blocking follow-ups)
 
 Phase 7: COMPLETE (study/planning; audited, non-blocking follow-ups only)
 
-Phase 8: NEXT (search, PDF, export) — not started
+Phase 8: IMPLEMENTED (search, PDF, export, bundles; uncommitted, awaiting review/commit)
+
+Phase 8 established (details: docs/ROADMAP.md Phase 8, docs/ARCHITECTURE.md D43–D46,
+docs/DATABASE_SCHEMA.md §6/§12, docs/CANVAS.md §10, docs/RENDERING.md §9):
+
+- search: FTS5 index maintained in the write transaction (`persistence::SearchIndex`),
+  `WorkspaceSession::search` + `application::search`, search field in the navigation panel
+- PDF: `PageInfo::document` (schema v1 columns), `createDocumentSection`, `canvas::DocumentRasterizer`
+  tiles, `ui::SessionDocumentRasterizer` (QtPdf, one worker thread), File ▸ Import PDF
+- export/print: `ui::PageExport` (PDF/PNG/SVG, print) from the canvas meshes
+- bundles: `persistence` Zip/Bundle (untrusted-input checks), `commands::importNotebooks`,
+  `WorkspaceSession::exportBundle/importBundle/extractBundle`, File menu actions
+- Qt modules now required: Pdf (add-on `qtpdf`), PrintSupport, Svg
 
 Do NOT redo Phases 1–7 unless a concrete regression requires it.
 
@@ -493,7 +505,7 @@ Focus:
 - related study workflows
 
 Phase 8 — Search / PDF / export
-NEXT
+IMPLEMENTED (uncommitted)
 
 Focus:
 - document search

@@ -2,14 +2,17 @@
 
 #include "CanvasWidget.hpp"
 #include "NavigationPanel.hpp"
+#include "PageExport.hpp"
 #include "PlannerPanel.hpp"
 #include "SessionDocumentPort.hpp"
+#include "SessionDocumentRasterizer.hpp"
 #include "SessionImageSource.hpp"
 #include "ThemeIcons.hpp"
 #include "WorkspaceTreeModel.hpp"
 
 #include <studyapp/application/ComponentVersions.hpp>
 #include <studyapp/application/PageNavigator.hpp>
+#include <studyapp/application/Search.hpp>
 #include <studyapp/application/StartPage.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/application/WorkspaceStructure.hpp>
@@ -30,12 +33,16 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QImageReader>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeDatabase>
+#include <QPrinter>
+#include <QProgressDialog>
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -44,6 +51,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <string_view>
@@ -136,6 +144,31 @@ double iconWidth(canvas::ToolKind tool, float width) noexcept {
     return tool == canvas::ToolKind::Highlighter ? width * kHighlighterIconScale : width;
 }
 
+/// The patch changes what search finds or shows: titles, text boxes, tasks, or the
+/// notebook/section names shown as context. Ink, shapes and styling do not.
+bool affectsSearch(const document::Patch& patch) {
+    const auto isText = [](const std::optional<document::Element>& element) {
+        return element && std::holds_alternative<document::TextBox>(element->payload);
+    };
+    for (const document::AnyChange& change : patch.changes()) {
+        if (const auto* element = std::get_if<document::ElementChange>(&change)) {
+            if (isText(element->before) || isText(element->after)) {
+                return true;
+            }
+            continue;
+        }
+        if (std::holds_alternative<document::NotebookChange>(change) ||
+            std::holds_alternative<document::SectionChange>(change) ||
+            std::holds_alternative<document::PageChange>(change) ||
+            std::holds_alternative<document::TaskChange>(change) ||
+            std::holds_alternative<document::CourseChange>(change) ||
+            std::holds_alternative<document::ProjectChange>(change)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 /// Everything that belongs to one open workspace; recreated when another one is opened.
@@ -151,6 +184,7 @@ struct MainWindow::OpenWorkspace {
         : owned(std::move(ownedSession)), session(&shown), clock(&shellClock), ids(&shellIds),
           port(std::make_unique<SessionDocumentPort>(shown)),
           images(std::make_unique<SessionImageSource>(shown)),
+          documents(std::make_unique<SessionDocumentRasterizer>(shown)),
           controller(std::make_unique<canvas::CanvasController>(*port, shellIds)),
           navigator(shown.workspace()), structure(shown, shellClock, shellIds),
           planner(shown, shellClock, shellIds) {}
@@ -161,6 +195,7 @@ struct MainWindow::OpenWorkspace {
     core::IdGenerator* ids;
     std::unique_ptr<SessionDocumentPort> port;
     std::unique_ptr<SessionImageSource> images;
+    std::unique_ptr<SessionDocumentRasterizer> documents; ///< PDF pages (Phase 8)
     std::unique_ptr<canvas::CanvasController> controller;
     application::PageNavigator navigator;
     WorkspaceStructure structure;
@@ -277,6 +312,28 @@ void MainWindow::createActions() {
     insertImageAction_ = make(tr("Insert &Image…"), QStringLiteral("actionInsertImage"),
                               QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
     connect(insertImageAction_, &QAction::triggered, this, &MainWindow::insertImage);
+    importPdfAction_ = make(tr("&Import PDF…"), QStringLiteral("actionImportPdf"));
+    connect(importPdfAction_, &QAction::triggered, this, &MainWindow::importPdf);
+    exportPageAction_ = make(tr("&Export Page\u2026"), QStringLiteral("actionExportPage"),
+                             QKeySequence(Qt::CTRL | Qt::Key_E));
+    connect(exportPageAction_, &QAction::triggered, this, [this] { exportPages(false); });
+    exportSectionAction_ =
+        make(tr("Export &Section as PDF\u2026"), QStringLiteral("actionExportSection"));
+    connect(exportSectionAction_, &QAction::triggered, this, [this] { exportPages(true); });
+    printAction_ = make(tr("&Print\u2026"), QStringLiteral("actionPrint"), QKeySequence::Print);
+    exportWorkspaceAction_ =
+        make(tr("Export &Workspace\u2026"), QStringLiteral("actionExportWorkspace"));
+    connect(exportWorkspaceAction_, &QAction::triggered, this, [this] { exportBundle(false); });
+    exportNotebookAction_ =
+        make(tr("Export &Notebook\u2026"), QStringLiteral("actionExportNotebook"));
+    connect(exportNotebookAction_, &QAction::triggered, this, [this] { exportBundle(true); });
+    importNotebookAction_ =
+        make(tr("Import N&otebook\u2026"), QStringLiteral("actionImportNotebook"));
+    connect(importNotebookAction_, &QAction::triggered, this, &MainWindow::importNotebookBundle);
+    openBundleAction_ =
+        make(tr("Open &Bundle as Workspace\u2026"), QStringLiteral("actionOpenBundle"));
+    connect(openBundleAction_, &QAction::triggered, this, &MainWindow::openBundleAsWorkspace);
+    connect(printAction_, &QAction::triggered, this, &MainWindow::printPages);
     // Cut, copy and paste of canvas elements (the canvas clipboard, not the system one; text
     // being edited takes these keys itself).
     cutAction_ = make(tr("Cu&t"), QStringLiteral("actionCut"), QKeySequence::Cut);
@@ -306,6 +363,12 @@ void MainWindow::createActions() {
         if (open_) {
             (void)open_->controller->deleteSelection();
         }
+    });
+    findAction_ = make(tr("&Find…"), QStringLiteral("actionFind"), QKeySequence::Find);
+    connect(findAction_, &QAction::triggered, this, [this] {
+        navigationAction_->setChecked(true); // the field is in the navigation panel
+        navigation_->searchField()->setFocus(Qt::ShortcutFocusReason);
+        navigation_->searchField()->selectAll();
     });
     selectAllAction_ =
         make(tr("Select &All"), QStringLiteral("actionSelectAll"), QKeySequence::SelectAll);
@@ -607,6 +670,17 @@ void MainWindow::createMenus() {
     fileMenu->addSeparator();
     fileMenu->addAction(saveAction_);
     fileMenu->addSeparator();
+    fileMenu->addAction(importPdfAction_);
+    fileMenu->addAction(exportPageAction_);
+    fileMenu->addAction(exportSectionAction_);
+    fileMenu->addSeparator();
+    fileMenu->addAction(printAction_);
+    fileMenu->addSeparator();
+    fileMenu->addAction(exportWorkspaceAction_);
+    fileMenu->addAction(exportNotebookAction_);
+    fileMenu->addAction(importNotebookAction_);
+    fileMenu->addAction(openBundleAction_);
+    fileMenu->addSeparator();
     fileMenu->addAction(quitAction_);
 
     QMenu* editMenu = menuBar()->addMenu(tr("&Edit"));
@@ -619,6 +693,8 @@ void MainWindow::createMenus() {
     editMenu->addAction(pasteAction_);
     editMenu->addAction(deleteAction_);
     editMenu->addAction(selectAllAction_);
+    editMenu->addSeparator();
+    editMenu->addAction(findAction_);
     editMenu->addSeparator();
     editMenu->addAction(insertImageAction_);
 
@@ -751,6 +827,27 @@ void MainWindow::createCentralWidget() {
     QTreeView* tree = navigation_->tree();
     connect(tree->selectionModel(), &QItemSelectionModel::currentChanged, this,
             &MainWindow::onTreeCurrentChanged);
+
+    // Live search: after a short pause in typing (one query per pause, not per key).
+    searchDelay_ = new QTimer(this);
+    searchDelay_->setSingleShot(true);
+    searchDelay_->setInterval(150);
+    connect(searchDelay_, &QTimer::timeout, this, &MainWindow::runSearch);
+    connect(navigation_->searchField(), &QLineEdit::textChanged, this,
+            [this] { searchDelay_->start(); });
+    connect(navigation_->searchField(), &QLineEdit::returnPressed, this, [this] {
+        searchDelay_->stop();
+        runSearch();
+        if (QTreeWidgetItem* first = navigation_->searchResults()->topLevelItem(0);
+            first != nullptr && !first->data(0, Qt::UserRole).toStringList().isEmpty()) {
+            activateSearchResult(first);
+        }
+    });
+    navigation_->searchField()->installEventFilter(this);
+    connect(navigation_->searchResults(), &QTreeWidget::itemActivated, this,
+            &MainWindow::activateSearchResult);
+    connect(navigation_->searchResults(), &QTreeWidget::itemClicked, this,
+            &MainWindow::activateSearchResult);
     connect(tree, &QTreeView::customContextMenuRequested, this, &MainWindow::showTreeContextMenu);
 
     treeModel_->setRenameHandler([this](const HierarchyItem& item, const QString& title) {
@@ -1088,6 +1185,7 @@ void MainWindow::attach(std::unique_ptr<OpenWorkspace> workspace,
     applyToolSettings(); // tool settings outlive workspaces
     open_->controller->setTextLayout(textLayout_);
     open_->controller->setImageSource(open_->images.get());
+    open_->controller->setDocumentRasterizer(open_->documents.get());
     planner_->setReadOnly(session.isReadOnly());
     planner_->setPlanner(&open_->planner, open_->clock);
 
@@ -1111,6 +1209,7 @@ void MainWindow::detach(bool closeSession) {
         return;
     }
     open_->session->setPatchListener({});
+    clearSearch();
     treeModel_->setWorkspace(nullptr);
     planner_->setPlanner(nullptr, nullptr);
     // The canvas widget refers to the controller: destroy it while the controller exists.
@@ -1168,6 +1267,9 @@ void MainWindow::onPatchApplied(const document::Patch& patch) {
     open_->controller->onDocumentChanged(patch);
     treeModel_->onPatch(patch);
     planner_->onPatch(patch);
+    if (navigation_->isShowingSearchResults() && affectsSearch(patch)) {
+        searchDelay_->start(); // results follow the workspace (never stale or dangling)
+    }
     const bool pageChanged = open_->navigator.onPatch(patch);
     applyingPatch_ = false;
     if (pageChanged) {
@@ -1207,6 +1309,111 @@ void MainWindow::rememberView() {
         const canvas::Camera& camera = open_->controller->camera();
         open_->views[*page] = {.center = camera.center(), .zoom = camera.zoom()};
     }
+}
+
+// ---------------------------------------------------------------------------- search
+
+void MainWindow::runSearch() {
+    QTreeWidget* results = navigation_->searchResults();
+    const QString query = navigation_->searchField()->text().trimmed();
+    if (!open_ || query.isEmpty()) {
+        results->clear();
+        navigation_->showSearchResults(false);
+        return;
+    }
+    auto found = application::search(*open_->session, query.toStdString());
+    // Refreshing keeps the chosen result chosen.
+    const QVariant chosen = results->currentItem() != nullptr
+                                ? results->currentItem()->data(0, Qt::UserRole)
+                                : QVariant();
+    results->clear();
+    navigation_->showSearchResults(true);
+    const auto note = [&](const QString& text) {
+        auto* item = new QTreeWidgetItem(results);
+        item->setText(0, text);
+        item->setFlags(Qt::ItemIsEnabled);
+    };
+    if (!found) {
+        note(tr("Search failed: %1").arg(errorText(found.error())));
+        return;
+    }
+    if (found->empty()) {
+        note(open_->session->isSearchIndexed()
+                 ? tr("No results")
+                 : tr("Not indexed yet: open the workspace for editing once to search it"));
+        return;
+    }
+    const auto idText = [](const auto& id) {
+        return toQString(id.toString());
+    };
+    for (const application::SearchResult& result : *found) {
+        auto* item = new QTreeWidgetItem(results);
+        // Second line: where it is — or, when the match is further into the text than the
+        // title shows, the words around it.
+        const bool snippetAddsText = !result.snippet.empty() && result.snippet != result.title;
+        const QString detail = toQString(snippetAddsText ? result.snippet : result.context);
+        item->setText(
+            0, toQString(result.title.empty() ? tr("Untitled").toStdString() : result.title) +
+                   (detail.isEmpty() ? QString() : QStringLiteral("\n") + detail));
+        item->setToolTip(0, toQString(result.context));
+        item->setData(0, Qt::UserRole,
+                      QStringList{QString::number(static_cast<int>(result.kind)),
+                                  result.page ? idText(*result.page) : QString(),
+                                  result.element ? idText(*result.element) : QString(),
+                                  result.task ? idText(*result.task) : QString()});
+        if (chosen.isValid() && item->data(0, Qt::UserRole) == chosen) {
+            results->setCurrentItem(item);
+        }
+    }
+}
+
+void MainWindow::activateSearchResult(QTreeWidgetItem* item) {
+    const QStringList target =
+        item != nullptr ? item->data(0, Qt::UserRole).toStringList() : QStringList{};
+    if (!open_ || target.size() != 4) {
+        return;
+    }
+    const auto uuid = [&](int i) {
+        return core::Uuid::parse(target[i].toStdString());
+    };
+    const auto kind = static_cast<application::SearchResult::Kind>(target[0].toInt());
+    if (kind == application::SearchResult::Kind::Task) {
+        if (auto task = uuid(3)) {
+            plannerAction_->setChecked(true);
+            planner_->showView(PlannerPanel::View::Tasks);
+            planner_->selectTask(core::TaskId{*task});
+        }
+        return;
+    }
+    const auto page = uuid(1);
+    if (!page || !openPage(core::PageId{*page})) {
+        return;
+    }
+    if (kind == application::SearchResult::Kind::TextBox) {
+        if (auto element = uuid(2)) {
+            (void)open_->controller->revealElement(core::ElementId{*element});
+        }
+    }
+}
+
+void MainWindow::clearSearch() {
+    searchDelay_->stop();
+    navigation_->searchField()->clear(); // textChanged restarts the delay: stop it again
+    searchDelay_->stop();
+    navigation_->searchResults()->clear();
+    navigation_->showSearchResults(false);
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == navigation_->searchField() && event->type() == QEvent::KeyPress &&
+        static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+        clearSearch();
+        if (canvasWidget_ != nullptr) {
+            canvasWidget_->setFocus(Qt::ShortcutFocusReason);
+        }
+        return true;
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::finishTextEditing() {
@@ -1371,21 +1578,26 @@ void MainWindow::newPage() {
     }
 }
 
+std::optional<core::NotebookId> MainWindow::currentNotebook() const {
+    const document::Workspace& ws = open_->session->workspace();
+    const auto item = currentItem(*treeModel_, *navigation_->tree(), activePage());
+    if (!item) {
+        return std::nullopt;
+    }
+    if (const auto* page = std::get_if<core::PageId>(&*item)) {
+        return ws.findSection(ws.findPage(*page)->section)->notebook;
+    }
+    if (const auto* section = std::get_if<core::SectionId>(&*item)) {
+        return ws.findSection(*section)->notebook;
+    }
+    return std::get<core::NotebookId>(*item);
+}
+
 void MainWindow::newSection() {
     if (!open_) {
         return;
     }
-    const document::Workspace& ws = open_->session->workspace();
-    std::optional<core::NotebookId> notebook;
-    if (const auto item = currentItem(*treeModel_, *navigation_->tree(), activePage())) {
-        if (const auto* page = std::get_if<core::PageId>(&*item)) {
-            notebook = ws.findSection(ws.findPage(*page)->section)->notebook;
-        } else if (const auto* section = std::get_if<core::SectionId>(&*item)) {
-            notebook = ws.findSection(*section)->notebook;
-        } else {
-            notebook = std::get<core::NotebookId>(*item);
-        }
-    }
+    const std::optional<core::NotebookId> notebook = currentNotebook();
     if (!notebook) {
         newNotebook();
         return;
@@ -1728,6 +1940,266 @@ void MainWindow::insertImage() {
     selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
 }
 
+void MainWindow::importPdf() {
+    if (!open_ || open_->session->isReadOnly()) {
+        return;
+    }
+    const auto chosen = dialogs_->chooseDocumentToImport(this);
+    if (!chosen) {
+        return;
+    }
+    const QString file = QString::fromStdU16String(chosen->u16string());
+    const QString failed = tr("The PDF could not be imported.");
+    // Only read: the PDF is copied into the workspace's assets and never written.
+    auto info = inspectPdf(*chosen);
+    if (!info) {
+        dialogs_->showError(this, failed, tr("%1: %2").arg(file, errorText(info.error())));
+        return;
+    }
+    auto asset = open_->session->importAsset(*chosen, "application/pdf");
+    if (!asset) {
+        dialogs_->showError(this, failed, errorText(asset.error()));
+        return;
+    }
+    // Into the current notebook, else the first one; with none, a new notebook "Documents".
+    std::optional<core::NotebookId> notebook = currentNotebook();
+    if (const auto notebooks = open_->session->workspace().notebooks();
+        !notebook && !notebooks.empty()) {
+        notebook = notebooks.front();
+    }
+    auto imported = open_->structure.importDocument(
+        notebook, QFileInfo(file).completeBaseName().toStdString(), *asset, info->pageSizes);
+    if (!imported) {
+        dialogs_->showError(this, failed, errorText(imported.error()));
+        return;
+    }
+    openPage(imported->firstPage);
+    QTreeView* tree = navigation_->tree();
+    tree->expand(treeModel_->indexOf(HierarchyItem{imported->notebook}));
+    tree->expand(treeModel_->indexOf(HierarchyItem{imported->section}));
+    tree->setCurrentIndex(treeModel_->indexOf(HierarchyItem{imported->firstPage}));
+}
+
+namespace {
+
+/// A file name from a title: characters no file system accepts become "_".
+QString fileNameFrom(const std::string& title, const QString& fallback) {
+    QString name = QString::fromStdString(title).trimmed();
+    for (QChar& c : name) {
+        if (QStringLiteral("\\/:*?\"<>|").contains(c) || c.unicode() < 0x20) {
+            c = u'_';
+        }
+    }
+    return name.isEmpty() ? fallback : name;
+}
+
+} // namespace
+
+ExportSources MainWindow::exportSources(std::size_t pages) {
+    application::WorkspaceSession* session = open_->session;
+    ExportSources sources{
+        .assetPath = [session](core::AssetId asset) -> std::optional<std::filesystem::path> {
+            auto path = session->assetPath(asset);
+            return path ? std::optional(std::move(*path)) : std::nullopt;
+        },
+        .progress = {}};
+    if (pages > 1) {
+        // Several pages: progress with Cancel (shown only if it takes a while).
+        auto dialog = std::make_shared<QProgressDialog>(tr("Exporting pages\u2026"), tr("Cancel"),
+                                                        0, static_cast<int>(pages), this);
+        dialog->setWindowModality(Qt::WindowModal);
+        dialog->setMinimumDuration(500);
+        sources.progress = [dialog](std::size_t done, std::size_t) {
+            dialog->setValue(static_cast<int>(done));
+            return !dialog->wasCanceled();
+        };
+    }
+    return sources;
+}
+
+std::vector<core::PageId> MainWindow::pagesToExport(bool wholeSection) const {
+    const auto page = activePage();
+    if (!open_ || !page) {
+        return {};
+    }
+    if (!wholeSection) {
+        return {*page};
+    }
+    const document::Workspace& ws = open_->session->workspace();
+    const auto pages = ws.pagesOf(ws.findPage(*page)->section);
+    return {pages.begin(), pages.end()};
+}
+
+void MainWindow::exportPages(bool wholeSection) {
+    const std::vector<core::PageId> pages = pagesToExport(wholeSection);
+    if (pages.empty()) {
+        return;
+    }
+    finishTextEditing(); // what is typed is part of the page
+    const document::Workspace& ws = open_->session->workspace();
+    const document::PageInfo& page = *ws.findPage(pages.front());
+    const QString name = wholeSection
+                             ? fileNameFrom(ws.findSection(page.section)->title, tr("Section"))
+                             : fileNameFrom(page.title, tr("Page"));
+    const auto target = dialogs_->chooseExportTarget(this, name, wholeSection);
+    if (!target) {
+        return;
+    }
+    const QString failed = tr("The export could not be written.");
+    // The workspace directory belongs to StudyBoard: never write into it.
+    if (open_->session->isInsideWorkspace(*target)) {
+        dialogs_->showError(this, failed, tr("Choose a location outside the workspace folder."));
+        return;
+    }
+    const QString suffix =
+        QFileInfo(QString::fromStdU16String(target->u16string())).suffix().toLower();
+    const ExportFormat format = suffix == QStringLiteral("png")   ? ExportFormat::Png
+                                : suffix == QStringLiteral("svg") ? ExportFormat::Svg
+                                                                  : ExportFormat::Pdf;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    auto written = ui::exportPages(ws, pages, *target, format, exportSources(pages.size()));
+    QApplication::restoreOverrideCursor();
+    if (!written) {
+        if (written.error().code != core::ErrorCode::Conflict) { // Conflict: cancelled
+            dialogs_->showError(this, failed, errorText(written.error()));
+        }
+        return;
+    }
+    statusBar()->showMessage(
+        tr("Exported to %1").arg(QString::fromStdU16String(target->u16string())), 5000);
+}
+
+void MainWindow::printPages() {
+    // The pages of the current section: all of them, a range, or the current page.
+    const std::vector<core::PageId> section = pagesToExport(true);
+    if (section.empty()) {
+        return;
+    }
+    finishTextEditing();
+    const document::Workspace& ws = open_->session->workspace();
+    QPrinter printer(QPrinter::HighResolution);
+    printer.setDocName(
+        QString::fromStdString(ws.findSection(ws.findPage(section.front())->section)->title));
+    if (!dialogs_->setUpPrinter(this, printer, static_cast<int>(section.size()))) {
+        return;
+    }
+    std::vector<core::PageId> chosen;
+    switch (printer.printRange()) {
+    case QPrinter::CurrentPage:
+        chosen = pagesToExport(false);
+        break;
+    case QPrinter::PageRange: {
+        const int from = std::max(1, printer.fromPage());
+        const int to = std::min(static_cast<int>(section.size()), printer.toPage());
+        for (int i = from; i <= to; ++i) {
+            chosen.push_back(section[static_cast<std::size_t>(i - 1)]);
+        }
+        break;
+    }
+    default:
+        chosen = section;
+        break;
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    auto printed =
+        ui::printPages(printer, open_->session->workspace(), chosen, exportSources(chosen.size()));
+    QApplication::restoreOverrideCursor();
+    if (!printed && printed.error().code != core::ErrorCode::Conflict) {
+        dialogs_->showError(this, tr("The pages could not be printed."),
+                            errorText(printed.error()));
+    }
+}
+
+// ---------------------------------------------------------------------------- bundles
+
+void MainWindow::exportBundle(bool notebookOnly) {
+    if (!open_) {
+        return;
+    }
+    finishTextEditing();
+    const document::Workspace& ws = open_->session->workspace();
+    std::optional<core::NotebookId> notebook;
+    if (notebookOnly) {
+        notebook = currentNotebook();
+        if (!notebook && !ws.notebooks().empty()) {
+            notebook = ws.notebooks().front();
+        }
+        if (!notebook) {
+            return;
+        }
+    }
+    const QString name = notebook ? fileNameFrom(ws.findNotebook(*notebook)->title, tr("Notebook"))
+                                  : fileNameFrom(ws.info().name, tr("Workspace"));
+    const auto target = dialogs_->chooseBundleTarget(this, name);
+    if (!target) {
+        return;
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    auto written = open_->session->exportBundle(*target, notebook);
+    QApplication::restoreOverrideCursor();
+    if (!written) {
+        dialogs_->showError(this, tr("The bundle could not be written."),
+                            errorText(written.error()));
+        return;
+    }
+    statusBar()->showMessage(
+        tr("Exported to %1").arg(QString::fromStdU16String(target->u16string())), 5000);
+}
+
+void MainWindow::importNotebookBundle() {
+    if (!open_ || open_->session->isReadOnly()) {
+        return;
+    }
+    finishTextEditing();
+    const auto bundle = dialogs_->chooseBundleToOpen(this);
+    if (!bundle) {
+        return;
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    auto imported = open_->session->importBundle(*bundle);
+    QApplication::restoreOverrideCursor();
+    if (!imported) {
+        dialogs_->showError(this, tr("The bundle could not be imported."),
+                            errorText(imported.error()));
+        return;
+    }
+    // Show the first imported notebook's first page.
+    const document::Workspace& ws = open_->session->workspace();
+    const core::NotebookId first = imported->front();
+    QTreeView* tree = navigation_->tree();
+    tree->expand(treeModel_->indexOf(HierarchyItem{first}));
+    for (const core::SectionId section : ws.sectionsOf(first)) {
+        if (const auto pages = ws.pagesOf(section); !pages.empty()) {
+            openPage(pages.front());
+            tree->setCurrentIndex(treeModel_->indexOf(HierarchyItem{pages.front()}));
+            break;
+        }
+    }
+}
+
+void MainWindow::openBundleAsWorkspace() {
+    if (!services_) {
+        return;
+    }
+    const auto bundle = dialogs_->chooseBundleToOpen(this);
+    if (!bundle) {
+        return;
+    }
+    const auto root = dialogs_->chooseNewWorkspace(this);
+    if (!root) {
+        return;
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    auto extracted = application::WorkspaceSession::extractBundle(*bundle, *root);
+    QApplication::restoreOverrideCursor();
+    if (!extracted) {
+        dialogs_->showError(this, tr("The bundle could not be opened."),
+                            errorText(extracted.error()));
+        return;
+    }
+    (void)openWorkspace(*root);
+}
+
 void MainWindow::setPageFormat(int backgroundPattern, bool bounded) {
     const auto page = activePage();
     if (!open_ || !page) {
@@ -1809,6 +2281,16 @@ void MainWindow::updateActions() {
     openWorkspaceAction_->setEnabled(canOpen);
     closeWorkspaceAction_->setEnabled(open && open_->owned != nullptr);
     saveAction_->setEnabled(writable);
+    importPdfAction_->setEnabled(writable);
+    // Exporting and printing only read: also in read-only workspaces.
+    const bool hasPage = open && activePage().has_value();
+    exportPageAction_->setEnabled(hasPage);
+    exportSectionAction_->setEnabled(hasPage);
+    printAction_->setEnabled(hasPage);
+    exportWorkspaceAction_->setEnabled(open);
+    exportNotebookAction_->setEnabled(open && open_->session->workspace().notebookCount() > 0);
+    importNotebookAction_->setEnabled(writable);
+    openBundleAction_->setEnabled(canOpen);
 
     const auto label = [](std::string_view text) {
         return toQString(text);
@@ -1826,6 +2308,8 @@ void MainWindow::updateActions() {
     pasteAction_->setEnabled(writable);
     copyAction_->setEnabled(open);
     selectAllAction_->setEnabled(open);
+    findAction_->setEnabled(open);
+    navigation_->searchField()->setEnabled(open);
 
     const std::optional<HierarchyItem> item =
         open ? currentItem(*treeModel_, *navigation_->tree(), activePage()) : std::nullopt;

@@ -278,6 +278,33 @@ TEST_F(WorkspaceStoreTest, DeletionsPersistAndCascadeCleanly) {
 
 // ---------------------------------------------------------------------------- elements
 
+TEST_F(WorkspaceStoreTest, DocumentPagesRoundTripThroughUndoAndRedo) {
+    const auto asset = importAsset("%PDF-1.7 not really a document", "application/pdf");
+    const auto notebook = doc.addNotebook("Notebook");
+    save();
+    const std::vector<core::DVec2> sizes{{816.0, 1056.0}, {1056.0, 816.0}};
+    const auto section = doc.run(document::commands::createDocumentSection(
+        doc.workspace, notebook, "Paper", asset, sizes, doc.clock, doc.ids));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM page WHERE bg_asset_id IS NOT NULL"), 2);
+    EXPECT_EQ(count("SELECT max(bg_page_index) FROM page"), 1);
+    expectRoundTrip();
+    const auto pages = doc.workspace.pagesOf(section);
+    ASSERT_EQ(pages.size(), 2U);
+    EXPECT_EQ(doc.workspace.findPage(pages[1])->document->index, 1);
+    // Annotating a document page is ordinary content.
+    addSaved(doc.firstLayer(pages[1]), document::TextBox{.size = {100, 40}, .text = "note"});
+    expectRoundTrip();
+    undoAndSave();
+    undoAndSave();
+    EXPECT_EQ(count("SELECT count(*) FROM page"), 0);
+    expectRoundTrip();
+    redoAndSave();
+    expectRoundTrip();
+    // The asset is referenced: it cannot be removed under the page.
+    EXPECT_FALSE(db().execute("DELETE FROM asset").has_value());
+}
+
 TEST_F(WorkspaceStoreTest, EveryElementKindRoundTripsWithAllFields) {
     const auto layer = addSavedPath();
     const document::Transform transform{

@@ -2,6 +2,7 @@
 
 #include <studyapp/document/Commands.hpp>
 
+#include <studyapp/document/StudyCommands.hpp>
 #include <studyapp/testing/TestWorkspace.hpp>
 
 #include <gtest/gtest.h>
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 namespace studyapp::document::test {
@@ -79,6 +81,201 @@ TEST(CommandsTest, PageTitleMayBeEmptyButOtherNamesMayNot) {
               ErrorCode::InvalidArgument);
     EXPECT_EQ(commands::createLayer(t.workspace, page, "\t", t.ids).error().code,
               ErrorCode::InvalidArgument);
+}
+
+TEST(CommandsTest, DocumentSectionHasOneBoundedPagePerDocumentPage) {
+    TestWorkspace t;
+    const auto notebook = t.addNotebook("N");
+    const core::AssetId asset{t.ids.next()};
+    const std::vector<core::DVec2> sizes{{816.0, 1056.0}, {1056.0, 816.0}, {400.0, 300.0}};
+    const auto section = t.run(commands::createDocumentSection(t.workspace, notebook, "Lecture 3",
+                                                               asset, sizes, t.clock, t.ids));
+    ASSERT_NE(t.workspace.findSection(section), nullptr);
+    EXPECT_EQ(t.workspace.findSection(section)->title, "Lecture 3");
+    const auto pages = t.workspace.pagesOf(section);
+    ASSERT_EQ(pages.size(), 3U);
+    for (std::size_t i = 0; i < pages.size(); ++i) {
+        const PageInfo& page = *t.workspace.findPage(pages[i]);
+        EXPECT_EQ(page.title, "Lecture 3 \xC2\xB7 p. " + std::to_string(i + 1));
+        EXPECT_EQ(page.extent, PageExtent::Bounded);
+        EXPECT_EQ(page.size, sizes[i]);
+        ASSERT_TRUE(page.document.has_value());
+        EXPECT_EQ(page.document->asset, asset);
+        EXPECT_EQ(page.document->index, static_cast<std::int32_t>(i));
+        EXPECT_EQ(t.workspace.layersOf(pages[i]).size(), 1U);
+    }
+    // One undo step removes the whole import.
+    EXPECT_EQ(t.editor.history().nextUndo()->label, "Import PDF");
+    ASSERT_TRUE(t.editor.undo().has_value());
+    EXPECT_EQ(t.workspace.findSection(section), nullptr);
+    EXPECT_EQ(t.workspace.pageCount(), 0U);
+}
+
+TEST(CommandsTest, DocumentSectionRejectsInvalidInput) {
+    TestWorkspace t;
+    const auto notebook = t.addNotebook("N");
+    const core::AssetId asset{t.ids.next()};
+    const std::vector<core::DVec2> one{{100.0, 100.0}};
+    const auto code = [&](const auto& result) {
+        return result.error().code;
+    };
+    EXPECT_EQ(code(commands::createDocumentSection(t.workspace, core::NotebookId{t.ids.next()}, "D",
+                                                   asset, one, t.clock, t.ids)),
+              ErrorCode::NotFound);
+    EXPECT_EQ(code(commands::createDocumentSection(t.workspace, notebook, "  ", asset, one, t.clock,
+                                                   t.ids)),
+              ErrorCode::InvalidArgument);
+    EXPECT_EQ(code(commands::createDocumentSection(t.workspace, notebook, "D", asset, {}, t.clock,
+                                                   t.ids)),
+              ErrorCode::InvalidArgument);
+    for (const core::DVec2 bad : {core::DVec2{0.0, 10.0}, core::DVec2{10.0, -1.0},
+                                  core::DVec2{std::numeric_limits<double>::infinity(), 10.0},
+                                  core::DVec2{std::numeric_limits<double>::quiet_NaN(), 10.0}}) {
+        const std::vector<core::DVec2> sizes{{100.0, 100.0}, bad};
+        EXPECT_EQ(code(commands::createDocumentSection(t.workspace, notebook, "D", asset, sizes,
+                                                       t.clock, t.ids)),
+                  ErrorCode::InvalidArgument);
+    }
+    // A null asset is rejected by the workspace invariants (atomically: nothing is applied).
+    auto created = commands::createDocumentSection(t.workspace, notebook, "D", core::AssetId{}, one,
+                                                   t.clock, t.ids);
+    ASSERT_TRUE(created.has_value());
+    EXPECT_FALSE(t.editor.execute(std::move(created->command)).has_value());
+    EXPECT_EQ(t.workspace.pageCount(), 0U);
+    EXPECT_NE(t.editor.history().nextUndo()->label, "Import PDF"); // no step added
+}
+
+/// A notebook with a tagged document page, an image, and a connector between two shapes.
+struct ImportSource {
+    TestWorkspace t;
+    core::NotebookId notebook;
+    core::PageId page;
+    core::AssetId pdf{core::Uuid{}};
+    core::AssetId photo{core::Uuid{}};
+    core::ElementId left;
+    core::ElementId right;
+    core::ElementId connector;
+    core::TagId tag;
+
+    ImportSource() {
+        notebook = t.addNotebook("Biology");
+        pdf = core::AssetId{t.ids.next()};
+        photo = core::AssetId{t.ids.next()};
+        const std::vector<core::DVec2> sizes{{400.0, 300.0}};
+        const auto section = t.run(commands::createDocumentSection(t.workspace, notebook, "Slides",
+                                                                   pdf, sizes, t.clock, t.ids));
+        page = t.workspace.pagesOf(section).front();
+        tag = t.run(commands::createTag(t.workspace, "exam", t.clock, t.ids));
+        t.run(commands::setPageTags(t.workspace, page, {tag}, t.clock));
+        const auto layer = t.firstLayer(page);
+        left = t.addElement(layer, Shape{.kind = ShapeKind::Rectangle, .size = {40, 40}},
+                            {.position = {10, 10}});
+        right = t.addElement(layer, Shape{.kind = ShapeKind::Rectangle, .size = {40, 40}},
+                             {.position = {200, 10}});
+        t.addElement(layer, Image{.asset = photo, .size = {50, 50}}, {.position = {10, 100}});
+        Connector link;
+        link.start = {.position = {50, 30}, .attachedTo = left};
+        link.end = {.position = {200, 30}, .attachedTo = right};
+        connector = t.addElement(layer, link);
+    }
+};
+
+TEST(CommandsTest, ImportingNotebooksKeepsIdsWhenTheyAreFree) {
+    ImportSource source;
+    TestWorkspace target;
+    for (int i = 0; i < 1000; ++i) {
+        (void)target.ids.next(); // ids of its own, apart from the source's
+    }
+    const auto existing = target.addNotebook("Existing");
+    const core::AssetId pdf{target.ids.next()};
+    const core::AssetId photo{target.ids.next()};
+    const std::unordered_map<core::AssetId, core::AssetId> assets{{source.pdf, pdf},
+                                                                  {source.photo, photo}};
+    const std::vector<core::NotebookId> which{source.notebook};
+    auto imported =
+        commands::importNotebooks(target.workspace, source.t.workspace, which, assets, target.ids);
+    ASSERT_TRUE(imported.has_value()) << imported.error().message;
+    EXPECT_EQ(imported->id, which); // no conflict: the same ids
+    EXPECT_EQ(imported->command.label, "Import notebook");
+    ASSERT_TRUE(target.editor.execute(std::move(imported->command)).has_value());
+    ASSERT_EQ(target.workspace.notebooks().size(), 2U);
+    EXPECT_EQ(target.workspace.notebooks()[0], existing); // appended
+    EXPECT_EQ(target.workspace.notebooks()[1], source.notebook);
+    const PageInfo& page = *target.workspace.findPage(source.page);
+    EXPECT_EQ(page.document->asset, pdf); // assets follow the map
+    ASSERT_EQ(page.tags.size(), 1U);
+    EXPECT_EQ(target.workspace.findTag(page.tags[0])->name, "exam");
+    EXPECT_EQ(target.workspace.elementCount(), source.t.workspace.elementCount());
+    const auto& link = std::get<Connector>(target.workspace.findElement(source.connector)->payload);
+    EXPECT_EQ(link.start.attachedTo, source.left);
+    EXPECT_TRUE(target.workspace.validate().has_value());
+    // One undo step removes the whole import (and the tag it created).
+    ASSERT_TRUE(target.editor.undo().has_value());
+    EXPECT_EQ(target.workspace.notebookCount(), 1U);
+    EXPECT_EQ(target.workspace.tagCount(), 0U);
+}
+
+TEST(CommandsTest, ImportingANotebookTwiceRemapsEveryIdAndReusesTagsByName) {
+    ImportSource source;
+    const Workspace before = source.t.workspace;
+    const std::unordered_map<core::AssetId, core::AssetId> assets{{source.pdf, source.pdf},
+                                                                  {source.photo, source.photo}};
+    const std::vector<core::NotebookId> which{source.notebook};
+    // Into the workspace it comes from: every id is taken.
+    auto imported =
+        commands::importNotebooks(source.t.workspace, before, which, assets, source.t.ids);
+    ASSERT_TRUE(imported.has_value());
+    ASSERT_TRUE(source.t.editor.execute(std::move(imported->command)).has_value());
+    const Workspace& ws = source.t.workspace;
+    ASSERT_EQ(ws.notebookCount(), 2U);
+    const core::NotebookId copy = imported->id.front();
+    EXPECT_NE(copy, source.notebook);
+    EXPECT_EQ(ws.notebooks().back(), copy);
+    EXPECT_EQ(ws.findNotebook(copy)->title, "Biology");
+    // The original is untouched; the copy has its own ids throughout.
+    EXPECT_TRUE(*ws.findPage(source.page) == *before.findPage(source.page));
+    const auto section = ws.sectionsOf(copy).front();
+    const auto page = ws.pagesOf(section).front();
+    EXPECT_NE(page, source.page);
+    EXPECT_EQ(ws.tagCount(), 1U); // "exam" is reused
+    EXPECT_EQ(ws.findPage(page)->tags, ws.findPage(source.page)->tags);
+    const auto layer = ws.layersOf(page).front();
+    const auto elements = ws.elementsOf(layer);
+    ASSERT_EQ(elements.size(), 4U);
+    for (const core::ElementId id : elements) {
+        EXPECT_EQ(before.findElement(id), nullptr);
+    }
+    // The connector attaches to the copies of its shapes.
+    const auto& link = std::get<Connector>(ws.findElement(elements[3])->payload);
+    EXPECT_EQ(link.start.attachedTo, elements[0]);
+    EXPECT_EQ(link.end.attachedTo, elements[1]);
+    EXPECT_EQ(ws.connectorsAttachedTo(elements[0]).size(), 1U);
+    EXPECT_TRUE(ws.validate().has_value());
+}
+
+TEST(CommandsTest, ImportingNotebooksRejectsInvalidRequests) {
+    ImportSource source;
+    TestWorkspace target;
+    const std::vector<core::NotebookId> which{source.notebook};
+    const std::unordered_map<core::AssetId, core::AssetId> noAssets;
+    const auto code = [&](const auto& result) {
+        return result.error().code;
+    };
+    EXPECT_EQ(code(commands::importNotebooks(target.workspace, source.t.workspace, which, noAssets,
+                                             target.ids)),
+              ErrorCode::NotFound); // the PDF and the image have no asset here
+    EXPECT_EQ(code(commands::importNotebooks(target.workspace, source.t.workspace, {}, noAssets,
+                                             target.ids)),
+              ErrorCode::InvalidArgument);
+    const std::vector<core::NotebookId> twice{source.notebook, source.notebook};
+    EXPECT_EQ(code(commands::importNotebooks(target.workspace, source.t.workspace, twice, noAssets,
+                                             target.ids)),
+              ErrorCode::InvalidArgument);
+    const std::vector<core::NotebookId> unknown{core::NotebookId{target.ids.next()}};
+    EXPECT_EQ(code(commands::importNotebooks(target.workspace, source.t.workspace, unknown,
+                                             noAssets, target.ids)),
+              ErrorCode::NotFound);
+    EXPECT_EQ(target.workspace.notebookCount(), 0U);
 }
 
 TEST(CommandsTest, UnknownIdsFailWithNotFound) {

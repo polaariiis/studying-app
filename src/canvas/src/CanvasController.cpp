@@ -161,6 +161,9 @@ CanvasController::~CanvasController() {
     if (imageSource_ != nullptr) {
         imageSource_->setReadyHandler({}); // the source may outlive the controller
     }
+    if (documents_ != nullptr) {
+        documents_->setReadyHandler({});
+    }
 }
 
 detail::Tool& CanvasController::toolFor(ToolKind kind) noexcept {
@@ -179,6 +182,7 @@ void CanvasController::setPage(std::optional<core::PageId> page) {
     cancelGesture();
     endTextEdit();
     releaseImageTextures(); // another page shows other images
+    releaseDocumentTiles();
     selection_.clear();
     preview_->clear();
     scene_.rebuild(document_->workspace(), page);
@@ -500,6 +504,20 @@ void CanvasController::selectAll() {
     }
     selection_.set(std::move(ids));
     requestRedraw();
+}
+
+bool CanvasController::revealElement(core::ElementId element) {
+    const SceneEntry* entry = scene_.find(element);
+    if (entry == nullptr) {
+        return false;
+    }
+    selection_.set({element});
+    if (!camera_.visibleWorldRect().contains(entry->bounds)) {
+        camera_.setCenter(entry->bounds.center());
+        clampCamera();
+    }
+    requestRedraw();
+    return true;
 }
 
 void CanvasController::clearSelection() {
@@ -896,9 +914,160 @@ core::Result<void> CanvasController::insertImage(core::AssetId asset, const core
     return {};
 }
 
+// ---------------------------------------------------------------------------- documents
+
+void CanvasController::setDocumentRasterizer(DocumentRasterizer* rasterizer) {
+    if (rasterizer == documents_) {
+        return;
+    }
+    if (documents_ != nullptr) {
+        documents_->setReadyHandler({});
+    }
+    documents_ = rasterizer;
+    if (documents_ != nullptr) {
+        documents_->setReadyHandler([this] { requestRedraw(); }); // rendered: draw it
+    }
+    releaseDocumentTiles();
+    requestRedraw();
+}
+
+void CanvasController::releaseDocumentTiles() {
+    for (const auto& [key, tile] : documentTiles_) {
+        pendingTextureDestroy_.push_back(tile.texture);
+    }
+    documentTiles_.clear();
+    documentTileBytes_ = 0;
+    if (documents_ != nullptr) {
+        documents_->keepOnly({}); // tiles queued for the page shown before are not needed
+    }
+}
+
+render::TextureHandle CanvasController::documentTile(const DocumentTileKey& key,
+                                                     render::Renderer& renderer) {
+    wantedTiles_.push_back(key);
+    auto [it, inserted] = documentTiles_.try_emplace(key);
+    DocumentTile& tile = it->second;
+    tile.lastFrame = frameNumber_;
+    if (tile.texture.isValid() || tile.failed) {
+        return tile.texture;
+    }
+    if (documentTilesUploaded_ >= kDocumentTileUploadsPerFrame) {
+        documentTilesPending_ = true; // the next frame takes more
+        return {};
+    }
+    std::optional<render::ImageData> pixels = documents_->tile(key);
+    if (!pixels) {
+        return {}; // being rendered; the rasterizer asks for a frame when it is done
+    }
+    if (pixels->empty()) {
+        tile.failed = true; // unreadable document or page: the paper shows
+        return {};
+    }
+    tile.texture = renderer.createTexture(*pixels);
+    if (!tile.texture.isValid()) {
+        tile.failed = true;
+        return {};
+    }
+    tile.bytes = pixels->byteSize() + pixels->byteSize() / 3;
+    documentTileBytes_ += tile.bytes;
+    ++documentTilesUploaded_;
+    return tile.texture;
+}
+
+void CanvasController::drawDocumentPage(const document::PageInfo& page,
+                                        render::Renderer& renderer) {
+    wantedTiles_.clear();
+    const core::DVec2 centre = camera_.center();
+    const auto drawTile = [&](const DocumentTileKey& key) {
+        const render::TextureHandle texture = documentTile(key, renderer);
+        if (!texture.isValid()) {
+            return;
+        }
+        // The tile's rectangle on the page, in world units (clipped at the page's edges).
+        const double tileWorld = kDocumentTilePx / documentScale(key.level);
+        const core::DVec2 min{key.column * tileWorld, key.row * tileWorld};
+        const core::DVec2 max{std::min(min.x + tileWorld, page.size.x),
+                              std::min(min.y + tileWorld, page.size.y)};
+        const core::Affine2 toRect = core::Affine2::translation(min - centre) *
+                                     core::Affine2::scaling(max.x - min.x, max.y - min.y);
+        content_.push_back({.mesh = {},
+                            .transform = toRect.cast<float>(),
+                            .color = core::Color::white(),
+                            .texture = texture});
+    };
+    const core::AssetId asset = page.document->asset;
+    const std::int32_t index = page.document->index;
+    // The whole page, coarse: always there, under the finer tiles.
+    const int preview = documentPreviewLevel(page.size);
+    drawTile({.asset = asset, .page = index, .level = preview, .column = 0, .row = 0});
+    // The tiles in view at the resolution the view needs.
+    const int level = documentLevelFor(camera_.zoom() * camera_.devicePixelRatio());
+    if (level > preview) {
+        const core::DRect pageRect = core::DRect::fromOriginSize({0.0, 0.0}, page.size);
+        const core::DRect view = camera_.visibleWorldRect();
+        if (view.intersects(pageRect)) {
+            const core::DRect shown = core::DRect::fromPoints(
+                {std::max(view.min.x, 0.0), std::max(view.min.y, 0.0)},
+                {std::min(view.max.x, page.size.x), std::min(view.max.y, page.size.y)});
+            const double tileWorld = kDocumentTilePx / documentScale(level);
+            const auto first = [&](double v) {
+                return static_cast<std::int32_t>(std::floor(v / tileWorld));
+            };
+            const auto last = [&](double v, double limit) {
+                return static_cast<std::int32_t>(std::ceil(std::min(v, limit) / tileWorld)) - 1;
+            };
+            for (std::int32_t row = first(shown.min.y); row <= last(shown.max.y, page.size.y);
+                 ++row) {
+                for (std::int32_t column = first(shown.min.x);
+                     column <= last(shown.max.x, page.size.x); ++column) {
+                    drawTile({.asset = asset,
+                              .page = index,
+                              .level = level,
+                              .column = column,
+                              .row = row});
+                }
+            }
+        }
+    }
+    documents_->keepOnly(wantedTiles_);
+}
+
+void CanvasController::trimDocumentTiles(render::Renderer& renderer) {
+    // Entries without a texture (still rendering, or failed) are forgotten once they are out
+    // of view: bounded, and a failed tile is asked for again when it comes back into view.
+    if (documentTiles_.size() > kDocumentTileEntries) {
+        std::erase_if(documentTiles_, [&](const auto& entry) {
+            return !entry.second.texture.isValid() && entry.second.lastFrame != frameNumber_;
+        });
+    }
+    if (documentTileBytes_ <= kDocumentTextureBudgetBytes) {
+        return;
+    }
+    std::vector<std::pair<std::uint64_t, DocumentTileKey>> byAge;
+    byAge.reserve(documentTiles_.size());
+    for (const auto& [key, tile] : documentTiles_) {
+        if (tile.lastFrame != frameNumber_ && tile.texture.isValid()) {
+            byAge.emplace_back(tile.lastFrame, key);
+        }
+    }
+    std::sort(byAge.begin(), byAge.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [frame, key] : byAge) {
+        if (documentTileBytes_ <= kDocumentTextureBudgetBytes) {
+            break;
+        }
+        const auto it = documentTiles_.find(key);
+        renderer.destroyTexture(it->second.texture);
+        documentTileBytes_ -= it->second.bytes;
+        documentTiles_.erase(it);
+    }
+}
+
 void CanvasController::onGraphicsReset() noexcept {
     imageTextures_.clear();
     imageTextureBytes_ = 0;
+    documentTiles_.clear();
+    documentTileBytes_ = 0;
     textTextures_.clear();
     pendingTextureDestroy_.clear();
     erasePreviewMeshes_.clear();
@@ -940,6 +1109,8 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
     imageRefinedPixels_ = 0.0;
     imagesDecoded_ = 0;
     imageRefinementPending_ = false;
+    documentTilesUploaded_ = 0;
+    documentTilesPending_ = false;
     content_.clear();
     overlay_.clear();
 
@@ -969,6 +1140,12 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
                                                            toFloat(info->size - centre));
     } else {
         frame.background.paperColor = colors_.desk;
+    }
+
+    // The page's document (PDF) behind everything else.
+    if (info != nullptr && info->document && documents_ != nullptr) {
+        STUDYAPP_PROFILE_SCOPE(&profiler_, "document page");
+        drawDocumentPage(*info, renderer);
     }
 
     // Content: broad phase on the viewport, painter's order, cached meshes.
@@ -1267,13 +1444,15 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
     }
     lastDrawItems_ = content_.size();
     trimImageTextures(renderer);
+    trimDocumentTiles(renderer);
     if (!preview_->moving && !followerMeshes_.empty()) {
         for (const auto& [id, mesh] : followerMeshes_) {
             renderer.destroyMesh(mesh);
         }
         followerMeshes_.clear();
     }
-    if (cache_.refinementPending() || textRefinementPending_ || imageRefinementPending_) {
+    if (cache_.refinementPending() || textRefinementPending_ || imageRefinementPending_ ||
+        documentTilesPending_) {
         // Some meshes were drawn at a coarser level of detail than this zoom asks for; the
         // next frames refine them within the budget, then rendering is idle again.
         requestRedraw();
@@ -1298,7 +1477,10 @@ CanvasStats CanvasController::stats() const noexcept {
             .textRasterizedLastFrame = textRasterized_,
             .imageTextures = imageTextures_.size(),
             .imageTextureBytes = imageTextureBytes_,
-            .imagesDecodedLastFrame = imagesDecoded_};
+            .imagesDecodedLastFrame = imagesDecoded_,
+            .documentTiles = documentTiles_.size(),
+            .documentTileBytes = documentTileBytes_,
+            .documentTilesUploadedLastFrame = documentTilesUploaded_};
 }
 
 } // namespace studyapp::canvas

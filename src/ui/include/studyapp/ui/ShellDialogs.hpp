@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 
+class QPrinter;
 class QWidget;
 
 namespace studyapp::ui {
@@ -34,6 +35,21 @@ public:
     virtual std::optional<std::filesystem::path> chooseWorkspaceToOpen(QWidget* parent) = 0;
     /// An image file to insert on the canvas; nullopt: cancelled.
     virtual std::optional<std::filesystem::path> chooseImageToInsert(QWidget* parent) = 0;
+    /// A PDF to import as a section of pages; nullopt: cancelled.
+    virtual std::optional<std::filesystem::path> chooseDocumentToImport(QWidget* parent) = 0;
+    /// Where to export: a .pdf, .png or .svg file (only .pdf if `pdfOnly`), proposed as
+    /// `suggestedName`; the dialog asks before replacing a file. nullopt: cancelled.
+    virtual std::optional<std::filesystem::path>
+    chooseExportTarget(QWidget* parent, const QString& suggestedName, bool pdfOnly) = 0;
+    /// Where to write a bundle (.studybundle), proposed as `suggestedName`; the dialog asks
+    /// before replacing a file. nullopt: cancelled.
+    virtual std::optional<std::filesystem::path>
+    chooseBundleTarget(QWidget* parent, const QString& suggestedName) = 0;
+    /// A bundle to import or open; nullopt: cancelled.
+    virtual std::optional<std::filesystem::path> chooseBundleToOpen(QWidget* parent) = 0;
+    /// Lets the user choose and set up `printer` for a section of `pages` pages (all of
+    /// them, a range, or the current page); false: cancelled.
+    virtual bool setUpPrinter(QWidget* parent, QPrinter& printer, int pages) = 0;
 
     /// The workspace is open in another process: open it read-only instead?
     virtual bool confirmOpenReadOnly(QWidget* parent, const QString& details) = 0;

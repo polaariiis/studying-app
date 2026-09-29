@@ -396,6 +396,14 @@ Result<void> Workspace::checkRecord(const PageInfo& record) const {
     if (!isSortedUnique(record.tags)) {
         return invalid("page tags must be sorted and unique");
     }
+    if (record.document) {
+        if (record.document->asset.isNull() || record.document->index < 0) {
+            return invalid("a document page needs an asset and a page index >= 0");
+        }
+        if (record.extent != PageExtent::Bounded) {
+            return invalid("a document page must be bounded (the size of the document page)");
+        }
+    }
     return checkTagIds(record.tags);
 }
 

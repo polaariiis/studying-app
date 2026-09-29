@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <charconv>
+#include <limits>
 #include <map>
 #include <string>
 #include <system_error>
@@ -208,7 +209,7 @@ Result<CatalogData> CatalogStore::load() {
     {
         auto statement = database_->cached(
             "SELECT id, section_id, title, sort_key, extent, width, height, bg_color, bg_pattern, "
-            "bg_spacing, created_at, updated_at, deleted_at FROM page");
+            "bg_spacing, created_at, updated_at, deleted_at, bg_asset_id, bg_page_index FROM page");
         if (!statement) {
             return forward(statement);
         }
@@ -239,6 +240,14 @@ Result<CatalogData> CatalogStore::load() {
                                .spacing = decode.real32(9)},
                 .created = decode.timestamp(10),
                 .modified = decode.timestamp(11)};
+            if (!s.columnIsNull(13)) {
+                const std::int64_t index = decode.integer(14);
+                if (index < 0 || index > std::numeric_limits<std::int32_t>::max()) {
+                    decode.failRow("bg_page_index is out of range");
+                }
+                page.document = document::PageDocument{.asset = decode.id<core::AssetId>(13),
+                                                       .index = static_cast<std::int32_t>(index)};
+            }
             if (auto status = decode.status(); !status) {
                 return forward(status);
             }
@@ -328,12 +337,12 @@ Result<void> CatalogStore::apply(Transaction& transaction, const document::PageC
     auto statement = database_->cached(
         change.isCreate()
             ? "INSERT INTO page (id, section_id, title, sort_key, extent, width, height, bg_color, "
-              "bg_pattern, bg_spacing, created_at, updated_at) "
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+              "bg_pattern, bg_spacing, created_at, updated_at, bg_asset_id, bg_page_index) "
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
             : "UPDATE page SET section_id = ?2, title = ?3, sort_key = ?4, extent = ?5, width = "
               "?6, "
               "height = ?7, bg_color = ?8, bg_pattern = ?9, bg_spacing = ?10, created_at = ?11, "
-              "updated_at = ?12 WHERE id = ?1");
+              "updated_at = ?12, bg_asset_id = ?13, bg_page_index = ?14 WHERE id = ?1");
     if (!statement) {
         return forward(statement);
     }
@@ -350,6 +359,11 @@ Result<void> CatalogStore::apply(Transaction& transaction, const document::PageC
         .bindReal(10, static_cast<double>(p.background.spacing))
         .bindInt(11, millis(p.created))
         .bindInt(12, millis(p.modified));
+    if (p.document) {
+        (*statement)->bindId(13, p.document->asset).bindInt(14, p.document->index);
+    } else {
+        (*statement)->bindNull(13).bindNull(14);
+    }
     return detail::runOnOneRow(*database_, **statement, "page", p.id.toString());
 }
 

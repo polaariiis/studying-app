@@ -5,6 +5,7 @@ studyapp_add_module(application
         include/studyapp/application/ComponentVersions.hpp
         include/studyapp/application/PageNavigator.hpp
         include/studyapp/application/Planner.hpp
+        include/studyapp/application/Search.hpp
         include/studyapp/application/WorkspaceLock.hpp
         include/studyapp/application/WorkspaceSession.hpp
         include/studyapp/application/StartPage.hpp
@@ -12,6 +13,7 @@ studyapp_add_module(application
         src/ComponentVersions.cpp
         src/PageNavigator.cpp
         src/Planner.cpp
+        src/Search.cpp
         src/StartPage.cpp
         src/WorkspaceSession.cpp
         src/WorkspaceStructure.cpp
