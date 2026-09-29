@@ -41,18 +41,25 @@ void parallelFor(std::size_t count, std::size_t minPerThread, Body&& body) {
         }
     };
     const std::size_t chunk = (count + threads - 1) / threads;
-    {
-        std::vector<std::jthread> helpers;
-        helpers.reserve(threads - 1);
-        for (std::size_t t = 1; t < threads; ++t) {
-            const std::size_t begin = t * chunk;
-            const std::size_t end = std::min(count, begin + chunk);
-            if (begin < end) {
+    // std::thread, not std::jthread: Apple's libc++ (Xcode 15) has no jthread. Neither `run`
+    // nor a failed thread start throws out of here, so every started helper is joined.
+    std::vector<std::thread> helpers;
+    helpers.reserve(threads - 1);
+    for (std::size_t t = 1; t < threads; ++t) {
+        const std::size_t begin = t * chunk;
+        const std::size_t end = std::min(count, begin + chunk);
+        if (begin < end) {
+            try {
                 helpers.emplace_back(run, begin, end);
+            } catch (...) {
+                run(begin, end); // no thread available: this chunk on the calling thread
             }
         }
-        run(0, std::min(count, chunk));
-    } // joins the helpers
+    }
+    run(0, std::min(count, chunk));
+    for (std::thread& helper : helpers) {
+        helper.join();
+    }
     if (failure) {
         std::rethrow_exception(failure);
     }

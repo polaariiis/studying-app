@@ -174,10 +174,10 @@ TEST_F(WorkspaceSessionTest, AssetsStagedOnAnotherThreadAreStoredOnce) {
     auto second = session->prepareAssetImport(source);
     core::Result<StagedAssetFile> a = tl::unexpected(core::Error{});
     core::Result<StagedAssetFile> b = tl::unexpected(core::Error{});
-    {
-        std::jthread one([&] { a = first(); });
-        std::jthread two([&] { b = second(); });
-    }
+    std::thread one([&] { a = first(); });
+    std::thread two([&] { b = second(); });
+    one.join();
+    two.join();
     ASSERT_OK(a);
     ASSERT_OK(b);
     EXPECT_EQ(a->sha256, b->sha256);

@@ -81,8 +81,8 @@ if(WIN32)
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()
 
-# Qt 6.8's QTRY_*_WITH_TIMEOUT macros narrow a std::chrono count to int inside the macro, which
-# GCC's -Wconversion reports in our files (Clang and MSVC do not). Qt Test executables only.
-foreach(qt_test_target IN ITEMS ui_tests canvas_widget_tests shell_tests)
-    target_compile_options(${qt_test_target} PRIVATE $<$<CXX_COMPILER_ID:GNU>:-Wno-conversion>)
-endforeach()
+# Qt 6.8's QTRY_* macros narrow std::chrono::milliseconds::count() to int inside the macro,
+# which GCC's -Wconversion reports in these files (Clang and MSVC do not). As a source
+# property the option comes after the project warnings on the command line, so it applies.
+set_source_files_properties(MainWindowTest.cpp CanvasWidgetTest.cpp ShellTest.cpp
+    PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wno-conversion>")
