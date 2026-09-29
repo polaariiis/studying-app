@@ -2269,6 +2269,8 @@ private Q_SLOTS:
     void everyControlHasAnAccessibleName() {
         Shell shell(settings(QStringLiteral("accessible")));
         QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Accessible"))));
+        // Wide enough that no toolbar control is moved into the overflow menu (fonts differ).
+        shell.window->resize(1800, 900);
         shell.action("actionPlanner")->setChecked(true); // built on first show
         QApplication::processEvents();
         auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));

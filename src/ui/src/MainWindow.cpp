@@ -1944,6 +1944,8 @@ void MainWindow::syncInkActions() {
                                         ? tr("Highlighter style: %1, %2").arg(name, width)
                                         : tr("Pen style: %1, %2").arg(name, width));
     }
+    // An icon-only button: screen readers do not read the tool tip as its name.
+    inkStyleButton_->setAccessibleName(inkStyleButton_->toolTip());
 }
 
 void MainWindow::runInBackground(std::function<std::function<void()>()> work) {

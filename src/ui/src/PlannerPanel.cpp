@@ -143,6 +143,9 @@ void PlannerPanel::applyAccessibleNames() {
     // are not attached to their fields, and lists and quick-add fields have none.
     const std::pair<const char*, QString> names[] = {
         {"plannerScope", tr("Show tasks of")},
+        {"plannerScopeMore", tr("Course or project actions")},
+        {"plannerWeekPrevious", tr("Previous week")},
+        {"plannerWeekNext", tr("Next week")},
         {"plannerAgenda", tr("Today's tasks")},
         {"plannerTodayAdd", tr("New task for today")},
         {"plannerTasks", tr("Tasks")},
