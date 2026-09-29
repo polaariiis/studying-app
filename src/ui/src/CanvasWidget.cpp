@@ -87,6 +87,9 @@ QString megabytes(std::uint64_t bytes) {
 CanvasWidget::CanvasWidget(canvas::CanvasController& controller, QWidget* parent)
     : QOpenGLWidget(parent), controller_(&controller), presents_(kStatsWindow, kIdleGapMs) {
     setObjectName(QStringLiteral("canvasWidget"));
+    setAccessibleName(tr("Page canvas"));
+    setAccessibleDescription(tr("Draw and write with the selected tool; the Tools menu lists "
+                                "the tools and their keys."));
     // OpenGL 3.3 core with 4× MSAA (docs/RENDERING.md §6.1). Vsync stays on (default).
     QSurfaceFormat format = QSurfaceFormat::defaultFormat();
     format.setRenderableType(QSurfaceFormat::OpenGL);

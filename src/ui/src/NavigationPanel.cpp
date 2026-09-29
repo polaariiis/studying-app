@@ -42,6 +42,7 @@ NavigationPanel::NavigationPanel(WorkspaceTreeModel& model, QWidget* parent) : Q
 
     tree_ = new QTreeView(this);
     tree_->setObjectName(QStringLiteral("workspaceTree"));
+    tree_->setAccessibleName(tr("Notebooks, sections and pages"));
     tree_->setModel(&model);
     tree_->setHeaderHidden(true);
     tree_->setUniformRowHeights(true);
@@ -61,6 +62,7 @@ NavigationPanel::NavigationPanel(WorkspaceTreeModel& model, QWidget* parent) : Q
 
     searchField_ = new QLineEdit(this);
     searchField_->setObjectName(QStringLiteral("searchField"));
+    searchField_->setAccessibleName(tr("Search"));
     searchField_->setPlaceholderText(tr("Search"));
     searchField_->setClearButtonEnabled(true);
     searchField_->setToolTip(tr("Search page titles, text and tasks (Ctrl+F)"));
@@ -70,6 +72,7 @@ NavigationPanel::NavigationPanel(WorkspaceTreeModel& model, QWidget* parent) : Q
 
     results_ = new QTreeWidget(this);
     results_->setObjectName(QStringLiteral("searchResults"));
+    results_->setAccessibleName(tr("Search results"));
     results_->setHeaderHidden(true);
     results_->setRootIsDecorated(false);
     results_->setFrameShape(QFrame::NoFrame);

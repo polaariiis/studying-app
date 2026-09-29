@@ -610,6 +610,14 @@ void MainWindow::createActions() {
             open_->controller->zoomToFit();
         }
     });
+    // Keyboard access to the panes (Phase 9 accessibility): F6 / Shift+F6 move the focus
+    // between the navigation, the canvas and the planner, as in most desktop applications.
+    nextPaneAction_ =
+        make(tr("Next &Pane"), QStringLiteral("actionNextPane"), QKeySequence(Qt::Key_F6));
+    connect(nextPaneAction_, &QAction::triggered, this, [this] { focusPane(+1); });
+    previousPaneAction_ = make(tr("Pre&vious Pane"), QStringLiteral("actionPreviousPane"),
+                               QKeySequence(Qt::SHIFT | Qt::Key_F6));
+    connect(previousPaneAction_, &QAction::triggered, this, [this] { focusPane(-1); });
     hudAction_ = make(tr("Debug &HUD"), QStringLiteral("actionDebugHud"), QKeySequence(Qt::Key_F3));
     hudAction_->setCheckable(true);
     connect(hudAction_, &QAction::toggled, this, [this](bool on) {
@@ -755,6 +763,9 @@ void MainWindow::createMenus() {
     pageMenu->addSeparator();
     pageMenu->addActions(extentGroup_->actions());
     viewMenu->addSeparator();
+    viewMenu->addSeparator();
+    viewMenu->addAction(nextPaneAction_);
+    viewMenu->addAction(previousPaneAction_);
     viewMenu->addAction(hudAction_);
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -2175,6 +2186,52 @@ void MainWindow::printPages() {
         dialogs_->showError(this, tr("The pages could not be printed."),
                             errorText(printed.error()));
     }
+}
+
+// ---------------------------------------------------------------------------- panes
+
+void MainWindow::focusPane(int step) {
+    // The panes shown, in order; each takes the focus on its main control.
+    std::vector<QWidget*> panes;
+    if (navigation_->isVisible()) {
+        panes.push_back(navigation_->isShowingSearchResults()
+                            ? static_cast<QWidget*>(navigation_->searchResults())
+                            : static_cast<QWidget*>(navigation_->tree()));
+    }
+    if (canvasWidget_ != nullptr && canvasWidget_->isVisible()) {
+        panes.push_back(canvasWidget_);
+    }
+    if (planner_->isVisible()) {
+        panes.push_back(planner_);
+    }
+    if (panes.empty()) {
+        return;
+    }
+    const QWidget* focus = QApplication::focusWidget();
+    // Nothing focused in a pane: F6 goes to the first pane, Shift+F6 to the last.
+    std::size_t current = step > 0 ? panes.size() - 1 : 0;
+    for (std::size_t i = 0; i < panes.size(); ++i) {
+        if (focus != nullptr && (focus == panes[i] || panes[i]->isAncestorOf(focus))) {
+            current = i;
+            break;
+        }
+    }
+    const auto count = static_cast<std::ptrdiff_t>(panes.size());
+    const auto next = ((static_cast<std::ptrdiff_t>(current) + step) % count + count) % count;
+    QWidget* pane = panes[static_cast<std::size_t>(next)];
+    if (pane == planner_) {
+        // The planner's first control that takes the focus by keyboard (its view tabs).
+        for (QWidget* w = planner_->nextInFocusChain(); w != nullptr && w != planner_;
+             w = w->nextInFocusChain()) {
+            if (planner_->isAncestorOf(w) && w->isVisible() && w->isEnabled() &&
+                (w->focusPolicy() & Qt::TabFocus) != 0) {
+                w->setFocus(Qt::TabFocusReason);
+                return;
+            }
+        }
+        return;
+    }
+    pane->setFocus(Qt::TabFocusReason);
 }
 
 // ---------------------------------------------------------------------------- maintenance

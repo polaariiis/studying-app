@@ -214,6 +214,8 @@ private:
     void importNotebookBundle();
     void openBundleAsWorkspace();
     void backUpNow();
+    /// Moves the keyboard focus to the next (+1) or previous (-1) pane shown.
+    void focusPane(int step);
     void checkWorkspace();
     /// The current page, or every page of its section; empty without a page.
     [[nodiscard]] std::vector<core::PageId> pagesToExport(bool wholeSection) const;
@@ -302,6 +304,8 @@ private:
     QAction* importNotebookAction_ = nullptr;
     QAction* openBundleAction_ = nullptr;
     QAction* backUpAction_ = nullptr;
+    QAction* nextPaneAction_ = nullptr;
+    QAction* previousPaneAction_ = nullptr;
     QAction* checkWorkspaceAction_ = nullptr;
     QAction* moveUpAction_ = nullptr;
     QAction* moveDownAction_ = nullptr;

@@ -24,7 +24,9 @@
 #include <studyapp/ui/ShellDialogs.hpp>
 #include <studyapp/ui/ThemeManager.hpp>
 
+#include <QAbstractButton>
 #include <QAbstractItemModelTester>
+#include <QAccessible>
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -2234,6 +2236,79 @@ private Q_SLOTS:
         QCOMPARE(shell.dialogs->information.size(), 2);
         QVERIFY(
             shell.dialogs->information.last().contains(QString::fromStdString(asset.toString())));
+    }
+
+    // Phase 9 accessibility: every control a keyboard or screen-reader user can reach has a
+    // name assistive technology can read (QAccessible), in the shell and in the planner.
+    void everyControlHasAnAccessibleName() {
+        Shell shell(settings(QStringLiteral("accessible")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Accessible"))));
+        shell.action("actionPlanner")->setChecked(true); // built on first show
+        QApplication::processEvents();
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(panel != nullptr);
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        auto task = planner.createTask({.title = "Read chapter 2"});
+        QVERIFY(task.has_value());
+        QStringList unnamed;
+        const auto audit = [&] {
+            for (QWidget* widget : shell.window->findChildren<QWidget*>()) {
+                const bool control = widget->focusPolicy() != Qt::NoFocus ||
+                                     qobject_cast<QAbstractButton*>(widget) != nullptr;
+                // Qt's own parts: the toolbar overflow button, scroll bars, tab and header
+                // bars (named by Qt from their contents), the text field inside a date or
+                // time field (the field itself is named).
+                if (!control || !widget->isVisibleTo(shell.window.get()) ||
+                    qobject_cast<QMenu*>(widget) != nullptr || widget->inherits("QScrollBar") ||
+                    widget->inherits("QTabBar") || widget->inherits("QHeaderView") ||
+                    widget->objectName() == QStringLiteral("qt_toolbar_ext_button") ||
+                    widget->objectName() == QStringLiteral("qt_spinbox_lineedit")) {
+                    continue;
+                }
+                QAccessibleInterface* accessible = QAccessible::queryAccessibleInterface(widget);
+                const QString name =
+                    accessible != nullptr ? accessible->text(QAccessible::Name) : QString();
+                const QString entry = QStringLiteral("%1 (%2)").arg(
+                    QString::fromLatin1(widget->metaObject()->className()), widget->objectName());
+                if (name.trimmed().isEmpty() && !unnamed.contains(entry)) {
+                    unnamed << entry;
+                }
+            }
+        };
+        for (const auto view : {ui::PlannerPanel::View::Today, ui::PlannerPanel::View::Tasks,
+                                ui::PlannerPanel::View::Week, ui::PlannerPanel::View::Page}) {
+            panel->showView(view);
+            panel->selectTask(*task); // the task editor too
+            QApplication::processEvents();
+            audit();
+        }
+        QVERIFY2(unnamed.isEmpty(), qPrintable(unnamed.join(QStringLiteral(", "))));
+    }
+
+    // Phase 9 accessibility: F6 and Shift+F6 cycle the keyboard focus through the panes.
+    void f6MovesBetweenPanes() {
+        Shell shell(settings(QStringLiteral("panes")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Panes"))));
+        shell.action("actionPlanner")->setChecked(true);
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        auto* tree = shell.tree();
+        auto* canvas = shell.window->findChild<QWidget*>(QStringLiteral("canvasWidget"));
+        auto* planner = shell.window->findChild<QWidget*>(QStringLiteral("plannerPanel"));
+        tree->setFocus();
+        QTRY_VERIFY(tree->hasFocus());
+        const auto inside = [](QWidget* pane) {
+            QWidget* focus = QApplication::focusWidget();
+            return focus != nullptr && (focus == pane || pane->isAncestorOf(focus));
+        };
+        shell.action("actionNextPane")->trigger();
+        QTRY_VERIFY(inside(canvas));
+        shell.action("actionNextPane")->trigger();
+        QTRY_VERIFY(inside(planner));
+        shell.action("actionNextPane")->trigger();
+        QTRY_VERIFY(inside(tree)); // around
+        shell.action("actionPreviousPane")->trigger();
+        QTRY_VERIFY(inside(planner));
     }
 
     // Untrusted PDFs: not a PDF, empty, a bare header — reported, nothing changes; a

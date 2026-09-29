@@ -82,6 +82,7 @@ protected:
 
 private:
     void ensureBuilt();
+    void applyAccessibleNames();
     void buildLayout();
     void buildEditor();
     void scheduleRefresh();

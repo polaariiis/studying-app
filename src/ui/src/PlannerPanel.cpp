@@ -135,6 +135,39 @@ void PlannerPanel::ensureBuilt() {
     }
     built_ = true;
     buildLayout();
+    applyAccessibleNames();
+}
+
+void PlannerPanel::applyAccessibleNames() {
+    // Names for screen readers (Phase 9 accessibility): the visible labels of the editor
+    // are not attached to their fields, and lists and quick-add fields have none.
+    const std::pair<const char*, QString> names[] = {
+        {"plannerScope", tr("Show tasks of")},
+        {"plannerAgenda", tr("Today's tasks")},
+        {"plannerTodayAdd", tr("New task for today")},
+        {"plannerTasks", tr("Tasks")},
+        {"plannerTaskAdd", tr("New task")},
+        {"plannerWeek", tr("This week's tasks")},
+        {"plannerPageTags", tr("Tags of this page")},
+        {"plannerBacklinks", tr("Tasks linked to this page")},
+        {"plannerPageAdd", tr("New task for this page")},
+        {"plannerEditorArea", tr("Task details")},
+        {"plannerTaskTitle", tr("Task title")},
+        {"plannerTaskPriority", tr("Priority")},
+        {"plannerTaskHasDue", tr("Has a due date")},
+        {"plannerTaskDueDate", tr("Due date")},
+        {"plannerTaskHasDueTime", tr("Has a due time")},
+        {"plannerTaskDueTime", tr("Due time")},
+        {"plannerTaskScheduled", tr("Scheduled")},
+        {"plannerTaskBlockStart", tr("Scheduled start")},
+        {"plannerTaskLinks", tr("Linked pages")},
+        {"plannerTaskNotes", tr("Notes")},
+    };
+    for (const auto& [objectName, name] : names) {
+        if (auto* widget = findChild<QWidget*>(QLatin1String(objectName))) {
+            widget->setAccessibleName(name);
+        }
+    }
 }
 
 PlannerPanel::~PlannerPanel() = default;
