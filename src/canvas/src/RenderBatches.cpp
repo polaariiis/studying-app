@@ -1,45 +1,68 @@
 #include <studyapp/canvas/RenderBatches.hpp>
 
+#include "ParallelFor.hpp"
+
 #include <studyapp/canvas/ElementGeometry.hpp>
 
 #include <bit>
+#include <cstddef>
 #include <utility>
+#include <vector>
 
 namespace studyapp::canvas {
 
 namespace {
 
-/// 64-bit FNV-1a style mixing of the values a batch's geometry depends on.
+/// 64-bit hash of the values a batch's geometry depends on.
 class Signature {
 public:
     void add(std::uint64_t value) noexcept {
-        for (int i = 0; i < 8; ++i) {
-            hash_ ^= (value >> (8 * i)) & 0xFFU;
-            hash_ *= 0x100000001B3ULL;
-        }
+        // One multiply-xorshift round per 64-bit word (not per byte): this runs for every
+        // element of the page whenever the scene changes.
+        hash_ = (hash_ ^ value) * 0x9E3779B97F4A7C15ULL;
+        hash_ ^= hash_ >> 32U;
     }
     void add(double value) noexcept { add(std::bit_cast<std::uint64_t>(value)); }
     void add(float value) noexcept {
         add(static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(value)));
     }
     void add(const core::Uuid& uuid) noexcept {
-        for (const std::uint8_t byte : uuid.bytes()) {
-            hash_ ^= byte;
-            hash_ *= 0x100000001B3ULL;
+        const auto& bytes = uuid.bytes();
+        std::uint64_t high = 0;
+        std::uint64_t low = 0;
+        for (std::size_t i = 0; i < 8; ++i) {
+            high = (high << 8U) | bytes[i];
+            low = (low << 8U) | bytes[i + 8];
         }
+        add(high);
+        add(low);
     }
-    [[nodiscard]] std::uint64_t value() const noexcept { return hash_; }
+    /// With a final avalanche (murmur3's fmix64), so every bit depends on all input bits
+    /// (run boundaries test the low bits).
+    [[nodiscard]] std::uint64_t value() const noexcept {
+        std::uint64_t h = hash_;
+        h ^= h >> 33U;
+        h *= 0xFF51AFD7ED558CCDULL;
+        h ^= h >> 33U;
+        h *= 0xC4CEB9FE1A85EC53ULL;
+        h ^= h >> 33U;
+        return h;
+    }
 
 private:
     std::uint64_t hash_ = 0xCBF29CE484222325ULL;
 };
 
 /// Whether a run starts at this element (content-defined: the same for the element
-/// wherever it is in the draw order).
+/// wherever it is in the draw order). FNV-1a over the id's bytes: the run layout D40 was
+/// measured with (only elements of runs past kMinBatchSize are tested).
 bool startsRun(const core::ElementId& id) noexcept {
-    Signature hash;
-    hash.add(id.value());
-    return hash.value() % RenderBatches::kBoundaryModulus == 0;
+    std::uint64_t hash = 0xCBF29CE484222325ULL;
+    for (const std::uint8_t byte : id.value().bytes()) {
+        hash ^= byte;
+        hash *= 0x100000001B3ULL;
+    }
+    return hash % RenderBatches::kBoundaryModulus == 0;
 }
 
 } // namespace
@@ -51,6 +74,20 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
         return;
     }
     bool refined = true;
+
+    // 0. Build missing meshes in parallel (the first frame of a page, a large paste).
+    {
+        std::vector<RenderCache::Request> requests;
+        requests.reserve(scene.drawOrder().size());
+        for (const core::ElementId id : scene.drawOrder()) {
+            const SceneEntry* entry = scene.find(id);
+            const document::Element* element = workspace.findElement(id);
+            if (entry != nullptr && element != nullptr && entry->layerVisible) {
+                requests.push_back({.element = element, .version = entry->contentVersion});
+            }
+        }
+        cache.prebuild(requests, lodBucket);
+    }
 
     // 1. Partition the draw order into runs and compute each run's signature.
     std::vector<Batch> next;
@@ -93,49 +130,87 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
         batch.signature = signature.value();
     }
 
-    // 2. Reuse unchanged runs; rebuild the others (reusing their GPU meshes).
+    // 2. Reuse unchanged runs; rebuild the others (reusing their GPU meshes). The merged
+    //    meshes are built in parallel (each from its own members, into its own slot);
+    //    uploads stay on this thread (the renderer is not thread-safe).
+    std::vector<std::size_t> rebuild;
+    std::vector<render::MeshHandle> reusables(next.size());
     for (std::size_t k = 0; k < next.size(); ++k) {
         Batch& batch = next[k];
-        render::MeshHandle reusable;
         if (k < batches_.size()) {
-            reusable = std::exchange(batches_[k].gpu, render::MeshHandle{});
-            if (batches_[k].signature == batch.signature && reusable.isValid()) {
-                batch.gpu = reusable;
+            reusables[k] = std::exchange(batches_[k].gpu, render::MeshHandle{});
+            if (batches_[k].signature == batch.signature && reusables[k].isValid()) {
+                batch.gpu = std::exchange(reusables[k], render::MeshHandle{});
                 batch.triangles = batches_[k].triangles;
                 continue;
             }
         }
         if (batch.textured) {
-            if (reusable.isValid()) {
-                renderer.destroyMesh(reusable);
+            if (reusables[k].isValid()) {
+                renderer.destroyMesh(reusables[k]);
+                reusables[k] = {};
             }
             continue; // drawn by the controller, element by element
         }
-        render::MeshData mesh;
-        const core::Affine2 toRun = core::Affine2::translation(-batch.origin);
-        // Every member mesh part is its own part of the batch: it covers a pixel at most
-        // once, exactly as when drawn on its own (render::RenderFrame::content).
-        std::uint32_t partNumber = 0;
-        for (const core::ElementId id : batch.members) {
+        rebuild.push_back(k);
+    }
+    // Every member is in the cache now (step 1); the cache is only read from here on.
+    std::vector<const RenderCache::Entry*> members;
+    std::vector<std::size_t> firstMember(rebuild.size() + 1, 0);
+    for (std::size_t r = 0; r < rebuild.size(); ++r) {
+        for (const core::ElementId id : next[rebuild[r]].members) {
             const document::Element& element = *workspace.findElement(id);
-            const SceneEntry& entry = *scene.find(id);
-            const RenderCache::Entry& cached =
-                cache.ensure(element, entry.contentVersion, lodBucket, nullptr);
-            const core::Affine2f transform = (toRun * meshToWorld(element)).cast<float>();
-            for (const MeshPart& part : cached.parts) {
-                const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
-                for (const core::Vec2& v : part.mesh.vertices) {
-                    const core::Vec2 p = transform.apply(v);
-                    mesh.vertices.push_back(p);
-                    mesh.bounds = mesh.bounds.including(p);
+            members.push_back(
+                &cache.ensure(element, scene.find(id)->contentVersion, lodBucket, nullptr));
+        }
+        firstMember[r + 1] = members.size();
+    }
+    std::vector<render::MeshData> merged(rebuild.size());
+    detail::parallelFor(rebuild.size(), 4, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t r = begin; r < end; ++r) {
+            const Batch& batch = next[rebuild[r]];
+            render::MeshData& mesh = merged[r];
+            std::size_t vertices = 0;
+            std::size_t indices = 0;
+            for (std::size_t m = firstMember[r]; m < firstMember[r + 1]; ++m) {
+                for (const MeshPart& part : members[m]->parts) {
+                    vertices += part.mesh.vertices.size();
+                    indices += part.mesh.indices.size();
                 }
-                mesh.colors.insert(mesh.colors.end(), part.mesh.vertices.size(), part.color);
-                mesh.parts.insert(mesh.parts.end(), part.mesh.vertices.size(), partNumber++);
-                for (const std::uint32_t index : part.mesh.indices) {
-                    mesh.indices.push_back(base + index);
+            }
+            mesh.vertices.reserve(vertices);
+            mesh.colors.reserve(vertices);
+            mesh.parts.reserve(vertices);
+            mesh.indices.reserve(indices);
+            const core::Affine2 toRun = core::Affine2::translation(-batch.origin);
+            // Every member mesh part is its own part of the batch: it covers a pixel at
+            // most once, exactly as when drawn on its own (render::RenderFrame::content).
+            std::uint32_t partNumber = 0;
+            for (std::size_t m = firstMember[r]; m < firstMember[r + 1]; ++m) {
+                const document::Element& element =
+                    *workspace.findElement(batch.members[m - firstMember[r]]);
+                const core::Affine2f transform = (toRun * meshToWorld(element)).cast<float>();
+                for (const MeshPart& part : members[m]->parts) {
+                    const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
+                    for (const core::Vec2& v : part.mesh.vertices) {
+                        const core::Vec2 p = transform.apply(v);
+                        mesh.vertices.push_back(p);
+                        mesh.bounds = mesh.bounds.including(p);
+                    }
+                    mesh.colors.insert(mesh.colors.end(), part.mesh.vertices.size(), part.color);
+                    mesh.parts.insert(mesh.parts.end(), part.mesh.vertices.size(), partNumber++);
+                    for (const std::uint32_t index : part.mesh.indices) {
+                        mesh.indices.push_back(base + index);
+                    }
                 }
             }
         }
+    });
+    for (std::size_t r = 0; r < rebuild.size(); ++r) {
+        const std::size_t k = rebuild[r];
+        Batch& batch = next[k];
+        render::MeshData& mesh = merged[r];
+        const render::MeshHandle reusable = reusables[k];
         batch.triangles = mesh.triangleCount();
         if (mesh.empty()) {
             if (reusable.isValid()) {
@@ -147,6 +222,7 @@ void RenderBatches::update(const CanvasScene& scene, const document::Workspace& 
         } else {
             batch.gpu = renderer.createMesh(mesh);
         }
+        mesh = {}; // release the CPU copy right away
         ++rebuilt_;
     }
     for (std::size_t k = next.size(); k < batches_.size(); ++k) {

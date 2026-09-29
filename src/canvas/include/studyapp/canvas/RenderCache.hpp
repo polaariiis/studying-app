@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -59,11 +60,25 @@ public:
     /// worst, including the batch rebuilds they cause (512: ≈ 9 ms; unlimited: one 130 ms
     /// frame). The page is refined within ≈ 40 frames (≈ 0.3 s at 144 Hz).
     static constexpr std::size_t kDefaultRefinementBudget = 256;
+    /// prebuild() uses another thread per this many elements (fewer: the calling thread).
+    static constexpr std::size_t kPrebuildPerThread = 128;
 
     /// The entry for `element`, (re)built as needed and uploaded to `uploadTo` (nullptr:
     /// CPU mesh only, e.g. for elements drawn through a batch).
     const Entry& ensure(const document::Element& element, std::uint64_t version, int lodBucket,
                         render::Renderer* uploadTo);
+
+    struct Request {
+        const document::Element* element = nullptr;
+        std::uint64_t version = 0;
+    };
+    /// Builds, in parallel, the entries of `requests` that are missing or out of date
+    /// (new or changed content, which ensure() would build at once anyway), so the
+    /// ensure() calls that follow find them ready. Refinements to a finer level of detail
+    /// are left to ensure() and its budget. Results are the same as building them one by
+    /// one (tessellation is a pure function of the element). Measured: the first frame of
+    /// a 10 000-stroke page (docs/PERFORMANCE.md).
+    void prebuild(std::span<const Request> requests, int lodBucket);
 
     void evict(core::ElementId id);
     void evictAll();

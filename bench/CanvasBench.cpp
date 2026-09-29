@@ -243,8 +243,13 @@ void BM_FirstFrameWholePage(benchmark::State& state) {
         controller.setViewport({1920, 1080}, 1.0);
         controller.setPage(page.page);
         controller.zoomBy(0.15);
+        controller.profiler().reset();
         const render::RenderFrame built = controller.buildFrame(renderer);
         benchmark::DoNotOptimize(built.content.data());
+        for (const auto& section : controller.profiler().sections()) {
+            state.counters["ms:" + std::string(section.name)] =
+                std::chrono::duration<double, std::milli>(section.total).count();
+        }
         // Memory of the meshes handed to the renderer (batches: per-vertex colours and
         // part numbers included).
         std::uint64_t bytes = 0;

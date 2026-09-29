@@ -1,3 +1,5 @@
+find_package(Threads REQUIRED)
+
 # Interactive canvas engine (docs/CANVAS.md): camera, input events, tools, scene, hit
 # testing, selection, render cache. Plain C++: no Qt, no OpenGL, no SQLite.
 studyapp_add_module(canvas
@@ -25,6 +27,7 @@ studyapp_add_module(canvas
         src/CanvasScene.cpp
         src/DocumentRasterizer.cpp
         src/ElementGeometry.cpp
+        src/ParallelFor.hpp
         src/RenderBatches.cpp
         src/RenderCache.cpp
         src/SelectionHandles.cpp
@@ -39,4 +42,6 @@ studyapp_add_module(canvas
     PUBLIC_DEPS
         studyapp::document
         studyapp::render
+    PRIVATE_DEPS
+        Threads::Threads # data-parallel tessellation (ParallelFor.hpp, D47)
 )

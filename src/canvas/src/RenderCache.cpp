@@ -1,5 +1,7 @@
 #include <studyapp/canvas/RenderCache.hpp>
 
+#include "ParallelFor.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -64,6 +66,41 @@ const RenderCache::Entry& RenderCache::ensure(const document::Element& element,
         ++uploaded_;
     }
     return entry;
+}
+
+void RenderCache::prebuild(std::span<const Request> requests, int lodBucket) {
+    // Serial: find what needs building (the map is not modified while threads run; values
+    // of an unordered_map keep their address when it grows).
+    std::vector<std::pair<Entry*, const document::Element*>> pending;
+    for (const Request& request : requests) {
+        auto [it, inserted] = entries_.try_emplace(request.element->id);
+        Entry& entry = it->second;
+        if (!inserted && entry.version == request.version) {
+            continue; // up to date (a coarser level is ensure()'s budgeted refinement)
+        }
+        for (const render::MeshHandle handle : entry.gpu) {
+            pendingDestroy_.push_back(handle);
+        }
+        entry.gpu.clear();
+        cpuBytes_ -= entry.bytes;
+        entry.bytes = 0;
+        entry.version = request.version;
+        entry.lodBucket = lodBucket;
+        pending.emplace_back(&entry, request.element);
+    }
+    // Parallel: each entry is written by one thread only.
+    const float pixels = pixelsPerUnit(lodBucket);
+    detail::parallelFor(
+        pending.size(), kPrebuildPerThread, [&](std::size_t begin, std::size_t end) {
+            for (std::size_t i = begin; i < end; ++i) {
+                pending[i].first->parts = buildElementMeshes(*pending[i].second, pixels);
+            }
+        });
+    for (const auto& [entry, element] : pending) {
+        entry->bytes = bytesOf(entry->parts);
+        cpuBytes_ += entry->bytes;
+    }
+    built_ += static_cast<std::uint32_t>(pending.size());
 }
 
 void RenderCache::evict(core::ElementId id) {

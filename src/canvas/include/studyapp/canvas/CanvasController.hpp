@@ -348,7 +348,8 @@ private:
     std::size_t documentTileBytes_ = 0;
     std::uint32_t documentTilesUploaded_ = 0;
     bool documentTilesPending_ = false;
-    std::vector<DocumentTileKey> wantedTiles_; ///< tiles asked for this frame (reused)
+    std::vector<DocumentTileKey> wantedTiles_;           ///< tiles asked for this frame (reused)
+    std::vector<RenderCache::Request> prebuildRequests_; ///< reused per frame
 
     // Text.
     struct TextTexture {

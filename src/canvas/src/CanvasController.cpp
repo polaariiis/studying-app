@@ -1293,6 +1293,21 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
     {
         STUDYAPP_PROFILE_SCOPE(&profiler_, "prepare content");
         if (!lastFrameBatched_) {
+            // Missing meshes built in parallel first (e.g. hundreds of long strokes cut by
+            // one erase); drawElement() then finds them in the cache.
+            prebuildRequests_.clear();
+            for (const CanvasScene::OrderedId& item : visible_) {
+                const SceneEntry* entry = scene_.find(item.id);
+                const document::Element* element = workspace.findElement(item.id);
+                // Text boxes and images are drawn from textures (meshes only as fallback).
+                if (entry != nullptr && element != nullptr &&
+                    !std::holds_alternative<document::TextBox>(element->payload) &&
+                    !std::holds_alternative<document::Image>(element->payload)) {
+                    prebuildRequests_.push_back(
+                        {.element = element, .version = entry->contentVersion});
+                }
+            }
+            cache_.prebuild(prebuildRequests_, lod);
             for (const CanvasScene::OrderedId& item : visible_) {
                 drawElement(item.id);
             }
