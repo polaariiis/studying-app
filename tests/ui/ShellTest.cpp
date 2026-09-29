@@ -310,6 +310,8 @@ private:
         QTreeView* tree() const {
             return window->findChild<QTreeView*>(QStringLiteral("workspaceTree"));
         }
+        /// Imports copy files on pool threads (Phase 9); waits until they are stored.
+        void waitForImports() const { QTRY_COMPARE(window->backgroundJobCount(), 0); }
         QAbstractItemModel* model() const { return tree()->model(); }
         const document::Workspace& ws() const { return window->session()->workspace(); }
         QModelIndex indexOf(const HierarchyItem& item) const {
@@ -1250,6 +1252,7 @@ private Q_SLOTS:
         shell.dialogs->insertImage = toPath(png);
         shell.action("actionInsertImage")->trigger();
         shell.action("actionInsertImage")->trigger(); // the same file again
+        shell.waitForImports();
         const auto made = images();
         QCOMPARE(made.size(), std::size_t{2});
         // At most one world unit per pixel (smaller when the view is small), aspect kept.
@@ -1271,6 +1274,7 @@ private Q_SLOTS:
         shell.dialogs->insertImage = toPath(text);
         shell.dialogs->errors.clear();
         shell.action("actionInsertImage")->trigger();
+        shell.waitForImports();
         QCOMPARE(shell.dialogs->errors.size(), 1);
         QCOMPARE(images().size(), std::size_t{2});
         shell.action("actionUndo")->trigger();
@@ -1549,6 +1553,7 @@ private Q_SLOTS:
         QVERIFY(red.save(png));
         shell.dialogs->insertImage = toPath(png);
         shell.action("actionInsertImage")->trigger();
+        shell.waitForImports();
         const auto page = *shell.window->activePage();
         const auto asset =
             std::get<document::Image>(
@@ -1622,6 +1627,7 @@ private Q_SLOTS:
         const auto notebooks = shell.ws().notebookCount();
         shell.dialogs->importDocument = toPath(pdf);
         shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
         QCOMPARE(shell.dialogs->errors.size(), 0);
         QCOMPARE(shell.ws().notebookCount(), notebooks); // into the current notebook
         const auto page = *shell.window->activePage();
@@ -1916,6 +1922,7 @@ private Q_SLOTS:
         const QByteArray sourceHash = sha256Of(source);
         shell.dialogs->importDocument = toPath(source);
         shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
         const auto pdfPage = *shell.window->activePage();
         const auto pdfLayer = shell.ws().layersOf(pdfPage).front();
         auto ink = document::commands::createElement(
@@ -2157,6 +2164,31 @@ private Q_SLOTS:
             qPrintable(QStringLiteral("%1 of %2 ink pixels differ").arg(differing).arg(inked)));
     }
 
+    // Imports copy files on a pool thread (Phase 9). Closing the workspace before one
+    // finishes drops its result: nothing reaches the next workspace, nothing crashes.
+    void importsFinishingAfterCloseAreDropped() {
+        Shell shell(settings(QStringLiteral("importclose")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ImportFirst"))));
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("late.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        shell.dialogs->importDocument = toPath(writePdf(QStringLiteral("late.pdf")));
+        shell.action("actionImportPdf")->trigger();
+        // The results are delivered through the event loop, so they cannot arrive before
+        // this switch to another workspace.
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ImportSecond"))));
+        const auto page = *shell.window->activePage();
+        const auto notebooks = shell.ws().notebookCount();
+        shell.waitForImports();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QCOMPARE(shell.ws().notebookCount(), notebooks);
+        QVERIFY(shell.ws().elementsOf(shell.ws().layersOf(page).front()).empty());
+        QCOMPARE(*shell.window->activePage(), page);
+    }
+
     // Untrusted PDFs: not a PDF, empty, a bare header — reported, nothing changes; a
     // truncated one never crashes.
     void invalidPdfsAreRejected() {
@@ -2183,6 +2215,7 @@ private Q_SLOTS:
             QVERIFY(!ui::inspectPdf(toPath(file)).has_value());
             shell.dialogs->importDocument = toPath(file);
             shell.action("actionImportPdf")->trigger();
+            shell.waitForImports();
         }
         QCOMPARE(shell.dialogs->errors.size(), bad.size());
         QCOMPARE(shell.window->session()->history().undoCount(), undoCount);

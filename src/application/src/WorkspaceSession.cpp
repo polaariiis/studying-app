@@ -441,6 +441,46 @@ bool WorkspaceSession::isSearchIndexed() {
     return !impl_->closed && impl_->store.search().isCurrent().value_or(false);
 }
 
+std::function<Result<StagedAssetFile>()>
+WorkspaceSession::prepareAssetImport(const std::filesystem::path& source) {
+    const core::AssetId id = core::AssetId::generate(*impl_->ids); // ids: this thread only
+    return [root = impl_->root, source, id]() -> Result<StagedAssetFile> {
+        auto staged = persistence::AssetStore::stage(root, source, id.toString());
+        if (!staged) {
+            return forward(staged);
+        }
+        return StagedAssetFile{.id = id,
+                               .file = staged->file,
+                               .sha256 = staged->sha256,
+                               .byteSize = staged->byteSize,
+                               .originalName = staged->originalName};
+    };
+}
+
+namespace {
+
+persistence::StagedAsset toPersistence(const StagedAssetFile& staged) {
+    return {.file = staged.file,
+            .sha256 = staged.sha256,
+            .byteSize = staged.byteSize,
+            .originalName = staged.originalName};
+}
+
+} // namespace
+
+Result<core::AssetId> WorkspaceSession::finishAssetImport(const StagedAssetFile& staged,
+                                                          std::string_view mediaType) {
+    if (auto writable = impl_->checkWritable(); !writable) {
+        discardStagedAsset(staged);
+        return forward(writable);
+    }
+    return impl_->assets.commit(toPersistence(staged), mediaType, staged.id, *impl_->clock);
+}
+
+void WorkspaceSession::discardStagedAsset(const StagedAssetFile& staged) noexcept {
+    persistence::AssetStore::discard(toPersistence(staged));
+}
+
 Result<std::vector<SearchHit>> WorkspaceSession::search(std::string_view text, std::size_t limit) {
     if (impl_->closed) {
         return makeError(ErrorCode::Unsupported, "the workspace session is closed");

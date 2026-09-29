@@ -41,12 +41,14 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeDatabase>
+#include <QPointer>
 #include <QPrinter>
 #include <QProgressDialog>
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QThreadPool>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -202,6 +204,8 @@ struct MainWindow::OpenWorkspace {
     application::Planner planner;
     /// Where the user left each page in this session (not persisted).
     std::unordered_map<core::PageId, View> views;
+    /// Expires when this workspace is closed: background results for it are dropped.
+    std::shared_ptr<void> alive = std::make_shared<int>(0);
 };
 
 // ---------------------------------------------------------------------------- construction
@@ -1903,6 +1907,31 @@ void MainWindow::syncInkActions() {
     }
 }
 
+void MainWindow::runInBackground(std::function<std::function<void()>()> work) {
+    // `work` runs on a pool thread and returns the part to run back on the GUI thread; that
+    // part runs only if this window and the same open workspace are still there.
+    const std::weak_ptr<void> workspace = open_->alive;
+    const QPointer<MainWindow> window(this);
+    ++backgroundJobs_;
+    QThreadPool::globalInstance()->start([work = std::move(work), workspace, window] {
+        std::function<void()> finish = work();
+        QMetaObject::invokeMethod(
+            qApp,
+            [finish = std::move(finish), workspace, window] {
+                if (window == nullptr) {
+                    return;
+                }
+                --window->backgroundJobs_;
+                if (!workspace.expired() && finish) {
+                    finish();
+                }
+                window->updateStatus();
+            },
+            Qt::QueuedConnection);
+    });
+    updateStatus();
+}
+
 void MainWindow::insertImage() {
     if (!open_ || open_->session->isReadOnly() || !activePage()) {
         return;
@@ -1923,21 +1952,36 @@ void MainWindow::insertImage() {
                             tr("%1 is not an image StudyBoard can read.").arg(file));
         return;
     }
-    const QString mediaType = QMimeDatabase().mimeTypeForFile(file).name();
-    // Content-addressed: importing the same file again reuses the stored copy.
-    auto asset = open_->session->importAsset(*chosen, mediaType.toStdString());
-    if (!asset) {
-        dialogs_->showError(this, tr("The image could not be inserted."), errorText(asset.error()));
-        return;
-    }
-    if (auto inserted = open_->controller->insertImage(
-            *asset, {static_cast<float>(size.width()), static_cast<float>(size.height())});
-        !inserted) {
-        dialogs_->showError(this, tr("The image could not be inserted."),
-                            errorText(inserted.error()));
-        return;
-    }
-    selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
+    const std::string mediaType = QMimeDatabase().mimeTypeForFile(file).name().toStdString();
+    const core::PageId page = *activePage();
+    const core::Vec2 pixels{static_cast<float>(size.width()), static_cast<float>(size.height())};
+    // Copying and hashing a large file took ≈ 0.4 s for 50 MB: done on a pool thread, then
+    // stored and inserted here (docs/PERFORMANCE.md).
+    runInBackground([this, stage = open_->session->prepareAssetImport(*chosen), mediaType, page,
+                     pixels]() -> std::function<void()> {
+        auto staged = std::make_shared<core::Result<application::StagedAssetFile>>(stage());
+        return [this, staged, mediaType, page, pixels] {
+            const QString failed = tr("The image could not be inserted.");
+            if (!*staged) {
+                dialogs_->showError(this, failed, errorText(staged->error()));
+                return;
+            }
+            // Content-addressed: importing the same file again reuses the stored copy.
+            auto asset = open_->session->finishAssetImport(**staged, mediaType);
+            if (!asset) {
+                dialogs_->showError(this, failed, errorText(asset.error()));
+                return;
+            }
+            if (activePage() != page && !openPage(page)) {
+                return; // the page is gone meanwhile; the asset stays for garbage collection
+            }
+            if (auto inserted = open_->controller->insertImage(*asset, pixels); !inserted) {
+                dialogs_->showError(this, failed, errorText(inserted.error()));
+                return;
+            }
+            selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
+        };
+    });
 }
 
 void MainWindow::importPdf() {
@@ -1948,36 +1992,51 @@ void MainWindow::importPdf() {
     if (!chosen) {
         return;
     }
-    const QString file = QString::fromStdU16String(chosen->u16string());
-    const QString failed = tr("The PDF could not be imported.");
-    // Only read: the PDF is copied into the workspace's assets and never written.
-    auto info = inspectPdf(*chosen);
-    if (!info) {
-        dialogs_->showError(this, failed, tr("%1: %2").arg(file, errorText(info.error())));
-        return;
-    }
-    auto asset = open_->session->importAsset(*chosen, "application/pdf");
-    if (!asset) {
-        dialogs_->showError(this, failed, errorText(asset.error()));
-        return;
-    }
-    // Into the current notebook, else the first one; with none, a new notebook "Documents".
-    std::optional<core::NotebookId> notebook = currentNotebook();
-    if (const auto notebooks = open_->session->workspace().notebooks();
-        !notebook && !notebooks.empty()) {
-        notebook = notebooks.front();
-    }
-    auto imported = open_->structure.importDocument(
-        notebook, QFileInfo(file).completeBaseName().toStdString(), *asset, info->pageSizes);
-    if (!imported) {
-        dialogs_->showError(this, failed, errorText(imported.error()));
-        return;
-    }
-    openPage(imported->firstPage);
-    QTreeView* tree = navigation_->tree();
-    tree->expand(treeModel_->indexOf(HierarchyItem{imported->notebook}));
-    tree->expand(treeModel_->indexOf(HierarchyItem{imported->section}));
-    tree->setCurrentIndex(treeModel_->indexOf(HierarchyItem{imported->firstPage}));
+    // Reading the page sizes and copying the file happen on a pool thread; the section is
+    // created here. Only read: the PDF is copied into the workspace and never written.
+    runInBackground([this, stage = open_->session->prepareAssetImport(*chosen),
+                     source = *chosen]() -> std::function<void()> {
+        auto info = std::make_shared<core::Result<PdfInfo>>(inspectPdf(source));
+        auto staged = std::make_shared<core::Result<application::StagedAssetFile>>(
+            *info ? stage()
+                  : core::Result<application::StagedAssetFile>(tl::unexpected(info->error())));
+        return [this, info, staged, source] {
+            const QString file = QString::fromStdU16String(source.u16string());
+            const QString failed = tr("The PDF could not be imported.");
+            if (!*info) {
+                dialogs_->showError(this, failed, tr("%1: %2").arg(file, errorText(info->error())));
+                return;
+            }
+            if (!*staged) {
+                dialogs_->showError(this, failed, errorText(staged->error()));
+                return;
+            }
+            auto asset = open_->session->finishAssetImport(**staged, "application/pdf");
+            if (!asset) {
+                dialogs_->showError(this, failed, errorText(asset.error()));
+                return;
+            }
+            // Into the current notebook, else the first one; with none, a new notebook
+            // "Documents".
+            std::optional<core::NotebookId> notebook = currentNotebook();
+            if (const auto notebooks = open_->session->workspace().notebooks();
+                !notebook && !notebooks.empty()) {
+                notebook = notebooks.front();
+            }
+            auto imported = open_->structure.importDocument(
+                notebook, QFileInfo(file).completeBaseName().toStdString(), *asset,
+                (*info)->pageSizes);
+            if (!imported) {
+                dialogs_->showError(this, failed, errorText(imported.error()));
+                return;
+            }
+            openPage(imported->firstPage);
+            QTreeView* tree = navigation_->tree();
+            tree->expand(treeModel_->indexOf(HierarchyItem{imported->notebook}));
+            tree->expand(treeModel_->indexOf(HierarchyItem{imported->section}));
+            tree->setCurrentIndex(treeModel_->indexOf(HierarchyItem{imported->firstPage}));
+        };
+    });
 }
 
 namespace {
@@ -2372,6 +2431,8 @@ void MainWindow::updateStatus() {
                     static_cast<int>(session.pendingWriteCount()));
         tip = tr("Saving failed; StudyBoard tries again with the next change.\n%1")
                   .arg(errorText(*error));
+    } else if (backgroundJobs_ > 0) {
+        status = tr("Importing…");
     } else {
         status = tr("All changes saved");
     }

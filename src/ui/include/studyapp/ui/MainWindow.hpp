@@ -118,6 +118,8 @@ public:
     bool openWorkspace(const std::filesystem::path& root, OpenMode mode = OpenMode::Existing);
     /// Creates a workspace in `root` (named after the directory) with a start page.
     bool createWorkspace(const std::filesystem::path& root);
+    /// Imports still copying files on pool threads (tests wait for 0).
+    [[nodiscard]] int backgroundJobCount() const noexcept { return backgroundJobs_; }
     /// Closes the open workspace after writing anything pending. false if changes could
     /// not be written and the user chose to keep the workspace open.
     bool closeWorkspace();
@@ -201,6 +203,9 @@ private:
     void setPageFormat(int backgroundPattern, bool bounded);
     void insertImage();
     void importPdf();
+    /// Runs `work` on a pool thread; the function it returns runs on the GUI thread if the
+    /// same workspace is still open (Phase 9: imports off the GUI thread).
+    void runInBackground(std::function<std::function<void()>()> work);
     /// File ▸ Export Page (PDF, PNG, SVG) or, `wholeSection`, Export Section as PDF.
     void exportPages(bool wholeSection);
     void printPages();
@@ -286,6 +291,7 @@ private:
     QAction* deleteItemAction_ = nullptr;
     QAction* insertImageAction_ = nullptr;
     QAction* importPdfAction_ = nullptr;
+    int backgroundJobs_ = 0; ///< imports running on pool threads
     QAction* exportPageAction_ = nullptr;
     QAction* exportSectionAction_ = nullptr;
     QAction* printAction_ = nullptr;

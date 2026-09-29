@@ -118,6 +118,17 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
     if (mediaType.empty()) {
         return makeError(ErrorCode::InvalidArgument, "an asset needs a media type");
     }
+    const core::AssetId id = core::AssetId::generate(ids);
+    auto staged = stage(root_, source, id.toString());
+    if (!staged) {
+        return forward(staged);
+    }
+    return commit(*staged, mediaType, id, clock);
+}
+
+Result<StagedAsset> AssetStore::stage(const std::filesystem::path& workspaceRoot,
+                                      const std::filesystem::path& source,
+                                      std::string_view stagingName) {
     std::error_code sourceError;
     const auto sourceStatus = std::filesystem::status(source, sourceError);
     if (!std::filesystem::exists(sourceStatus)) {
@@ -133,7 +144,7 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
     if (!in) {
         return makeError(ErrorCode::NotFound, "cannot read '" + utf8(source) + "'");
     }
-    const WorkspaceLayout layout{root_};
+    const WorkspaceLayout layout{workspaceRoot};
     std::error_code ec;
     std::filesystem::create_directories(layout.temporary(), ec);
     if (ec) {
@@ -141,9 +152,8 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
                          "cannot create '" + utf8(layout.temporary()) + "': " + ec.message());
     }
 
-    // 1. Copy to temporary/ while hashing, then flush to disk.
-    const core::AssetId id = core::AssetId::generate(ids);
-    TemporaryFile staged(layout.temporary() / (id.toString() + ".part"));
+    // Copy to temporary/ while hashing, then flush to disk.
+    TemporaryFile staged(layout.temporary() / (std::string(stagingName) + ".part"));
     auto out = detail::OutputFile::create(staged.path());
     if (!out) {
         return forward(out);
@@ -168,7 +178,26 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
     if (auto synced = out->syncAndClose(); !synced) {
         return forward(synced);
     }
-    const Sha256Digest digest = hash.finish();
+    StagedAsset result{.file = staged.path(),
+                       .sha256 = hash.finish(),
+                       .byteSize = byteSize,
+                       .originalName = utf8(source.filename())};
+    staged.release();
+    return result;
+}
+
+void AssetStore::discard(const StagedAsset& staged) noexcept {
+    std::error_code ignored;
+    std::filesystem::remove(staged.file, ignored);
+}
+
+Result<core::AssetId> AssetStore::commit(const StagedAsset& staged, std::string_view mediaType,
+                                         core::AssetId id, const core::Clock& clock) {
+    TemporaryFile file(staged.file); // removed on every path that does not move it
+    if (mediaType.empty()) {
+        return makeError(ErrorCode::InvalidArgument, "an asset needs a media type");
+    }
+    const Sha256Digest& digest = staged.sha256;
 
     // 2. Dedupe: identical content already imported.
     std::optional<core::AssetId> existing;
@@ -205,18 +234,19 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
         relative = relativePath(digest, mediaType);
     }
     const std::filesystem::path target = root_ / relative;
+    std::error_code ec;
     if (!std::filesystem::exists(target, ec)) {
         std::filesystem::create_directories(target.parent_path(), ec);
         if (ec) {
             return makeError(ErrorCode::IoError,
                              "cannot create '" + utf8(target.parent_path()) + "': " + ec.message());
         }
-        std::filesystem::rename(staged.path(), target, ec);
+        std::filesystem::rename(file.path(), target, ec);
         if (ec) {
             return makeError(ErrorCode::IoError,
                              "cannot move asset into '" + utf8(target) + "': " + ec.message());
         }
-        staged.release();
+        file.release();
     }
     if (existing) {
         return *existing;
@@ -237,8 +267,8 @@ Result<core::AssetId> AssetStore::import(const std::filesystem::path& source,
         ->bindId(1, id)
         .bindBlob(2, digest)
         .bindText(3, mediaType)
-        .bindInt(4, static_cast<std::int64_t>(byteSize))
-        .bindText(5, utf8(source.filename()))
+        .bindInt(4, static_cast<std::int64_t>(staged.byteSize))
+        .bindText(5, staged.originalName)
         .bindInt(6, detail::millis(clock.now()));
     if (auto inserted = (*insert)->run(); !inserted) {
         return forward(inserted);

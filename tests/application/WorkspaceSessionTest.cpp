@@ -16,6 +16,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 
 namespace studyapp::application {
 namespace {
@@ -158,6 +159,51 @@ TEST_F(WorkspaceSessionTest, CreateCloseReopenEmptyWorkspace) {
     session = reopenAndCompare(std::move(session));
     ASSERT_NE(session, nullptr);
     EXPECT_EQ(session->workspace().info().id, id);
+}
+
+TEST_F(WorkspaceSessionTest, AssetsStagedOnAnotherThreadAreStoredOnce) {
+    auto session = create();
+    ASSERT_NE(session, nullptr);
+    const auto source = dir / "photo.png";
+    {
+        std::ofstream out(source, std::ios::binary);
+        out << std::string(300'000, 'x');
+    }
+    // Two stagings of the same content, both run on other threads.
+    auto first = session->prepareAssetImport(source);
+    auto second = session->prepareAssetImport(source);
+    core::Result<StagedAssetFile> a = tl::unexpected(core::Error{});
+    core::Result<StagedAssetFile> b = tl::unexpected(core::Error{});
+    {
+        std::jthread one([&] { a = first(); });
+        std::jthread two([&] { b = second(); });
+    }
+    ASSERT_OK(a);
+    ASSERT_OK(b);
+    EXPECT_EQ(a->sha256, b->sha256);
+    EXPECT_NE(a->file, b->file);
+    auto stored = session->finishAssetImport(*a, "image/png");
+    auto again = session->finishAssetImport(*b, "image/png");
+    ASSERT_OK(stored);
+    ASSERT_OK(again);
+    EXPECT_EQ(*again, *stored); // deduplicated by content
+    EXPECT_FALSE(std::filesystem::exists(a->file));
+    EXPECT_FALSE(std::filesystem::exists(b->file));
+    // A staging that is not stored leaves nothing behind once discarded.
+    auto third = session->prepareAssetImport(source)();
+    ASSERT_OK(third);
+    WorkspaceSession::discardStagedAsset(*third);
+    EXPECT_FALSE(std::filesystem::exists(third->file));
+    // Missing sources fail in the job, without touching the session.
+    EXPECT_FALSE(session->prepareAssetImport(dir / "missing.png")().has_value());
+    // A read-only session refuses to store (and removes the staged file).
+    ASSERT_OK(session->close());
+    auto readOnly = open({.mode = AccessMode::ReadOnly});
+    ASSERT_NE(readOnly, nullptr);
+    auto staged = readOnly->prepareAssetImport(source)();
+    ASSERT_OK(staged);
+    EXPECT_FALSE(readOnly->finishAssetImport(*staged, "image/png").has_value());
+    EXPECT_FALSE(std::filesystem::exists(staged->file));
 }
 
 TEST_F(WorkspaceSessionTest, CloseReleasesTheLock) {

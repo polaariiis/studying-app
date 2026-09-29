@@ -45,6 +45,15 @@ struct AssetProblem {
     std::filesystem::path file;
 };
 
+/// A file copied into a workspace's temporary/ directory and hashed, not yet an asset
+/// (AssetStore::stage / commit).
+struct StagedAsset {
+    std::filesystem::path file; ///< in temporary/; removed by commit() or discard()
+    Sha256Digest sha256{};
+    std::uint64_t byteSize = 0;
+    std::string originalName; ///< the source's file name, UTF-8
+};
+
 /// Content-addressed storage of large binaries (images, PDFs) outside the database
 /// (docs/DATABASE_SCHEMA.md §3):
 ///
@@ -71,6 +80,22 @@ public:
                                                      std::string_view mediaType,
                                                      core::IdGenerator& ids,
                                                      const core::Clock& clock);
+
+    /// Step 1 of import() alone: copies `source` into `workspaceRoot`/temporary/ as
+    /// `<stagingName>.part` while hashing it, and flushes it to disk. File I/O only — no
+    /// database — so it may run on a worker thread while the workspace is used elsewhere.
+    /// Errors as import() (NotFound, InvalidArgument, IoError).
+    [[nodiscard]] static core::Result<StagedAsset> stage(const std::filesystem::path& workspaceRoot,
+                                                         const std::filesystem::path& source,
+                                                         std::string_view stagingName);
+    /// The rest of import() for a staged file (on the database's thread): the existing asset
+    /// if identical content was imported before, else the file is moved into place and the
+    /// row inserted with `id`. The staged file is gone afterwards in every case.
+    [[nodiscard]] core::Result<core::AssetId> commit(const StagedAsset& staged,
+                                                     std::string_view mediaType, core::AssetId id,
+                                                     const core::Clock& clock);
+    /// Removes a staged file that will not be committed.
+    static void discard(const StagedAsset& staged) noexcept;
 
     [[nodiscard]] core::Result<std::optional<AssetInfo>> find(core::AssetId id);
     [[nodiscard]] core::Result<bool> exists(core::AssetId id);

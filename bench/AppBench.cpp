@@ -214,6 +214,30 @@ void BM_ImportImage(benchmark::State& state) {
 }
 BENCHMARK(BM_ImportImage)->Arg(512)->Arg(4096)->Unit(benchmark::kMillisecond);
 
+/// The part of an image import that stays on the GUI thread since Phase 9: storing a file
+/// already staged (copied and hashed) on a pool thread.
+void BM_ImportImageGuiPart(benchmark::State& state) {
+    Fixture f;
+    const auto side = static_cast<std::size_t>(state.range(0));
+    std::vector<char> bytes(side * side * 3);
+    std::mt19937 random(9);
+    for (char& b : bytes) {
+        b = static_cast<char>(random());
+    }
+    int n = 0;
+    for (auto _ : state) {
+        state.PauseTiming();
+        bytes.back() = static_cast<char>(++n);
+        const auto file = f.dir / ("raw" + std::to_string(n) + ".bin");
+        writeFile(file, bytes);
+        auto staged = f.session->prepareAssetImport(file)();
+        state.ResumeTiming();
+        benchmark::DoNotOptimize(f.session->finishAssetImport(*staged, "image/png"));
+    }
+    state.counters["MB"] = static_cast<double>(bytes.size()) / 1e6;
+}
+BENCHMARK(BM_ImportImageGuiPart)->Arg(4096)->Unit(benchmark::kMillisecond)->Iterations(5);
+
 // ---------------------------------------------------------------------------- text
 
 void BM_TextRaster(benchmark::State& state) {

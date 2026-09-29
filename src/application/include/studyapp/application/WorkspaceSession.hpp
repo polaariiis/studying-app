@@ -9,6 +9,7 @@
 #include <studyapp/document/UndoStack.hpp>
 #include <studyapp/document/Workspace.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -20,6 +21,16 @@
 #include <vector>
 
 namespace studyapp::application {
+
+/// A file being imported as an asset, copied and hashed but not stored yet
+/// (WorkspaceSession::prepareAssetImport).
+struct StagedAssetFile {
+    core::AssetId id;
+    std::filesystem::path file; ///< in the workspace's temporary directory
+    std::array<std::uint8_t, 32> sha256{};
+    std::uint64_t byteSize = 0;
+    std::string originalName;
+};
 
 /// One full-text search hit (Phase 8): the indexed record and its bm25 score (lower is
 /// better). Resolve it against the session's Workspace (application::search does).
@@ -123,6 +134,17 @@ public:
     [[nodiscard]] core::Result<core::AssetId> importAsset(const std::filesystem::path& source,
                                                           std::string_view mediaType);
     [[nodiscard]] core::Result<std::filesystem::path> assetPath(core::AssetId asset);
+    /// importAsset() in two parts, so the expensive part runs off the GUI thread (Phase 9):
+    /// the returned job copies and hashes `source` into this workspace's temporary
+    /// directory — file I/O only, it uses no session state and may run on any thread, also
+    /// after the session is gone (the staged file is then left for temporary-directory
+    /// cleanup). finishAssetImport() then stores it (deduplicated) on the session's thread.
+    [[nodiscard]] std::function<core::Result<StagedAssetFile>()>
+    prepareAssetImport(const std::filesystem::path& source);
+    [[nodiscard]] core::Result<core::AssetId> finishAssetImport(const StagedAssetFile& staged,
+                                                                std::string_view mediaType);
+    /// Removes a staged file that will not be stored.
+    static void discardStagedAsset(const StagedAssetFile& staged) noexcept;
 
     // ---- bundles (Phase 8; docs/DATABASE_SCHEMA.md §12) ------------------------------------
     /// Writes a bundle (a zip archive) of the whole workspace — a consistent snapshot of the
