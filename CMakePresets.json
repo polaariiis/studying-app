@@ -61,6 +61,18 @@
       "cacheVariables": { "STUDYAPP_WARNINGS_AS_ERRORS": "ON" }
     },
     {
+      "name": "package",
+      "displayName": "Package",
+      "description": "Release build of the application only (no tests), for CPack packages",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "STUDYAPP_BUILD_TESTS": "OFF",
+        "STUDYAPP_WARNINGS_AS_ERRORS": "ON",
+        "STUDYAPP_DEPLOY_QT_TO_BUILD_TREE": "OFF"
+      }
+    },
+    {
       "name": "ci-full",
       "displayName": "CI: full build",
       "inherits": "base",
@@ -78,7 +90,8 @@
     { "name": "core-only", "configurePreset": "core-only" },
     { "name": "asan", "configurePreset": "asan", "nativeToolOptions": ["-k", "0"] },
     { "name": "ci-core", "configurePreset": "ci-core", "nativeToolOptions": ["-k", "0"] },
-    { "name": "ci-full", "configurePreset": "ci-full", "nativeToolOptions": ["-k", "0"] }
+    { "name": "ci-full", "configurePreset": "ci-full", "nativeToolOptions": ["-k", "0"] },
+    { "name": "package", "configurePreset": "package" }
   ],
   "testPresets": [
     {

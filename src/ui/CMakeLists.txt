@@ -7,6 +7,7 @@ studyapp_add_module(ui
         include/studyapp/ui/DesignTokens.hpp
         include/studyapp/ui/MainWindow.hpp
         include/studyapp/ui/PanBenchmark.hpp
+        include/studyapp/ui/SelfTest.hpp
         include/studyapp/ui/ShellDialogs.hpp
         include/studyapp/ui/ThemeManager.hpp
         src/AppIcon.cpp
@@ -28,6 +29,7 @@ studyapp_add_module(ui
         src/SessionDocumentRasterizer.hpp
         src/SessionImageSource.cpp
         src/SessionImageSource.hpp
+        src/SelfTest.cpp
         src/ShellDialogs.cpp
         src/ThemeIcons.cpp
         src/ThemeIcons.hpp

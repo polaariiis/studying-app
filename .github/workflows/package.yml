@@ -1,0 +1,185 @@
+name: Package
+
+# Builds the release packages on all three platforms and smoke-tests each one on a fresh
+# runner that has no Qt or compiler installed (docs/BUILDING.md §8): the package must bring
+# everything it needs. Called by release.yml for tagged releases.
+
+on:
+  push:
+    branches: [main, 'phase-*']
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+
+env:
+  QT_VERSION: "6.8.3"
+
+jobs:
+  package:
+    name: Package / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            qt_arch: win64_msvc2022_64
+          - os: ubuntu-22.04 # oldest supported glibc: the AppImage runs on 22.04 and later
+            qt_arch: linux_gcc_64
+          - os: macos-14
+            qt_arch: clang_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Set up MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Linux build packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-13 \
+            libgl1-mesa-dev libegl1 libxkbcommon-dev libxkbcommon-x11-0 \
+            libfontconfig1 libdbus-1-3 libxcb-cursor0 file
+          echo "CC=gcc-13" >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ matrix.qt_arch }}
+          modules: qtpdf
+          cache: true
+
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --preset package 2>&1 | tee build.log
+          cmake --build --preset package 2>&1 | tee -a build.log
+
+      - name: Package (CPack)
+        shell: bash
+        run: |
+          cd build/package
+          cpack 2>&1 | tee cpack.log
+
+      - name: AppImage (linuxdeploy)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The install tree already holds the deployed Qt (Deploy.cmake); linuxdeploy adds
+          # the remaining non-system libraries and writes the AppImage.
+          cmake --install build/package --prefix "$PWD/AppDir/usr"
+          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          version=$(grep -oP 'CPACK_PACKAGE_VERSION "\K[^"]+' build/package/CPackConfig.cmake)
+          LINUXDEPLOY_OUTPUT_VERSION="$version" ./linuxdeploy --appdir AppDir \
+            --desktop-file AppDir/usr/share/applications/studyboard.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/studyboard.png \
+            --output appimage
+          mv StudyBoard*.AppImage "build/package/StudyBoard-$version-linux-x86_64.AppImage"
+          sha256sum "build/package/StudyBoard-$version-linux-x86_64.AppImage" \
+            > "build/package/StudyBoard-$version-linux-x86_64.AppImage.sha256"
+
+      - name: Report errors as annotations
+        if: failure()
+        shell: bash
+        run: |
+          cat build.log build/package/cpack.log 2>/dev/null | grep -E "error:|Error|FAILED:|CMake Error" \
+            | head -40 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            build/package/StudyBoard-*.zip
+            build/package/StudyBoard-*.exe
+            build/package/StudyBoard-*.dmg
+            build/package/StudyBoard-*.tar.gz
+            build/package/StudyBoard-*.AppImage
+            build/package/StudyBoard-*.sha256
+
+  # Fresh runners: no Qt, no compiler setup. Each package must run from what it contains.
+  smoke:
+    name: Smoke test / ${{ matrix.os }}
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            artifact: packages-Windows
+          - os: ubuntu-22.04
+            artifact: packages-Linux
+          - os: ubuntu-24.04
+            artifact: packages-Linux
+          - os: macos-14
+            artifact: packages-macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: packages
+
+      - name: Windows — installer, self-test, portable ZIP, uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem packages -Filter 'StudyBoard-*.exe' | Select-Object -First 1
+          $dir = 'C:\StudyBoardTest'
+          Start-Process -Wait -FilePath $installer.FullName -ArgumentList '/S', "/D=$dir"
+          $out = & "$dir\bin\studyapp.exe" --self-test | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0) { throw "self-test of the installed copy failed" }
+          Expand-Archive (Get-ChildItem packages -Filter 'StudyBoard-*.zip').FullName -DestinationPath zip
+          $exe = Get-ChildItem zip -Recurse -Filter studyapp.exe | Select-Object -First 1
+          $out = & $exe.FullName --self-test | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0) { throw "self-test of the ZIP failed" }
+          Start-Process -Wait -FilePath "$dir\Uninstall.exe" -ArgumentList '/S'
+          Start-Sleep -Seconds 5 # the uninstaller copies itself and finishes asynchronously
+          if (Test-Path "$dir\bin\studyapp.exe") { throw "uninstall left the application behind" }
+
+      - name: Linux — AppImage and archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A desktop system has these; the runner image does not.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libegl1 libgl1 libopengl0 \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libfontconfig1 fonts-dejavu-core
+          chmod +x packages/*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a packages/StudyBoard-*.AppImage --self-test
+          mkdir tgz && tar -xzf packages/StudyBoard-*.tar.gz -C tgz
+          xvfb-run -a "$(find tgz -path '*/bin/studyapp' | head -1)" --self-test
+
+      - name: macOS — DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          hdiutil attach packages/StudyBoard-*.dmg -mountpoint /Volumes/StudyBoard -nobrowse
+          /Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --self-test
+          hdiutil detach /Volumes/StudyBoard

@@ -13,7 +13,7 @@
 #   files are build output (build/<preset>/app/), never part of the repository.
 #   Controlled by STUDYAPP_DEPLOY_QT_TO_BUILD_TREE (default ON on Windows).
 #
-# Packaging with CPack (installers, DMG, AppImage) is Phase 9.
+# Packages (CPack) are configured in Packaging.cmake.
 
 include_guard(GLOBAL)
 

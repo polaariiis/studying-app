@@ -2,9 +2,9 @@
 add_executable(studyapp WIN32 MACOSX_BUNDLE
     main.cpp)
 
-# Windows only: embed the .ico so the executable itself carries the StudyBoard icon.
-# (Linux/macOS get the icon at runtime from Qt resources; bundle/.desktop icons are
-# part of packaging, Phase 9.)
+# Windows: embed the .ico so the executable itself carries the StudyBoard icon. (The window
+# icon comes from Qt resources on every platform; the macOS bundle and Linux desktop icons
+# are set up below.)
 if(WIN32)
     set(STUDYAPP_WINDOWS_ICON "${PROJECT_SOURCE_DIR}/resources/icons/app/studyboard.ico")
     configure_file(studyapp.rc.in "${CMAKE_CURRENT_BINARY_DIR}/studyapp.rc" @ONLY)
@@ -30,5 +30,62 @@ set_target_properties(studyapp PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
 
+# macOS bundle icon: an .icns made from the committed PNGs at build time (sips/iconutil are
+# part of macOS), so no generated binary is kept in the repository.
+if(APPLE)
+    set(_icons "${PROJECT_SOURCE_DIR}/resources/icons/app")
+    set(_iconset "${CMAKE_CURRENT_BINARY_DIR}/studyboard.iconset")
+    set(_icns "${CMAKE_CURRENT_BINARY_DIR}/studyboard.icns")
+    add_custom_command(OUTPUT "${_icns}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_iconset}"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_icons}/studyboard-16.png" "${_iconset}/icon_16x16.png"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_icons}/studyboard-32.png" "${_iconset}/icon_16x16@2x.png"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_icons}/studyboard-32.png" "${_iconset}/icon_32x32.png"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_icons}/studyboard-64.png" "${_iconset}/icon_32x32@2x.png"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_icons}/studyboard-128.png" "${_iconset}/icon_128x128.png"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_icons}/studyboard-256.png" "${_iconset}/icon_128x128@2x.png"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_icons}/studyboard-256.png" "${_iconset}/icon_256x256.png"
+        COMMAND iconutil -c icns "${_iconset}" -o "${_icns}"
+        DEPENDS "${_icons}/studyboard-16.png" "${_icons}/studyboard-32.png"
+                "${_icons}/studyboard-64.png" "${_icons}/studyboard-128.png"
+                "${_icons}/studyboard-256.png"
+        COMMENT "Building the macOS app icon"
+        VERBATIM)
+    target_sources(studyapp PRIVATE "${_icns}")
+    set_source_files_properties("${_icns}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    set_target_properties(studyapp PROPERTIES MACOSX_BUNDLE_ICON_FILE studyboard.icns)
+endif()
+
 studyapp_install_app(studyapp)
 studyapp_deploy_qt_to_build_tree(studyapp)
+
+# Linux desktop integration (menus, AppImage): a .desktop entry and the icon.
+if(UNIX AND NOT APPLE)
+    # The installed executable finds the deployed Qt (and the bundled C++ runtime) in ../lib.
+    set_target_properties(studyapp PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+    # GCC 13's libstdc++ is newer than the one Ubuntu 22.04 ships: packages carry the
+    # compiler's own copy (docs/ARCHITECTURE.md §13), found first through RPATH.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        foreach(runtime libstdc++.so.6 libgcc_s.so.1)
+            execute_process(
+                COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=${runtime}
+                OUTPUT_VARIABLE runtime_path
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if(IS_ABSOLUTE "${runtime_path}" AND EXISTS "${runtime_path}")
+                install(FILES "${runtime_path}"
+                    DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+                    COMPONENT runtime
+                    FOLLOW_SYMLINK_CHAIN)
+            endif()
+        endforeach()
+    endif()
+    install(FILES "${PROJECT_SOURCE_DIR}/resources/linux/studyboard.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+        COMPONENT runtime)
+    foreach(size 16 32 48 64 128 256)
+        install(FILES "${PROJECT_SOURCE_DIR}/resources/icons/app/studyboard-${size}.png"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps"
+            RENAME studyboard.png
+            COMPONENT runtime)
+    endforeach()
+endif()

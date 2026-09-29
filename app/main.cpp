@@ -14,6 +14,7 @@
 #include <studyapp/platform/QtWorkspaceLocker.hpp>
 #include <studyapp/ui/AppIcon.hpp>
 #include <studyapp/ui/MainWindow.hpp>
+#include <studyapp/ui/SelfTest.hpp>
 #include <studyapp/ui/ThemeManager.hpp>
 
 #include <QApplication>
@@ -25,6 +26,7 @@
 #include <QTimer>
 
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <random>
@@ -129,9 +131,29 @@ int main(int argc, char* argv[]) {
         QStringLiteral("Development: zoom factor applied before --bench-pan; 0 = zoom to fit "
                        "(the whole page in view)."),
         QStringLiteral("factor"), QStringLiteral("1"));
-    parser.addOptions(
-        {workspaceOption, generateOption, panOption, screenshotOption, benchZoomOption});
+    const QCommandLineOption selfTestOption(
+        QStringLiteral("self-test"),
+        QStringLiteral("Check this installation (Qt plugins, fonts, workspaces, PDF, export, "
+                       "printing) in a temporary directory, print the results and quit."));
+    parser.addOptions({workspaceOption, generateOption, panOption, screenshotOption,
+                       benchZoomOption, selfTestOption});
     parser.process(app);
+
+    if (parser.isSet(selfTestOption)) {
+        // No window, no settings, no user workspace: everything in a temporary directory.
+        const studyapp::core::SystemClock clock;
+        studyapp::core::UuidV7Generator ids(clock);
+        studyapp::platform::QtWorkspaceLocker locker;
+        studyapp::platform::QtTextLayout textLayout;
+        const studyapp::ui::ShellServices services{.clock = clock, .ids = ids, .locker = locker};
+        const auto failures =
+            studyapp::ui::runSelfTest(services, textLayout, [](const std::string& line) {
+                std::printf("%s\n", line.c_str());
+            });
+        std::printf("%s\n", failures.empty() ? "self-test passed" : "self-test FAILED");
+        std::fflush(stdout);
+        return failures.empty() ? 0 : 1;
+    }
 
     QSettings settings; // per-user, per-machine UI state (window geometry, theme)
     studyapp::ui::ThemeManager themes;

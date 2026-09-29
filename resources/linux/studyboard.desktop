@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=StudyBoard
+GenericName=Study Notes
+Comment=Study notes, handwriting, PDFs and planning
+Exec=studyapp %U
+Icon=studyboard
+Terminal=false
+Categories=Education;Office;
+Keywords=notes;study;whiteboard;pdf;planner;
+StartupWMClass=studyapp

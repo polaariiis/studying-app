@@ -77,6 +77,10 @@ install(FILES LICENSE THIRD_PARTY_NOTICES.md
     DESTINATION "${CMAKE_INSTALL_DOCDIR}"
     COMPONENT runtime)
 
+if(STUDYAPP_BUILD_APP)
+    include(Packaging) # CPack: installers, DMG, archives (Phase 9)
+endif()
+
 message(STATUS "StudyBoard ${PROJECT_VERSION}: app=${STUDYAPP_BUILD_APP} tests=${STUDYAPP_BUILD_TESTS} "
                "werror=${STUDYAPP_WARNINGS_AS_ERRORS} sanitizers='${STUDYAPP_SANITIZERS}' "
                "system-sqlite=${STUDYAPP_USE_SYSTEM_SQLITE}")
