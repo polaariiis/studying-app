@@ -157,8 +157,9 @@ public:
     [[nodiscard]] float textHeightFor(std::string_view text, float width) const;
 
     // ---- images (docs/CANVAS.md §10) -------------------------------------------------------
-    /// Decodes image assets (the UI's implementation over the workspace; not owned).
-    /// Without one, image elements are drawn as a neutral frame.
+    /// Decodes image assets (the UI's implementation over the workspace; not owned: it must
+    /// outlive the controller or be unset first — the controller detaches its ready handler
+    /// when destroyed). Without one, image elements are drawn as a neutral frame.
     void setImageSource(ImageSource* source);
     /// Inserts an image element for `asset` (already imported) whose pixels are
     /// `pixelSize`: at one world unit per pixel, scaled down to fit 60 % of the view,
@@ -166,8 +167,9 @@ public:
     core::Result<void> insertImage(core::AssetId asset, const core::Vec2& pixelSize);
 
     // ---- document pages (PDF, Phase 8; docs/CANVAS.md §10) -----------------------------
-    /// Renders the pages of imported documents shown behind page content (not owned).
-    /// Without one, a document page shows only its paper.
+    /// Renders the pages of imported documents shown behind page content (not owned; the
+    /// same lifetime rule as setImageSource). Without one, a document page shows only its
+    /// paper.
     void setDocumentRasterizer(DocumentRasterizer* rasterizer);
 
     // ---- actions -------------------------------------------------------------------------

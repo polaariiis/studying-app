@@ -1429,8 +1429,8 @@ core::ElementId addImage(CanvasFixture& f, core::AssetId asset, core::DVec2 at, 
 }
 
 TEST(CanvasControllerTest, ImagesShareOneTexturePerAssetAtTheResolutionTheViewNeeds) {
+    FakeImageSource images; // outlives the controller
     CanvasFixture f;
-    FakeImageSource images;
     f.controller.setImageSource(&images);
     const core::AssetId photo{f.doc.ids.next()};
     const core::AssetId other{f.doc.ids.next()};
@@ -1463,8 +1463,8 @@ TEST(CanvasControllerTest, ImagesShareOneTexturePerAssetAtTheResolutionTheViewNe
 }
 
 TEST(CanvasControllerTest, ImagesDecodedElsewhereAppearWhenReady) {
+    FakeImageSource images; // outlives the controller
     CanvasFixture f;
-    FakeImageSource images;
     images.asynchronous = true;
     f.controller.setImageSource(&images);
     addImage(f, core::AssetId{f.doc.ids.next()}, {300, 200}, {200, 150});
@@ -1481,8 +1481,8 @@ TEST(CanvasControllerTest, ImagesDecodedElsewhereAppearWhenReady) {
 }
 
 TEST(CanvasControllerTest, MissingImagesAreDrawnAsAFrameAndNotRetried) {
+    FakeImageSource images; // outlives the controller
     CanvasFixture f;
-    FakeImageSource images;
     const core::AssetId gone{f.doc.ids.next()};
     images.broken.push_back(gone);
     f.controller.setImageSource(&images);
@@ -1498,8 +1498,8 @@ TEST(CanvasControllerTest, MissingImagesAreDrawnAsAFrameAndNotRetried) {
 }
 
 TEST(CanvasControllerTest, ImageTexturesStayWithinTheMemoryBudget) {
+    FakeImageSource images; // outlives the controller
     CanvasFixture f;
-    FakeImageSource images;
     f.controller.setImageSource(&images);
     // Four huge images far apart: each needs a 4096² texture (≈ 85 MB with mipmaps).
     std::vector<core::DVec2> places;
@@ -1562,8 +1562,8 @@ core::PageId showDocumentPage(CanvasFixture& f, core::AssetId asset) {
 }
 
 TEST(CanvasControllerTest, DocumentPagesDrawAPreviewAndOnlyTheTilesInView) {
+    FakeRasterizer pdf; // outlives the controller
     CanvasFixture f;
-    FakeRasterizer pdf;
     f.controller.setDocumentRasterizer(&pdf);
     const core::AssetId asset{f.doc.ids.next()};
     const core::PageId page = showDocumentPage(f, asset);
@@ -1604,8 +1604,8 @@ TEST(CanvasControllerTest, DocumentPagesDrawAPreviewAndOnlyTheTilesInView) {
 }
 
 TEST(CanvasControllerTest, DocumentTilesRenderedElsewhereAppearWhenReady) {
+    FakeRasterizer pdf; // outlives the controller
     CanvasFixture f;
-    FakeRasterizer pdf;
     pdf.asynchronous = true;
     f.controller.setDocumentRasterizer(&pdf);
     showDocumentPage(f, core::AssetId{f.doc.ids.next()});
@@ -1621,8 +1621,8 @@ TEST(CanvasControllerTest, DocumentTilesRenderedElsewhereAppearWhenReady) {
 }
 
 TEST(CanvasControllerTest, UnreadableDocumentPagesShowThePaperAndAreNotRetried) {
+    FakeRasterizer pdf; // outlives the controller
     CanvasFixture f;
-    FakeRasterizer pdf;
     pdf.broken = true;
     f.controller.setDocumentRasterizer(&pdf);
     showDocumentPage(f, core::AssetId{f.doc.ids.next()});
@@ -1636,8 +1636,8 @@ TEST(CanvasControllerTest, UnreadableDocumentPagesShowThePaperAndAreNotRetried) 
 }
 
 TEST(CanvasControllerTest, DocumentTilesAreUploadedOverFramesThenRenderingIsIdle) {
+    FakeRasterizer pdf; // outlives the controller
     CanvasFixture f;
-    FakeRasterizer pdf;
     f.controller.setDocumentRasterizer(&pdf);
     showDocumentPage(f, core::AssetId{f.doc.ids.next()});
     f.controller.setViewport({3000.0, 2000.0}, 2.0); // many tiles in view at once
@@ -1657,8 +1657,8 @@ TEST(CanvasControllerTest, DocumentTilesAreUploadedOverFramesThenRenderingIsIdle
 }
 
 TEST(CanvasControllerTest, LeavingADocumentPageDropsItsQueuedTiles) {
+    FakeRasterizer pdf; // outlives the controller
     CanvasFixture f;
-    FakeRasterizer pdf;
     pdf.asynchronous = true; // never ready: everything stays queued
     f.controller.setDocumentRasterizer(&pdf);
     showDocumentPage(f, core::AssetId{f.doc.ids.next()});
@@ -1670,8 +1670,8 @@ TEST(CanvasControllerTest, LeavingADocumentPageDropsItsQueuedTiles) {
 }
 
 TEST(CanvasControllerTest, TileEntriesWithoutTexturesStayBounded) {
+    FakeRasterizer pdf; // outlives the controller
     CanvasFixture f;
-    FakeRasterizer pdf;
     pdf.asynchronous = true; // never ready: no tile ever gets a texture
     f.controller.setDocumentRasterizer(&pdf);
     // A huge page seen closely from many places.
@@ -1853,8 +1853,9 @@ TEST(CanvasControllerTest, MovingAnElementTouchesOnlyItsOwnConnectors) {
     for (int i = 0; i < 1000; i += 2) {
         auto created = document::commands::createElement(
             f.doc.workspace, f.layer,
-            {.payload = document::Connector{.start = {.position = {}, .attachedTo = boxes[i]},
-                                            .end = {.position = {}, .attachedTo = boxes[i + 1]}}},
+            {.payload = document::Connector{
+                 .start = {.position = {}, .attachedTo = boxes[static_cast<std::size_t>(i)]},
+                 .end = {.position = {}, .attachedTo = boxes[static_cast<std::size_t>(i) + 1]}}},
             f.doc.ids);
         ASSERT_OK(created);
         ASSERT_OK(f.port.execute(std::move(created->command)));

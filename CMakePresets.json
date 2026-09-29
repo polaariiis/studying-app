@@ -76,9 +76,9 @@
     { "name": "release", "configurePreset": "release" },
     { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo" },
     { "name": "core-only", "configurePreset": "core-only" },
-    { "name": "asan", "configurePreset": "asan" },
-    { "name": "ci-core", "configurePreset": "ci-core" },
-    { "name": "ci-full", "configurePreset": "ci-full" }
+    { "name": "asan", "configurePreset": "asan", "nativeToolOptions": ["-k", "0"] },
+    { "name": "ci-core", "configurePreset": "ci-core", "nativeToolOptions": ["-k", "0"] },
+    { "name": "ci-full", "configurePreset": "ci-full", "nativeToolOptions": ["-k", "0"] }
   ],
   "testPresets": [
     {

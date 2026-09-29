@@ -172,8 +172,8 @@ Result<void> WorkspaceStore::write(const document::Patch& patch) {
                     }
                     return pages_.apply(*transaction, change);
                 } else if constexpr (std::is_same_v<Change, document::PageChange>) {
-                    if (auto written = catalog_.apply(*transaction, change); !written) {
-                        return written;
+                    if (auto page = catalog_.apply(*transaction, change); !page) {
+                        return page;
                     }
                     return study_.applyPageTags(*transaction, change);
                 } else if constexpr (std::is_same_v<Change, document::NotebookChange> ||
