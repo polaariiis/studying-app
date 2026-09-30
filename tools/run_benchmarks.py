@@ -2,19 +2,20 @@
 """Runs StudyBoard's benchmark suites and stores their JSON results with a record of the
 machine (docs/BENCHMARKS.md).
 
-    python tools/run_benchmarks.py --build build/ci-full [--out DIR] [--filter REGEX]
+    python tools/run_benchmarks.py --build build/ci-full [--label NAME] [--out DIR] [--filter REGEX]
 
-Writes into DIR (default: bench/results/<date>-<host>/): canvas.json (studyapp_benchmarks,
+Writes into DIR (default: bench/results/<date>-<label>/): canvas.json (studyapp_benchmarks,
 without the stress series), stress-canvas.json (the stress series), app.json
 (studyapp_app_benchmarks, when it was built) and machine.json. The GPU and display are not
-detected portably: add them to machine.json by hand (docs/HARDWARE_MATRIX.md).
+detected portably: add them to machine.json by hand (docs/HARDWARE_MATRIX.md). The
+computer's host name is not recorded (Google Benchmark's host_name is replaced by the
+label), so results can be published.
 """
 import argparse
 import datetime
 import json
 import os
 import platform
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -35,10 +36,20 @@ def run(binary: Path, output: Path, benchmark_filter: str | None, env: dict) -> 
     return subprocess.run(command, env=env, check=False).returncode
 
 
-def machine() -> dict:
+def replace_host_name(result: Path, label: str) -> None:
+    """Google Benchmark records the host name; keep only the chosen label."""
+    try:
+        data = json.loads(result.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # not written, or empty when a filter matched nothing
+        return
+    data.get("context", {})["host_name"] = label
+    result.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def machine(label: str) -> dict:
     info = {
         "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "host": socket.gethostname(),
+        "label": label,
         "os": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor(),
@@ -59,12 +70,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--build", type=Path, required=True,
                         help="build directory with benchmarks (e.g. build/ci-full)")
+    parser.add_argument("--label", default="local",
+                        help="machine label recorded instead of the host name (default: local)")
     parser.add_argument("--out", type=Path, help="result directory")
     parser.add_argument("--filter", help="only benchmarks matching this regex")
     args = parser.parse_args()
 
     stamp = datetime.date.today().isoformat()
-    out = args.out or Path("bench/results") / f"{stamp}-{socket.gethostname()}"
+    out = args.out or Path("bench/results") / f"{stamp}-{args.label}"
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env.setdefault("QT_QPA_PLATFORM", "offscreen")  # the application benchmarks need no window
@@ -85,7 +98,10 @@ def main() -> int:
         failures += run(app, out / "app.json", args.filter, env) != 0
     else:
         print("studyapp_app_benchmarks not built (app off): skipped")
-    (out / "machine.json").write_text(json.dumps(machine(), indent=2) + "\n", encoding="utf-8")
+    for result in ("canvas.json", "stress-canvas.json", "app.json"):
+        replace_host_name(out / result, args.label)
+    (out / "machine.json").write_text(json.dumps(machine(args.label), indent=2) + "\n",
+                                      encoding="utf-8")
     print(f"results in {out}")
     return 1 if failures else 0
 

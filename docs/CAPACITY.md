@@ -15,7 +15,7 @@ guarantees for other hardware.
 | **Comfortable** | Panning stays within the 144 Hz frame budget (6.9 ms, CPU side, 95th percentile) at every zoom; opening the workspace and the first whole-page frame each take ≤ 250 ms |
 | **Supported** | Panning stays within the 60 Hz budget (16.7 ms, p95) at every zoom; opening and the first whole-page frame each take ≤ 1 s |
 | **Stress** | Everything works, but some views drop below 60 frames per second or single operations take more than a second |
-| **Limit** | A failure, or degradation that makes the workload unusable. **Not reached** in any test: the largest measured size (100 000 strokes on one page) still works |
+| **Degradation / limit** | A failure, or degradation that makes the workload unusable. **Not reached** in any test: the largest measured size (100 000 strokes on one page) still works |
 
 Frame times are the CPU side of rendering (the GPU part was measured in the application
 only for 10 000 strokes, where the whole page pans at ≥ 60 fps).

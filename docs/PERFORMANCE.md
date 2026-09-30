@@ -6,10 +6,15 @@ regression thresholds), [STRESS_TESTING.md](STRESS_TESTING.md) (1 000–100 000 
 [CAPACITY.md](CAPACITY.md) (what that means in practice); the machines are in
 [HARDWARE_MATRIX.md](HARDWARE_MATRIX.md).
 
-Labels used in this document: **measured** — a number from a benchmark or the running
-application on the reference laptop; **design** — how the code works (see the linked
-architecture documents); **limitation** — known and accepted in 1.0; **future** — possible
-optimisation, not scheduled.
+Labels used in this document:
+
+| Label | Meaning |
+|---|---|
+| **Measured** | A number from a benchmark or from the running application on the reference laptop |
+| **Inferred** | Follows from measurements and the design, but was not measured directly |
+| **Not measured** | No data exists |
+| **Design** | How the code works (see the linked architecture documents) |
+| **Limitation** / **Future** | Known and accepted in 1.0 / a possible optimisation, not scheduled |
 
 ## 1. Performance design
 
@@ -52,6 +57,31 @@ optimisation, not scheduled.
 
 Writing to SQLite happens on the GUI thread, one transaction per edit, as part of the edit
 (continuous autosave; [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)).
+
+### CPU and GPU
+
+* **Measured:** the benchmarks time the CPU side of a frame (culling, level of detail,
+  tessellation, batching, draw lists). On the reference laptop that is below 1 ms per frame
+  for a 10 000-stroke page at every zoom ([BENCHMARKS.md](BENCHMARKS.md)).
+* **Measured:** the GPU side was measured in the running application for the 10 000-stroke
+  page (≥ 60 fps panning with every stroke visible, integrated Radeon 760M, 144 Hz display;
+  debug HUD and `--bench-pan`).
+* **Inferred:** GPU cost grows with the triangles in view (a whole 10 000-stroke page is up
+  to about 1.7 million triangles at full detail, fewer at the coarser whole-page level of
+  detail); dense whole-page views are therefore also the most GPU-intensive.
+* **Not measured:** GPU time for other sizes and other GPUs.
+
+### I/O
+
+* **Design:** SQLite in WAL mode, one transaction per edit, written on the GUI thread as part
+  of the edit (continuous saving; [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)). A stroke
+  commit is one small transaction.
+* **Design:** images and PDFs are copied into the workspace once, named by their SHA-256;
+  copying and hashing run off the GUI thread (§3.6).
+* **Design:** backups are one `VACUUM INTO` of the database; Check Workspace reads and hashes
+  every asset (§3.11).
+* **Measured:** opening a workspace reads and rebuilds the whole document: 105 ms for
+  10 000 strokes (§3.12).
 
 ### Memory budgets
 
@@ -184,10 +214,28 @@ step. Costs are measured on the reference laptop.
 
 * **Workload:** Back Up Now, the daily backup when closing, and Check Workspace.
 * **Observed:** a backup is one SQLite `VACUUM INTO` (proportional to the database size);
-  Check Workspace hashes every asset (proportional to the assets' total size). Not
-  benchmarked; seconds for gigabytes of assets.
+  Check Workspace hashes every asset (proportional to the assets' total size). **Not
+  measured**; inferred from hashing speed: seconds for gigabytes of assets.
 * **Limitation (accepted for 1.0):** they run on the GUI thread without progress.
 * **Future:** run them in the background with progress.
+
+### 3.12 Opening a large workspace
+
+* **Workload:** opening a workspace with many strokes.
+* **Observed (measured):** 14 ms (1 000 strokes), 105 ms (10 000), 552 ms (50 000), 1.22 s
+  (100 000).
+* **Cause (design):** the whole document is read from SQLite and rebuilt through the patch
+  path with every invariant checked, so a damaged database is never half-loaded.
+* **Limitation / future:** loading pages on demand (the catalog/page split, decision D25) —
+  not needed at measured sizes.
+
+### 3.13 Planner lists
+
+* **Workload:** planner views with many tasks.
+* **Observed:** creating a task costs 0.33 ms with up to 10 000 tasks (measured); rebuilding
+  a planner list with thousands of entries is **not measured**.
+* **Design:** the planner panel is built when first shown, and planner edits cost no canvas
+  frame.
 
 ## 4. How to measure
 

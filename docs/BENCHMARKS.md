@@ -13,7 +13,7 @@ in [PERFORMANCE.md](PERFORMANCE.md); larger workloads are in
 | Machine | Reference laptop: HP Victus 15-fb2xxx, AMD Ryzen 5 8645HS (6 cores / 12 threads), 8 GB RAM, AMD Radeon 760M, 1920 × 1080 at 144 Hz ([HARDWARE_MATRIX.md](HARDWARE_MATRIX.md)) |
 | OS | Windows 10 Home 22H2 (build 19045), on mains power |
 | Build | Release, `ci-full` preset (MSVC 19.44, `/O2`), Qt 6.8.3, Google Benchmark |
-| Source | StudyBoard 1.0.0 (product code identical to commit `ad76998`) |
+| Source | Commit `ad76998` — the product code of 1.0.0 (`v1.0.0` differs only in the version number and in benchmarks, documentation and CI) |
 | Date | 2026-09-30 |
 | Raw results | `bench/results/canvas.json`, `bench/results/app.json`, `bench/results/stress-canvas.json` (Google Benchmark JSON, including the CPU and cache description) |
 
@@ -42,7 +42,9 @@ Synthetic handwriting on one page (`bench/SyntheticPage.hpp`): strokes of 30–9
 | `BM_SceneRebuild` | Spatial index of the page | 22.7 ms | — | 18.4 ms |
 | `BM_VisibleQuery/400` / `100` / `25` | Strokes in view at zoom 4 / 1 / 0.25 | 0.04 / 0.41 / 1.45 ms (77 / 596 / 7 238 visible) | — | — |
 | `BM_HitTestTopmost` | Topmost element under the pointer | 10.6 µs | — | — |
-| `BM_StressFirstFrame/1000` | First frame, whole page, 1 000 strokes | 24 ms | — | — |
+| `BM_StressFirstFrame/1000` … `/100000` | First frame, whole page, 1 000 / 10 000 / 25 000 / 50 000 / 100 000 strokes | 24 ms / 99 ms / 226 ms / 491 ms / 1.06 s | — | — |
+| `BM_StressPanFrames/…/100/0` | Panning at zoom 1, p95, 1 000 / 10 000 / 25 000 / 50 000 / 100 000 strokes | 0.04 / 0.57 / 1.19 / 2.44 / 7.73 ms | — | — |
+| `BM_StressPanFrames/…/15/0` | Panning with the whole page in view, p95, same sizes | 0.29 / 1.99 / 5.71 / 20.0 / 31.1 ms | — | — |
 | `BM_FirstFrameWholePage` | First frame, whole page, 10 000 strokes (parallel mesh build) | 99.6 ms, 50 MB of meshes | 88 ms | 237 ms |
 | `BM_BuildFramePanning/100` / `30` / `15` | Frame while panning at zoom 1 / 0.3 / whole page | 0.29 / 0.81 / 0.83 ms | — | 0.27 / 0.73 / 0.85 ms |
 | `BM_BuildFramePanningAllSelected/100` / `15` | As above, all 10 000 selected | 0.29 / 0.75 ms | 0.2–0.5 ms | 8.5–10.5 ms |
@@ -58,6 +60,7 @@ Synthetic handwriting on one page (`bench/SyntheticPage.hpp`): strokes of 30–9
 | `BM_ToolAndSettingsChange` | Switching tool or colour | 1.8 ms, nothing rebuilt | — | — |
 | `BM_LoadWorkspace10kStrokes` | Reading a 10 000-stroke workspace (persistence only) | 91.9 ms | — | 97 ms |
 
+Every size and percentile of the stress series is in [STRESS_TESTING.md](STRESS_TESTING.md).
 Not measured: GPU frame time at sizes other than 10 000 strokes; moving a *partial*
 selection on a huge page (the drag preview); rendering with a physical pen.
 

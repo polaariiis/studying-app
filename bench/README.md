@@ -30,7 +30,8 @@ python tools/run_benchmarks.py --build build/ci-full
 
 `run_benchmarks.py` runs every suite and writes `canvas.json`, `stress-canvas.json`,
 `app.json` and `machine.json` (OS, CPU, commit; add the GPU and display by hand) to
-`bench/results/<date>-<host>/`. `--filter <regex>` runs a subset.
+`bench/results/<date>-<label>/`. `--label` names the machine; the computer's host name is
+not recorded, so results can be published. `--filter <regex>` runs a subset.
 
 ## Results
 
