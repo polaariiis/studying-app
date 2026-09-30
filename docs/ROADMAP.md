@@ -531,15 +531,31 @@ Status: **implemented** (decisions D47–D51; measurements in PERFORMANCE.md).
 5. ✅ Accessibility: every control has an accessible name (audited through QAccessible in
    the shell and every planner view); F6 / Shift+F6 cycle the panes.
 6. ✅ Packaging and release: CPack (NSIS installer + ZIP, DMG), AppImage and archive via
-   linuxdeploy on Ubuntu 22.04, `--self-test` smoke-tested on clean CI runners on all three
-   platforms, signing/notarisation hooks active when certificates are configured, draft
-   releases from `v*` tags.
+   linuxdeploy on Ubuntu 22.04, `--self-test` (including OpenGL 3.3 core rendering through
+   the canvas renderer) smoke-tested on clean CI runners on all three platforms; on Linux
+   the launcher `bin/studyboard` uses the bundled GCC 13 C++ runtime only when the system's
+   is older (BUILDING.md §8); signing/notarisation hooks active when certificates are
+   configured, signed builds self-tested again; draft releases from `v*` tags.
 7. ✅ Engineering: warnings-as-errors builds on GCC 13, Clang (macOS) and MSVC with every
    test green in CI; curated clang-tidy gated in CI; `docs/CODING_STYLE.md`.
+8. ✅ Final independent audit (2 HIGH, 4 MEDIUM, 4 LOW, 3 INFO): Save a Copy while opening
+   another workspace no longer leaves a canvas on a destroyed controller; Save a Copy to
+   another drive; closing waits for imports still writing into the workspace; half-written
+   copies are removed; signed packages are self-tested and the stapled DMG gets a new
+   checksum; the Linux C++ runtime no longer overrides a newer system one. LOW/INFO items
+   fixed or recorded below.
 
 Not in Phase 9 (known, non-blocking): packages are unsigned until certificates exist; no
 Flatpak; no x86_64 macOS build (arm64 only); the move of 10 000 elements still saves in
-≈ 100 ms on the GUI thread; asset garbage collection has no command yet.
+≈ 100 ms on the GUI thread; asset garbage collection has no command yet; Check Workspace,
+Back Up Now and the daily backup on close run on the GUI thread (seconds for gigabytes of
+assets); Back Up Now snapshots are rotated like automatic ones; Save a Copy refuses a
+workspace whose asset files are missing (it names them; Check Workspace lists them); an
+image whose import finishes after the user moved to another page is inserted on the page
+it was started from (the view returns there); the Linux launcher's `LD_LIBRARY_PATH`
+(only where the bundled runtime is used) is inherited by programs StudyBoard starts;
+`linuxdeploy` and `get-cmake` are not pinned to versions; the Windows uninstaller is not
+signed and `signtool` receives the certificate password on its command line.
 
 ## Later / candidate features
 

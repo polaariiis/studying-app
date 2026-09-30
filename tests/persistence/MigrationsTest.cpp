@@ -1,16 +1,20 @@
 #include <studyapp/persistence/Migrations.hpp>
 
 #include <studyapp/persistence/Database.hpp>
+#include <studyapp/persistence/Sha256.hpp>
 #include <studyapp/persistence/Transaction.hpp>
 #include <studyapp/testing/ResultMacros.hpp>
 #include <studyapp/testing/TempDirectory.hpp>
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace studyapp::persistence {
@@ -51,6 +55,24 @@ TEST_F(MigrationsTest, BuiltinMigrationsAreNumberedFromOne) {
     }
     EXPECT_EQ(migrations.front().name, "0001_initial.sql");
     EXPECT_EQ(currentSchemaVersion(), migrations.back().version);
+}
+
+// Released migrations are frozen (migrations/README.md): workspaces made by a released
+// version must never meet a different schema under the same version number. A failure here
+// means a released migration was edited — put the change into a new migration instead.
+// (P3-13; frozen for the 1.0 release candidate.)
+TEST_F(MigrationsTest, ReleasedMigrationsAreNeverEdited) {
+    constexpr std::array<std::string_view, 1> kReleased{
+        "e8db2baa3469f1772207a8f19f4207c0eb12aad936cad546ab4c6ee165f1af92", // 0001_initial.sql
+    };
+    const auto migrations = builtinMigrations();
+    ASSERT_GE(migrations.size(), kReleased.size());
+    for (std::size_t i = 0; i < kReleased.size(); ++i) {
+        std::string sql(migrations[i].sql);
+        std::erase(sql, ''); // the same on every checkout
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(sql.data());
+        EXPECT_EQ(toHex(Sha256::of({bytes, sql.size()})), kReleased[i]) << migrations[i].name;
+    }
 }
 
 TEST_F(MigrationsTest, InitialisesNewDatabaseWithDocumentedSchemaAndSettings) {

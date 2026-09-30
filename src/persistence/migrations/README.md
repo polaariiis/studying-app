@@ -15,7 +15,9 @@ Rules (see [docs/DATABASE_SCHEMA.md §8](../../../docs/DATABASE_SCHEMA.md#8-migr
 * Each migration runs in its own transaction, after an automatic `VACUUM INTO` backup.
 * Files are embedded into the binary at build time by a CMake script (no Qt resources),
   so `studyapp_persistence` stays Qt-free.
-* Migrations are never edited after release; fixes are new migrations.
+* Migrations are never edited after release; fixes are new migrations. Released migrations
+  are pinned by SHA-256 in `MigrationsTest.ReleasedMigrationsAreNeverEdited` (0001 since
+  the 1.0 release candidate); a new migration is added to that list when it is released.
 * Every migration gets a test that upgrades a fixture database from the previous version.
 
 | File | Version | Content |

@@ -102,7 +102,28 @@ Phase 6: COMPLETE (final audit passed with non-blocking follow-ups)
 
 Phase 7: COMPLETE (study/planning; audited, non-blocking follow-ups only)
 
-Phase 8: IMPLEMENTED (search, PDF, export, bundles; uncommitted, awaiting review/commit)
+Phase 8: COMPLETE (search, PDF, export, bundles; checkpoint commit 4726655)
+
+Phase 9: RELEASE CANDIDATE on branch `phase-9` (hardening, performance, packaging, final
+audit fixes; see docs/ROADMAP.md Phase 9 for the current status). `main` is updated only
+by the user's merge.
+
+Phase 9 established (details: docs/ROADMAP.md Phase 9, docs/PERFORMANCE.md,
+docs/ARCHITECTURE.md D47–D51, docs/BUILDING.md §7–§8, docs/CODING_STYLE.md):
+
+- performance: parallel mesh build/batch merge (`canvas/src/ParallelFor.hpp`, std::thread),
+  cached selection outlines, asset staging off the GUI thread (`AssetStore::stage/commit`),
+  export ink as polylines; benchmarks `bench/` + `bench/AppBench.cpp`, regression thresholds
+  and memory budgets in docs/PERFORMANCE.md
+- recovery: automatic backups on close (7 daily + 4 weekly), Back Up Now, Check Workspace,
+  Save a Copy (closes P3-01); closing waits for imports still writing into the workspace
+- accessibility: accessible names on every control (audited by a test), F6/Shift+F6
+- packaging: CPack (NSIS + ZIP, DMG), AppImage/.tar.gz via linuxdeploy; `studyapp
+  --self-test` (incl. OpenGL 3.3 rendering) smoke-tested on clean runners; Linux launcher
+  `bin/studyboard` picks the bundled GCC 13 runtime only when the system's is older;
+  packages are UNSIGNED / signing-ready (secrets listed in `.github/workflows/release.yml`)
+- engineering: clang-tidy gated in CI (`.clang-tidy`, `tools/run_clang_tidy.py`)
+- CI for Linux/macOS runs on pushes to `phase-*` branches (`ci.yml`, `package.yml`)
 
 Phase 8 established (details: docs/ROADMAP.md Phase 8, docs/ARCHITECTURE.md D43–D46,
 docs/DATABASE_SCHEMA.md §6/§12, docs/CANVAS.md §10, docs/RENDERING.md §9):
@@ -116,9 +137,10 @@ docs/DATABASE_SCHEMA.md §6/§12, docs/CANVAS.md §10, docs/RENDERING.md §9):
   `WorkspaceSession::exportBundle/importBundle/extractBundle`, File menu actions
 - Qt modules now required: Pdf (add-on `qtpdf`), PrintSupport, Svg
 
-Do NOT redo Phases 1–7 unless a concrete regression requires it.
+Do NOT redo Phases 1–9 unless a concrete regression requires it.
 
-Do NOT begin Phase 9+ work while implementing Phase 8 unless explicitly instructed.
+Do NOT start post-v1 work (docs/ROADMAP.md "Later / candidate features", §14 terminal)
+unless explicitly instructed.
 
 Phase 7 established (details: docs/ROADMAP.md Phase 7, docs/DATA_MODEL.md §5,
 docs/DATABASE_SCHEMA.md §11, docs/ARCHITECTURE.md D42):
@@ -177,11 +199,13 @@ Phase 3 established (details: docs/DATABASE_SCHEMA.md §11, docs/ARCHITECTURE.md
 
 Deferred from the Phase 3 audit:
 
-- P3-01 (MEDIUM): a permanently failing write blocks the save queue. Closing is handled since
-  Phase 5 (retry / close without saving / cancel); "save a copy" and recovery beyond closing
-  remain open.
-- P3-09..P3-12: asset durability/repair, asset checks in recovery, read-only media (Phases 8–9).
-- P3-13: guard migration 0001 against edits before the first release.
+- P3-01 (MEDIUM): CLOSED in Phase 9 — closing offers retry / close without saving / cancel /
+  Save a Copy (the in-memory workspace, unsaved changes included, into a new workspace).
+- P3-09..P3-12: asset problems are detected by Check Workspace (Phase 9: every asset's
+  existence, size and SHA-256); automatic repair, asset checks during recovery and
+  read-only media remain post-v1.
+- P3-13: CLOSED in Phase 9 — released migrations are pinned by SHA-256
+  (`MigrationsTest.ReleasedMigrationsAreNeverEdited`).
 
 The repository and existing documentation are the source of truth.
 
@@ -505,7 +529,7 @@ Focus:
 - related study workflows
 
 Phase 8 — Search / PDF / export
-IMPLEMENTED (uncommitted)
+COMPLETE
 
 Focus:
 - document search
@@ -519,6 +543,7 @@ Focus:
 The built-in command interface is now planned as a POST-V1 update rather than a core Phase 8 requirement.
 
 Phase 9 — Hardening / release
+RELEASE CANDIDATE (branch `phase-9`)
 
 Focus:
 - performance
