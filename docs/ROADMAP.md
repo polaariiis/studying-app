@@ -513,13 +513,13 @@ courses) — notebook bundles carry notebooks and their tags only.
 * Accessibility pass (keyboard navigation, screen-reader labels in UI chrome).
 * **Exit:** 1.0 release candidate on all three platforms.
 
-Status: **complete** — release candidate on branch `phase-9` (decisions D47–D51;
-measurements in PERFORMANCE.md). CI, packaging and clean-runner smoke tests green on
-Windows, Linux and macOS; the packaged app was also tested by hand on Windows. Merging to
-`main` and tagging a release are the owner's decisions.
+Status: **complete — released as 1.0.0** (docs/RELEASE.md; decisions D47–D51;
+measurements in BENCHMARKS.md, STRESS_TESTING.md and CAPACITY.md). CI, packaging and
+clean-runner smoke tests green on Windows, Linux and macOS; the packaged app was also tested
+by hand on Windows.
 
 1. ✅ Baseline and instrumentation: application-level benchmarks (`bench/AppBench.cpp`),
-   start-up/memory script, baseline and regression thresholds (PERFORMANCE.md).
+   start-up/memory script, baseline and regression thresholds (BENCHMARKS.md).
 2. ✅ Profiling-driven optimisation: parallel mesh build and batch merge (10 000-stroke first
    frame 237 → 88 ms), selection outlines translated while panning (8.5 → 0.2 ms per frame),
    cheaper batch signatures, export ink as polylines (PDF 4× faster, 3× smaller), asset

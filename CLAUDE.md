@@ -104,17 +104,23 @@ Phase 7: COMPLETE (study/planning; audited, non-blocking follow-ups only)
 
 Phase 8: COMPLETE (search, PDF, export, bundles; checkpoint commit 4726655)
 
-Phase 9: COMPLETE — release candidate on branch `phase-9` (hardening, performance,
-packaging, final audit fixes; CI and package smoke tests green on all three platforms;
-docs/ROADMAP.md Phase 9). Not merged: `main` is updated only by the user's merge.
+Phase 9: COMPLETE — merged to `main` and released as **1.0.0** (tag `v1.0.0`; hardening,
+performance, packaging, final audit fixes; CI and package smoke tests green on all three
+platforms; docs/ROADMAP.md Phase 9, docs/RELEASE.md). Version source: `project(VERSION)` in
+the top-level CMakeLists.txt. The `phase-9` branch is kept for reference.
+
+Next work is post-v1 (docs/ROADMAP.md "Later / candidate features"; §14 below) and only
+when explicitly requested.
 
 Phase 9 established (details: docs/ROADMAP.md Phase 9, docs/PERFORMANCE.md,
 docs/ARCHITECTURE.md D47–D51, docs/BUILDING.md §7–§8, docs/CODING_STYLE.md):
 
 - performance: parallel mesh build/batch merge (`canvas/src/ParallelFor.hpp`, std::thread),
   cached selection outlines, asset staging off the GUI thread (`AssetStore::stage/commit`),
-  export ink as polylines; benchmarks `bench/` + `bench/AppBench.cpp`, regression thresholds
-  and memory budgets in docs/PERFORMANCE.md
+  export ink as polylines; benchmarks in `bench/` (`tools/run_benchmarks.py`); results and
+  regression thresholds in docs/BENCHMARKS.md, stress series in docs/STRESS_TESTING.md,
+  docs/CAPACITY.md, docs/HARDWARE_MATRIX.md; design, memory budgets and bottlenecks in
+  docs/PERFORMANCE.md
 - recovery: automatic backups on close (7 daily + 4 weekly), Back Up Now, Check Workspace,
   Save a Copy (closes P3-01); closing waits for imports still writing into the workspace
 - accessibility: accessible names on every control (audited by a test), F6/Shift+F6
@@ -544,7 +550,7 @@ Focus:
 The built-in command interface is now planned as a POST-V1 update rather than a core Phase 8 requirement.
 
 Phase 9 — Hardening / release
-COMPLETE (release candidate on branch `phase-9`, not merged)
+COMPLETE (released as 1.0.0)
 
 Focus:
 - performance

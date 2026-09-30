@@ -3,7 +3,7 @@
 > Status: **Final baseline.** §0 lists what exists after Phase 5; the rest of this
 > document is the plan that later phases follow.
 
-## 0. Current state (Phase 5)
+## 0. Test suites (1.0)
 
 | Test target | Label | Framework | Covers |
 |---|---|---|---|

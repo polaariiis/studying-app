@@ -9,7 +9,7 @@
 | CMake | **3.25** | Presets schema v6 (workflow presets), `FetchContent_Declare(... SYSTEM)` |
 | Ninja | 1.11 | Generator used by all presets (Visual Studio ships one) |
 | C++ compiler | MSVC 19.38 (VS 2022 17.8), GCC 13, Clang 17, AppleClang 15 | C++20, no extensions |
-| Qt | **6.8 LTS** | Core, Gui, Widgets, OpenGL, Test. Not needed for the `core-only` preset |
+| Qt | **6.8 LTS** | Core, Gui, Widgets, OpenGL, OpenGLWidgets, PrintSupport, Svg, Test, and the **Qt PDF** add-on (`qtpdf`). Not needed for the `core-only` preset |
 | Python | 3.8+ | Optional locally: runs the include-boundary check as a CTest test |
 | Git | any recent | |
 
@@ -39,7 +39,8 @@ toolchains CI tests; older compilers may work but are not supported.
 
 The primary development environment is **Windows + Visual Studio 2022**. Ubuntu 22.04's
 default compiler is GCC 11, so building *on* 22.04 needs GCC 13 (e.g. from the
-`ubuntu-toolchain-r/test` PPA); running there is the packaging concern of Phase 9.
+`ubuntu-toolchain-r/test` PPA). The Linux packages run on 22.04 because they carry a new
+enough C++ runtime (§8).
 
 ## 2. Installing prerequisites
 
@@ -109,6 +110,7 @@ git-ignored. In-source builds are rejected.
 cmake --preset release -DSTUDYAPP_BUILD_BENCHMARKS=ON
 cmake --build --preset release --target studyapp_benchmarks studyapp
 build/release/bench/studyapp_benchmarks            # CPU: tessellation, scene, frames, page load
+python tools/run_benchmarks.py --build build/ci-full # every suite with a machine record (docs/BENCHMARKS.md)
 # GPU/frame timing in the real app (logs a summary; QT_FORCE_STDERR_LOGGING=1 on Windows):
 studyapp --workspace <dir> --bench-generate 10000  # once: fills an empty start page
 studyapp --workspace <dir> --bench-pan 600 --bench-zoom 0   # 0 = zoom to fit
@@ -352,7 +354,7 @@ the launcher passes the exit status on; macOS mounts the DMG and requires the Op
 On Windows a GUI-subsystem program prints only when its output is redirected
 (`studyapp --self-test | more`).
 
-**Releases.** Pushing a tag `v<version>` runs `release.yml`: the same packages and smoke
+**Releases** ([RELEASE.md](RELEASE.md)). Pushing a tag `v<version>` runs `release.yml`: the same packages and smoke
 tests, then a **draft** GitHub release with the packages and `SHA256SUMS.txt`. Nothing is
 published without a person reviewing the draft.
 

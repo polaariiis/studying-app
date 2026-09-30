@@ -78,7 +78,7 @@ observer utility, a thread-pool interface) is small and deliberate. See the
    Only dense numeric arrays (stroke points) are stored as binary columns, with a
    versioned, documented codec.
 7. **Every edit is a data patch.** The same patch drives undo/redo, persistence, canvas
-   cache invalidation and (later) sync. See [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
+   cache invalidation and (later) sync. See [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo--implemented-in-phase-2).
 8. **Don't optimise prematurely, but design so optimisation is local.** Known hot paths
    (stroke tessellation, spatial queries, draw submission, page load) sit behind narrow
    seams so they can be optimised after profiling without architectural change.
@@ -301,7 +301,7 @@ Ownership rules:
   Wintab pressure, macOS tablet proximity, Wayland tablet protocol), called by the adapter.
 * `canvas` defines the event value types and consumes them; tests construct them directly.
 
-### 3.2 Implementation status (end of Phase 7)
+### 3.2 Implementation status (1.0)
 
 | Module | Content |
 |---|---|
@@ -315,7 +315,8 @@ Ownership rules:
 | `application` | `componentVersions()`; *(Phase 3)* `WorkspaceSession` (create/open/read-only, execute/undo/redo persisted synchronously, pending-write queue, asset import) and the `WorkspaceLocker` port; *(Phase 4)* session patch listener, `ensureStartPage`; *(Phase 5)* `PageNavigator` (active page), `WorkspaceStructure` (structure edits), `WorkspaceSession::isWorkspace`; *(Phase 7)* `Planner` (study use cases, tags by name) |
 | `platform` | Qt adapter for the core logging facade; *(Phase 3)* `QtWorkspaceLocker` (`QLockFile`) and `os/*/ProcessInfo`; *(Phase 6)* `QtTextLayout`; *(Phase 7)* `QtTimeZone` (`study::TimeZone` on `QTimeZone`) |
 | `ui` | `MainWindow` (menus, toolbar, status bar, About; *(Phase 4)* tool, edit, view, page-format and debug-HUD actions, save status), `ThemeManager` + `DesignTokens` (neutral light/dark), `CanvasPlaceholder` (shown without a workspace), `applicationIcon()`; *(Phase 4)* `CanvasWidget` (`QOpenGLWidget`, HUD, pan benchmark), `CanvasInputAdapter`, `SessionDocumentPort`; *(Phase 5)* the shell (§3.5): `MainWindow` owning the open workspace, `NavigationPanel` + `WorkspaceTreeModel`, `ShellDialogs`, welcome screen, theme toggle icon; *(Phase 7)* `PlannerPanel` (Today, Tasks, Week, Page, task editor; View ▸ Planner) |
-| `app` | `main.cpp` composition root; Windows `.rc` with the executable icon; *(Phase 4)* development options `--bench-generate`, `--bench-pan`, `--bench-zoom`, `--screenshot`; *(Phase 5)* chooses the start-up workspace (D35) and hands it to the window |
+| `app` | `main.cpp` composition root; Windows `.rc` with the executable icon; *(Phase 4)* development options `--bench-generate`, `--bench-pan`, `--bench-zoom`, `--screenshot`; *(Phase 5)* chooses the start-up workspace (D35) and hands it to the window; *(Phase 9)* `--self-test`, `--no-opengl-check` |
+| *Phases 8–9* | `persistence`: `SearchIndex` (FTS5), `Zip`/`Bundle`, `Backups`, hardened opening of untrusted databases; `application`: search, bundles, backups, Check Workspace, Save a Copy, asset staging off the GUI thread; `canvas`: `DocumentRasterizer` port (PDF tiles), parallel mesh building (`ParallelFor.hpp`), cached selection outlines; `render_gl`: `checkOffscreenRendering`; `ui`: `PageExport` (PDF/PNG/SVG/print), `SessionDocumentRasterizer` (Qt PDF), search in the navigation panel, `SelfTest`; packaging and the Linux launcher (D43–D51, docs/BUILDING.md §8) |
 
 ### 3.3 Design system foundation *(Phase 2)*
 
@@ -561,7 +562,7 @@ There is one `UndoStack` (owned by `document::Editor`, inside `WorkspaceSession`
 whole in-memory workspace; per-page undo scoping returns when pages are loaded on demand
 (decisions D20, D25). Undo history is not persisted: a reopened workspace starts with an
 empty history. Full
-details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
+details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo--implemented-in-phase-2).
 
 ---
 
@@ -570,13 +571,22 @@ details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo).
 Threading is introduced **incrementally, when a phase actually needs it**. The module
 boundaries below are designed so that each step is additive and does not change the domain.
 
-### 10.1 Current state (Phase 1–5): single-threaded
+### 10.1 State in 1.0
 
-Everything runs on the Qt GUI thread. There is no executor infrastructure, no worker
-thread, no connection pool. Phase 3 persistence is synchronous: `WorkspaceSession` writes
-each applied patch on the calling thread through its single SQLite connection. Phase 4
-measured this (a stroke commit is one small transaction) and the canvas rendering path
-(ROADMAP.md, Phase 4 results) and found no need for worker threads yet. `core`, `document` and `study` contain no threading
+The domain, the canvas controller, SQLite and OpenGL stay on the Qt GUI thread; there is
+no executor infrastructure and no connection pool. Persistence is synchronous:
+`WorkspaceSession` writes each applied patch on the GUI thread through its single SQLite
+connection (a stroke commit is one small transaction; measured, docs/PERFORMANCE.md §3.3).
+Worker threads were added only where a measurement showed a stall, each owning plain data:
+
+| Work | Threads | Introduced |
+|---|---|---|
+| Image decoding | `SessionImageSource`: a `QThreadPool` of up to 2 threads | Phase 6 |
+| PDF tile rendering | `SessionDocumentRasterizer`: one long-lived thread that keeps the open documents | Phase 8 (D44) |
+| Mesh building and batch merging | Short-lived `std::thread`s for one frame's work, joined before the frame continues | Phase 9 (D47) |
+| Import copy + hash (staging) | The window's `QThreadPool`; closing a workspace waits for it | Phase 9 (D48) |
+
+The persistence writer thread and reader pool below were not needed for 1.0. `core`, `document` and `study` contain no threading
 primitives and no locks. The only process-wide state, the log sink, is installed once at
 start-up and guarded by a mutex.
 

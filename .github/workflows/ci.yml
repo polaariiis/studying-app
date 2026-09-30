@@ -39,6 +39,9 @@ jobs:
       - name: Check module include boundaries
         run: python tools/check_boundaries.py
 
+      - name: Check Markdown links
+        run: python tools/check_markdown_links.py
+
   # ---------------------------------------------------------------- static analysis
   clang-tidy:
     name: clang-tidy (Qt-free modules)
