@@ -94,5 +94,21 @@ release; they are recorded here after the release workflow has produced and veri
 
 ### 1.0.0
 
-Recorded after the `v1.0.0` release workflow; until then see the release's
-`SHA256SUMS.txt`.
+Tag `v1.0.0` on commit `5d477e6`, built by the
+[release workflow run](https://github.com/polaariiis/studying-app/actions/runs/36695155624)
+on 2026-09-30. All packages **unsigned** (no certificates configured; the signing jobs
+skipped their steps).
+
+| File | Platform | Architecture | Size (bytes) | SHA-256 | Validation |
+|---|---|---|---:|---|---|
+| `StudyBoard-1.0.0-windows-AMD64.exe` | Windows 10 22H2+ | x64 | 50 422 309 | `6c5b3734bb2e6e93abcd281375561f3fb71d94aaf129c07cf58bb069822491c7` | Silent install, `--self-test`, version 1.0.0, uninstall — clean `windows-2022` runner |
+| `StudyBoard-1.0.0-windows-AMD64.zip` | Windows 10 22H2+ | x64 | 60 342 426 | `09d8dd9af3feed1b627df87bec7c7824222abe45102bb045ade7623224d816ca` | `--self-test` — clean `windows-2022` runner |
+| `StudyBoard-1.0.0-linux-x86_64.AppImage` | Ubuntu 22.04+ | x86_64 | 41 634 296 | `6e68ee05f6173540240ccbc1bb925565a13fadddfa37f5f1582a9a50354527be` | `--self-test` with OpenGL rendering (Mesa) through the launcher — clean Ubuntu 22.04 and 24.04 runners |
+| `StudyBoard-1.0.0-linux-x86_64.tar.gz` | Ubuntu 22.04+ | x86_64 | 45 726 237 | `495b3991ad31cd7045069cdd9b314025ab99ef154efeb132ed1dae4734c2c2be` | As the AppImage, from a path with a space; version 1.0.0; the launcher chose the bundled C++ runtime on 22.04 and the system's on 24.04 |
+| `StudyBoard-1.0.0-macos-arm64.dmg` | macOS 13+ | arm64 | 33 278 150 | `c93aafcbdeb0161ccc2c8b6a5e45ee53016e425214dd4862110b612322f86c77` | Mounted, `--self-test` with OpenGL rendering (Apple software renderer), version 1.0.0 — clean `macos-14` runner |
+
+The Windows OpenGL check on the GPU-less runner is reported, not required (Qt's software
+OpenGL offers only 3.0). The same source was also built locally on the reference laptop:
+its ZIP unpacked from a path with a space, with no Qt or compiler on `PATH`, reported
+1.0.0 and passed `--self-test` including OpenGL rendering on the Radeon 760M
+([HARDWARE_MATRIX.md](HARDWARE_MATRIX.md)).
