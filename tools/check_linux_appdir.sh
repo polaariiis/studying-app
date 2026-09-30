@@ -52,6 +52,7 @@ broken=$(find "$appdir" -xtype l)
 [ -z "$broken" ] || problem "broken links: $broken"
 
 # RPATH/RUNPATH entries must be relative ($ORIGIN); absolute ones point at this machine.
+command -v readelf > /dev/null || problem "readelf is needed for the library-path check"
 find "$usr" -type f \( -name '*.so*' -o -path '*/bin/studyapp' \) | while read -r file; do
     if paths=$(readelf -d "$file" 2>/dev/null | sed -n 's/.*(R\(UN\)\{0,1\}PATH).*\[\(.*\)\]/\2/p'); then
         for entry in $(echo "$paths" | tr ':' ' '); do

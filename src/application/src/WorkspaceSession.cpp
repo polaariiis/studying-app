@@ -674,6 +674,17 @@ bool isInside(const std::filesystem::path& path, const std::filesystem::path& di
         return name;
     };
     if (lower(resolvedPath) != lower(resolvedDirectory)) {
+        // The same folder may still be reached through another name (a mapped drive and its
+        // UNC path): compare the existing ancestors with the directory itself.
+        for (auto ancestor = resolvedPath; !ancestor.empty(); ancestor = ancestor.parent_path()) {
+            std::error_code ec;
+            if (std::filesystem::equivalent(ancestor, resolvedDirectory, ec)) {
+                return true;
+            }
+            if (ancestor == ancestor.parent_path()) {
+                break;
+            }
+        }
         return false;
     }
     const auto relative =

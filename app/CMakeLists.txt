@@ -69,6 +69,11 @@ if(UNIX AND NOT APPLE)
     # compiler's runtime (docs/ARCHITECTURE.md §13) in a directory outside RPATH. The
     # launcher bin/studyboard (the AppImage's AppRun) puts it on the library path only when
     # the system's libstdc++ lacks a version the application needs (docs/BUILDING.md §8).
+    # The launcher finds it relative to its own directory.
+    if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+        message(FATAL_ERROR "CMAKE_INSTALL_LIBDIR must be relative for the packages "
+                            "(it is ${CMAKE_INSTALL_LIBDIR})")
+    endif()
     set(STUDYAPP_CXXRT_DIR "${CMAKE_INSTALL_LIBDIR}/studyboard-cxxrt")
     configure_file("${PROJECT_SOURCE_DIR}/resources/linux/studyboard.in"
         "${CMAKE_CURRENT_BINARY_DIR}/studyboard" @ONLY)

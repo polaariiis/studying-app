@@ -69,7 +69,7 @@ TEST_F(MigrationsTest, ReleasedMigrationsAreNeverEdited) {
     ASSERT_GE(migrations.size(), kReleased.size());
     for (std::size_t i = 0; i < kReleased.size(); ++i) {
         std::string sql(migrations[i].sql);
-        std::erase(sql, ''); // the same on every checkout
+        std::erase(sql, '\r'); // the same on every checkout
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(sql.data());
         EXPECT_EQ(toHex(Sha256::of({bytes, sql.size()})), kReleased[i]) << migrations[i].name;
     }

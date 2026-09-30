@@ -1993,6 +1993,11 @@ void MainWindow::runInBackground(std::function<std::function<void()>()> work) {
             finish = [window, what = QString::fromLocal8Bit(error.what())] {
                 window->dialogs_->showError(window, tr("The file could not be imported."), what);
             };
+        } catch (...) {
+            finish = [window] {
+                window->dialogs_->showError(window, tr("The file could not be imported."),
+                                            tr("An unexpected error occurred."));
+            };
         }
         QMetaObject::invokeMethod(
             qApp,

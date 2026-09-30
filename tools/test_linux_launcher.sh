@@ -72,6 +72,17 @@ unset LD_LIBRARY_PATH
 output=$(run)
 [ "$output" = "path=$prefix/$runtime_dir" ] || fail "older, no caller path: $output"
 
+# The caller's LD_LIBRARY_PATH holds an older libstdc++ (a conda environment, say): the
+# loader would take it before the system's new enough one, so the bundled one goes first.
+system_runtime 33
+mkdir -p "$scratch/old env"
+printf 'GLIBCXX_3.4.28' > "$scratch/old env/libstdc++.so.6"
+export LD_LIBRARY_PATH="/nonexistent:$scratch/old env"
+output=$(run)
+[ "$output" = "path=$prefix/$runtime_dir:/nonexistent:$scratch/old env" ] ||
+    fail "older library on the caller's path: $output"
+unset LD_LIBRARY_PATH
+
 # Arguments with spaces and shell characters arrive unchanged; the exit status is the
 # application's.
 system_runtime 33
