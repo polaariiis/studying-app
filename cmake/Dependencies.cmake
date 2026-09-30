@@ -64,8 +64,8 @@ add_library(studyapp::sqlite3 ALIAS studyapp_sqlite3)
 # (docs/ARCHITECTURE.md D52). Private dependency of studyapp_ipc only. Built as a library;
 # its own programs and tests stay off (IPC_BUILD_PROGRAMS / IPC_BUILD_TESTS).
 FetchContent_Declare(ipcfilelab
-    URL https://github.com/polaariiis/IPCFileLab/archive/9b6ef650e4df7ce21dd306f55fbea05cc1ad2e95.tar.gz
-    URL_HASH SHA256=4b8044f773ed4dc21c49bb8d6d8567eb8dd24b02a97495c183ea6049a136e55a
+    URL https://github.com/polaariiis/IPCFileLab/archive/85cc01e8505aa0cac1a15eec7bf8eba6b001c361.tar.gz
+    URL_HASH SHA256=25912c9086eddedb713fd29489fdf0ffd0a65f035eb9c02be28bfd08fac36e31
     SYSTEM)
 FetchContent_MakeAvailable(ipcfilelab)
 set_target_properties(IPC.Core PROPERTIES FOLDER "third_party")
