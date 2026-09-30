@@ -135,8 +135,12 @@ int main(int argc, char* argv[]) {
         QStringLiteral("self-test"),
         QStringLiteral("Check this installation (Qt plugins, fonts, workspaces, PDF, export, "
                        "printing) in a temporary directory, print the results and quit."));
+    const QCommandLineOption noOpenGlCheckOption(
+        QStringLiteral("no-opengl-check"),
+        QStringLiteral("With --self-test: report but do not require OpenGL 3.3 (machines "
+                       "without a graphics driver, such as CI runners)."));
     parser.addOptions({workspaceOption, generateOption, panOption, screenshotOption,
-                       benchZoomOption, selfTestOption});
+                       benchZoomOption, selfTestOption, noOpenGlCheckOption});
     parser.process(app);
 
     if (parser.isSet(selfTestOption)) {
@@ -146,10 +150,10 @@ int main(int argc, char* argv[]) {
         studyapp::platform::QtWorkspaceLocker locker;
         studyapp::platform::QtTextLayout textLayout;
         const studyapp::ui::ShellServices services{.clock = clock, .ids = ids, .locker = locker};
-        const auto failures =
-            studyapp::ui::runSelfTest(services, textLayout, [](const std::string& line) {
-                std::printf("%s\n", line.c_str());
-            });
+        const auto failures = studyapp::ui::runSelfTest(
+            services, textLayout,
+            [](const std::string& line) { std::printf("%s\n", line.c_str()); },
+            !parser.isSet(noOpenGlCheckOption));
         std::printf("%s\n", failures.empty() ? "self-test passed" : "self-test FAILED");
         std::fflush(stdout);
         return failures.empty() ? 0 : 1;

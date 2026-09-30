@@ -96,10 +96,15 @@ jobs:
           export EXTRA_QT_MODULES="pdf;svg;printsupport"
           export EXTRA_PLATFORM_PLUGINS="libqoffscreen.so"
           version=$(grep -oP 'CPACK_PACKAGE_VERSION "\K[^"]+' build/package/CPackConfig.cmake)
+          # The C++ runtime stays in lib/studyboard-cxxrt (the launcher decides whether it is
+          # used): linuxdeploy must not copy the build machine's newer one into lib/.
           LINUXDEPLOY_OUTPUT_VERSION="$version" ./linuxdeploy --appdir AppDir --plugin qt \
             --desktop-file AppDir/usr/share/applications/studyboard.desktop \
             --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/studyboard.png \
+            --custom-apprun AppDir/usr/bin/studyboard \
+            --exclude-library 'libstdc++.so*' --exclude-library 'libgcc_s.so*' \
             --output appimage 2>&1 | tee -a build.log
+          tools/check_linux_appdir.sh AppDir 2>&1 | tee -a build.log
           name="StudyBoard-$version-linux-x86_64"
           mv StudyBoard*.AppImage "build/package/$name.AppImage"
           mkdir -p "archive/$name" && cp -a AppDir/usr/. "archive/$name/"
@@ -112,7 +117,7 @@ jobs:
         shell: bash
         run: |
           cat build.log build/package/cpack.log 2>/dev/null \
-            | grep -E -A3 "error:|FAILED:|CMake Error|CPack Error" \
+            | grep -E -A3 "error:|FAILED:|CMake Error|CPack Error|^AppDir: " \
             | head -60 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
       - uses: actions/upload-artifact@v4
@@ -158,14 +163,17 @@ jobs:
           $installer = Get-ChildItem packages -Filter 'StudyBoard-*.exe' | Select-Object -First 1
           $dir = 'C:\StudyBoardTest'
           Start-Process -Wait -FilePath $installer.FullName -ArgumentList '/S', "/D=$dir"
-          $out = & "$dir\bin\studyapp.exe" --self-test | Out-String
+          # No GPU on the runner (Qt's software OpenGL is 3.0): OpenGL is reported, not
+          # required. Windows OpenGL rendering is covered by the real-GPU tests.
+          $out = & "$dir\bin\studyapp.exe" --self-test --no-opengl-check | Out-String
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "self-test of the installed copy failed" }
           Expand-Archive (Get-ChildItem packages -Filter 'StudyBoard-*.zip').FullName -DestinationPath zip
           $exe = Get-ChildItem zip -Recurse -Filter studyapp.exe | Select-Object -First 1
-          $out = & $exe.FullName --self-test | Out-String
+          $out = & $exe.FullName --self-test --no-opengl-check | Out-String
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "self-test of the ZIP failed" }
+          if ($out -notmatch 'OpenGL 3\.3 core rendering') { throw "no OpenGL check ran" }
           Start-Process -Wait -FilePath "$dir\Uninstall.exe" -ArgumentList '/S'
           Start-Sleep -Seconds 5 # the uninstaller copies itself and finishes asynchronously
           if (Test-Path "$dir\bin\studyapp.exe") { throw "uninstall left the application behind" }
@@ -177,17 +185,30 @@ jobs:
           set -euo pipefail
           # A desktop system has these; the runner image does not.
           sudo apt-get update
+          # Mesa (llvmpipe under Xvfb) is the OpenGL driver the self-test renders with.
           sudo apt-get install -y --no-install-recommends xvfb libegl1 libgl1 libopengl0 \
+            libgl1-mesa-dri libglx-mesa0 \
             libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libfontconfig1 fonts-dejavu-core
           chmod +x packages/*.AppImage
-          mkdir tgz && tar -xzf packages/StudyBoard-*.tar.gz -C tgz
-          binary="$(find tgz -path '*/bin/studyapp' | head -1)"
-          # Libraries the loader cannot find (none expected), for the log.
-          { ldd "$binary" | grep 'not found' || true; } 2>&1 | tee smoke.log
-          xvfb-run -a "$binary" --self-test 2>&1 | tee -a smoke.log
-          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a packages/StudyBoard-*.AppImage --self-test 2>&1 \
-            | tee -a smoke.log
+          # Extracted into a directory whose name has a space.
+          mkdir "tgz dir" && tar -xzf packages/StudyBoard-*.tar.gz -C "tgz dir"
+          launcher="$(find "tgz dir" -path '*/bin/studyboard' | head -1)"
+          # For the log: the launcher uses the bundled libstdc++ only if the system's is older.
+          system=$(ldconfig -p | sed -n 's/^[[:space:]]*libstdc++\.so\.6 (.*x86-64.*) => //p' | head -1)
+          newest=$(grep -aoE 'GLIBCXX_3\.4\.[0-9]+' "$system" | sort -V | tail -1)
+          echo "system libstdc++: $system, up to $newest" | tee smoke.log
+          { ldd "$(dirname "$launcher")/studyapp" | grep 'not found' || true; } 2>&1 | tee -a smoke.log
+          # Through the launcher, as users start it; the self-test includes OpenGL rendering.
+          STUDYBOARD_LAUNCHER_DEBUG=1 xvfb-run -a "$launcher" --self-test 2>&1 | tee -a smoke.log
+          grep -q '^ok: OpenGL 3.3 core rendering' smoke.log
+          STUDYBOARD_LAUNCHER_DEBUG=1 APPIMAGE_EXTRACT_AND_RUN=1 \
+            xvfb-run -a packages/StudyBoard-*.AppImage --self-test 2>&1 | tee -a smoke.log
+          # The launcher passes the application's exit status on (an unknown option: 1).
+          status=0
+          xvfb-run -a "$launcher" --no-such-option > /dev/null 2>&1 || status=$?
+          echo "exit status for an unknown option: $status" | tee -a smoke.log
+          test "$status" -eq 1
 
       - name: macOS — DMG
         if: runner.os == 'macOS'
@@ -197,6 +218,7 @@ jobs:
           hdiutil attach packages/StudyBoard-*.dmg -mountpoint /Volumes/StudyBoard -nobrowse
           /Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --self-test 2>&1 | tee smoke.log
           hdiutil detach /Volumes/StudyBoard
+          grep -q '^ok: OpenGL 3.3 core rendering' smoke.log
 
       # Job logs require sign-in; annotations are public.
       - name: Report the smoke-test output as annotations

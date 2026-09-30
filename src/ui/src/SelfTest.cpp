@@ -9,6 +9,7 @@
 #include <studyapp/canvas/DocumentRasterizer.hpp>
 #include <studyapp/canvas/TextLayout.hpp>
 #include <studyapp/document/Commands.hpp>
+#include <studyapp/render_gl/OffscreenCheck.hpp>
 
 #include <QGuiApplication>
 #include <QImage>
@@ -66,7 +67,8 @@ std::uintmax_t sizeOf(const std::filesystem::path& file) {
 } // namespace
 
 std::vector<std::string> runSelfTest(const ShellServices& services, canvas::TextLayout& textLayout,
-                                     const std::function<void(const std::string&)>& log) {
+                                     const std::function<void(const std::string&)>& log,
+                                     bool requireOpenGl) {
     Checks checks(log);
 
     // Qt runtime: platform plugin and image formats (plugins deployed with the app).
@@ -75,6 +77,20 @@ std::vector<std::string> runSelfTest(const ShellServices& services, canvas::Text
     const QList<QByteArray> formats = QImageReader::supportedImageFormats();
     for (const char* format : {"png", "jpg", "gif", "bmp"}) {
         checks.check(formats.contains(format), std::string("image format ") + format);
+    }
+
+    // OpenGL 3.3 core: the canvas renderer draws offscreen with the driver and the C++
+    // runtime this process loaded (docs/BUILDING.md §8).
+    {
+        auto rendered = render_gl::checkOffscreenRendering();
+        if (rendered || requireOpenGl) {
+            checks.check(rendered.has_value(),
+                         "OpenGL 3.3 core rendering" +
+                             (rendered ? ": " + *rendered : std::string{}),
+                         rendered ? std::string{} : rendered.error().message);
+        } else {
+            log("not required: OpenGL 3.3 core rendering (" + rendered.error().message + ")");
+        }
     }
 
     // Fonts and text layout: a text box raster with ink in it.

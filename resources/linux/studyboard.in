@@ -1,0 +1,69 @@
+#!/bin/sh
+# StudyBoard launcher for the Linux packages (.tar.gz: bin/studyboard; AppImage: AppRun).
+#
+# The packages carry the C++ runtime of the compiler that built them (GCC 13's libstdc++ and
+# libgcc_s) in lib/studyboard-cxxrt/, outside the executable's RPATH. They are used only
+# when the system's libstdc++ is older than the bundled one, judged by the highest
+# GLIBCXX_3.4.<n> symbol version each provides (docs/BUILDING.md §8). Otherwise the system's
+# runtime serves the whole process: OpenGL drivers loaded later (Mesa's LLVM) may need a
+# newer libstdc++ than the one bundled.
+#
+# STUDYBOARD_LAUNCHER_DEBUG=1 prints the choice to stderr. The exit status is the
+# application's (exec).
+set -eu
+
+here=$(dirname -- "$(readlink -f -- "$0")")
+if [ -x "$here/usr/bin/studyapp" ]; then
+    prefix="$here/usr" # AppRun at the AppDir's root
+else
+    prefix=$(dirname -- "$here") # bin/studyboard
+fi
+executable="$prefix/bin/studyapp"
+runtime="$prefix/@STUDYAPP_CXXRT_DIR@"
+
+# Highest n of the GLIBCXX_3.4.<n> versions in a libstdc++ (0 if none can be read).
+glibcxx_level() {
+    level=$(grep -aoE 'GLIBCXX_3\.4\.[0-9]+' -- "$1" 2>/dev/null |
+        sed 's/^GLIBCXX_3\.4\.//' | sort -n | tail -n 1) || true
+    echo "${level:-0}"
+}
+
+# The libstdc++.so.6 the dynamic loader would pick for this 64-bit process.
+system_libstdcxx() {
+    for ldconfig in ldconfig /sbin/ldconfig /usr/sbin/ldconfig; do
+        found=$("$ldconfig" -p 2>/dev/null |
+            sed -n 's/^[[:space:]]*libstdc++\.so\.6 (.*x86-64.*) => //p' | head -n 1) || true
+        if [ -n "$found" ]; then
+            echo "$found"
+            return
+        fi
+    done
+    for candidate in /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib64/libstdc++.so.6 \
+        /lib64/libstdc++.so.6 /usr/lib/libstdc++.so.6; do
+        if [ -e "$candidate" ]; then
+            echo "$candidate"
+            return
+        fi
+    done
+}
+
+choice=system
+if [ -e "$runtime/libstdc++.so.6" ]; then
+    bundled=$(glibcxx_level "$runtime/libstdc++.so.6")
+    system_file=$(system_libstdcxx)
+    system=0
+    if [ -n "$system_file" ]; then
+        system=$(glibcxx_level "$system_file")
+    fi
+    if [ "$system" -lt "$bundled" ]; then
+        choice=bundled
+        LD_LIBRARY_PATH="$runtime${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export LD_LIBRARY_PATH
+    fi
+    if [ "${STUDYBOARD_LAUNCHER_DEBUG:-}" = 1 ]; then
+        echo "studyboard: C++ runtime: $choice (bundled GLIBCXX_3.4.$bundled," \
+            "system GLIBCXX_3.4.$system${system_file:+ in $system_file})" >&2
+    fi
+fi
+
+exec "$executable" "$@"

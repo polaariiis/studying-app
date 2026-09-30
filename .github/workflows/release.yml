@@ -67,7 +67,7 @@ jobs:
           Expand-Archive (Get-ChildItem build/package -Filter 'StudyBoard-*.zip').FullName `
             -DestinationPath signed-zip
           $exe = Get-ChildItem signed-zip -Recurse -Filter studyapp.exe | Select-Object -First 1
-          $out = & $exe.FullName --self-test | Out-String
+          $out = & $exe.FullName --self-test --no-opengl-check | Out-String
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "self-test of the signed ZIP failed" }
       - uses: actions/upload-artifact@v4

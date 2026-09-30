@@ -63,10 +63,24 @@ studyapp_deploy_qt_to_build_tree(studyapp)
 
 # Linux desktop integration (menus, AppImage): a .desktop entry and the icon.
 if(UNIX AND NOT APPLE)
-    # The installed executable finds the deployed Qt (and the bundled C++ runtime) in ../lib.
+    # The installed executable finds the deployed Qt in ../lib.
     set_target_properties(studyapp PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
     # GCC 13's libstdc++ is newer than the one Ubuntu 22.04 ships: packages carry the
-    # compiler's own copy (docs/ARCHITECTURE.md §13), found first through RPATH.
+    # compiler's own copy (docs/ARCHITECTURE.md §13) in a directory outside RPATH. The
+    # launcher bin/studyboard (the AppImage's AppRun) puts it on the library path only when
+    # the system's libstdc++ is older (docs/BUILDING.md §8).
+    set(STUDYAPP_CXXRT_DIR "${CMAKE_INSTALL_LIBDIR}/studyboard-cxxrt")
+    configure_file("${PROJECT_SOURCE_DIR}/resources/linux/studyboard.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/studyboard" @ONLY)
+    install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/studyboard"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT runtime)
+    if(STUDYAPP_BUILD_TESTS)
+        # Its runtime choice, arguments, exit status and layouts, with fake runtimes.
+        add_test(NAME packaging.linux_launcher
+            COMMAND sh "${PROJECT_SOURCE_DIR}/tools/test_linux_launcher.sh"
+                "${CMAKE_CURRENT_BINARY_DIR}/studyboard" "${STUDYAPP_CXXRT_DIR}")
+    endif()
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         foreach(runtime libstdc++.so.6 libgcc_s.so.1)
             execute_process(
@@ -78,7 +92,7 @@ if(UNIX AND NOT APPLE)
                 # as the loader looks for it.
                 get_filename_component(runtime_file "${runtime_path}" REALPATH)
                 install(FILES "${runtime_file}"
-                    DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+                    DESTINATION "${STUDYAPP_CXXRT_DIR}"
                     RENAME "${runtime}"
                     COMPONENT runtime)
             endif()

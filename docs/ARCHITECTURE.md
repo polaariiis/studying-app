@@ -730,8 +730,10 @@ text.
   Windows + Visual Studio 2022), **macOS 13+** (arm64, AppleClang; x86_64 later),
   **Linux** distributions equivalent to **Ubuntu 22.04+** (x86_64, GCC 13+/Clang 17+,
   X11 and Wayland via Qt). On Ubuntu 22.04 the default compiler is GCC 11, so building
-  there needs a newer toolchain; binary packages (Phase 9) must bundle a compatible
-  `libstdc++`.
+  there needs a newer toolchain. The Linux packages (Phase 9) bundle GCC 13's
+  `libstdc++` outside the executable's RPATH; the launcher `bin/studyboard` uses it only
+  when the system's is older, so a newer system runtime (which OpenGL drivers may need)
+  is never overridden (docs/BUILDING.md §8).
 * Platform-specific code is allowed only in `src/platform/os/*` (and the `app` target's
   bundle/manifest glue).
 * **macOS OpenGL is deprecated and capped at 4.1 core.** We target OpenGL **3.3 core**

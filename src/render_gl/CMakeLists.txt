@@ -3,7 +3,9 @@
 # OpenGL (tools/check_boundaries.py).
 studyapp_add_module(render_gl
     SOURCES
+        include/studyapp/render_gl/OffscreenCheck.hpp
         include/studyapp/render_gl/OpenGLRenderer.hpp
+        src/OffscreenCheck.cpp
         src/OpenGLRenderer.cpp
     PUBLIC_DEPS
         studyapp::render

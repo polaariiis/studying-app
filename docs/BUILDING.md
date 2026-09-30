@@ -310,16 +310,40 @@ build/package/app/studyapp --self-test                      # or run the install
 |---|---|---|
 | Windows | `StudyBoard-<v>-windows-AMD64.exe` (NSIS installer: Start menu and desktop shortcuts, uninstaller, upgrade replaces the previous version) and `.zip` (portable) | `bin/studyapp.exe`, Qt (incl. Qt PDF, Svg, Print Support, platform/image-format plugins) via windeployqt, the MSVC runtime DLLs, licences |
 | macOS | `StudyBoard-<v>-macos-arm64.dmg` | `studyapp.app` with the Qt frameworks (macdeployqt) and the `.icns` built from the committed PNGs |
-| Linux | `StudyBoard-<v>-linux-x86_64.AppImage` and `.tar.gz` | `bin/`, Qt libraries and plugins, GCC's `libstdc++`/`libgcc_s` (newer than Ubuntu 22.04's), `.desktop` entry and icons; built on Ubuntu 22.04 (glibc 2.35) so it runs there and later |
+| Linux | `StudyBoard-<v>-linux-x86_64.AppImage` and `.tar.gz` | `bin/studyboard` (launcher; the AppImage's `AppRun`) and `bin/studyapp`, Qt libraries and plugins, GCC 13's `libstdc++`/`libgcc_s` in `lib/studyboard-cxxrt/`, `.desktop` entry and icons; built on Ubuntu 22.04 (glibc 2.35) so it runs there and later. Start it with `bin/studyboard` |
+
+**The Linux C++ runtime.** StudyBoard needs GCC 13's `libstdc++` (`GLIBCXX_3.4.32`); Ubuntu
+22.04 ships an older one. The packages carry GCC 13's copy in `lib/studyboard-cxxrt/`, which
+is *not* on the executable's RPATH, and linuxdeploy is told not to copy the build
+machine's runtime into `lib/` (`tools/check_linux_appdir.sh` fails the build if one is
+there). The launcher `bin/studyboard` (`resources/linux/studyboard.in`) compares the highest
+`GLIBCXX_3.4.<n>` version of the bundled library with that of the system's (found with
+`ldconfig -p`) and prepends `lib/studyboard-cxxrt` to `LD_LIBRARY_PATH` only when the
+system's is lower (or unreadable). Otherwise the system's runtime serves the whole process
+— necessary because the OpenGL driver (Mesa, with LLVM) loads into the same process and may
+need a newer `libstdc++` than the bundled one. `STUDYBOARD_LAUNCHER_DEBUG=1` prints the
+choice. The launcher `exec`s the application (its exit status is the application's) and
+quotes every path. `tools/test_linux_launcher.sh` (CTest `packaging.linux_launcher`, Linux)
+checks the choice with fake runtimes: newer, equal and older system library, the caller's
+`LD_LIBRARY_PATH` kept, arguments with spaces and shell characters, the exit status, a
+start through a symbolic link, and the AppImage layout. `bin/studyapp` started directly
+works only where the system's runtime is new enough.
 
 Every package is **smoke-tested in CI on a fresh runner without Qt or a compiler**
 (`package.yml`, job `smoke`): `studyapp --self-test` checks the Qt platform and
-image-format plugins, fonts, a SQLite workspace (create, edit, search, reopen), Qt PDF
-(write, inspect, import, render a tile), PDF/PNG/SVG export and printing, all in a
-temporary directory, and exits non-zero on any failure. On Windows the installer is run
-silently, tested, and uninstalled again (the uninstall must remove the application);
-Linux runs the archive and the AppImage under Xvfb on Ubuntu 22.04 and 24.04; macOS mounts
-the DMG. On Windows a GUI-subsystem program prints only when its output is redirected
+image-format plugins, **OpenGL 3.3 core rendering** (an offscreen context, the canvas
+renderer's shaders, one square drawn into an offscreen framebuffer and read back —
+`render_gl::checkOffscreenRendering`), fonts, a SQLite workspace (create, edit, search,
+reopen), Qt PDF (write, inspect, import, render a tile), PDF/PNG/SVG export and printing,
+all in a temporary directory, and exits non-zero on any failure. On Windows the installer
+is run silently, tested, and uninstalled again (the uninstall must remove the
+application); the Windows runners have no GPU and Qt's software OpenGL offers only 3.0, so
+the Windows smoke test passes `--no-opengl-check` (OpenGL is reported, not required;
+Windows rendering is covered by the real-GPU tests, docs/TESTING.md). Linux runs the
+archive (from a directory whose name has a space) and the AppImage through the launcher
+under Xvfb with Mesa on Ubuntu 22.04 and 24.04, requires the OpenGL check, and checks that
+the launcher passes the exit status on; macOS mounts the DMG and requires the OpenGL check.
+On Windows a GUI-subsystem program prints only when its output is redirected
 (`studyapp --self-test | more`).
 
 **Releases.** Pushing a tag `v<version>` runs `release.yml`: the same packages and smoke
