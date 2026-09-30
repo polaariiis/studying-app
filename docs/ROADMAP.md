@@ -533,8 +533,8 @@ Status: **implemented** (decisions D47–D51; measurements in PERFORMANCE.md).
 6. ✅ Packaging and release: CPack (NSIS installer + ZIP, DMG), AppImage and archive via
    linuxdeploy on Ubuntu 22.04, `--self-test` (including OpenGL 3.3 core rendering through
    the canvas renderer) smoke-tested on clean CI runners on all three platforms; on Linux
-   the launcher `bin/studyboard` uses the bundled GCC 13 C++ runtime only when the system's
-   is older (BUILDING.md §8); signing/notarisation hooks active when certificates are
+   the launcher `bin/studyboard` uses the bundled C++ runtime only when the system's lacks
+   a version the application needs (BUILDING.md §8); signing/notarisation hooks active when certificates are
    configured, signed builds self-tested again; draft releases from `v*` tags.
 7. ✅ Engineering: warnings-as-errors builds on GCC 13, Clang (macOS) and MSVC with every
    test green in CI; curated clang-tidy gated in CI; `docs/CODING_STYLE.md`.

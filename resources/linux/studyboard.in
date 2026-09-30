@@ -1,12 +1,12 @@
 #!/bin/sh
 # StudyBoard launcher for the Linux packages (.tar.gz: bin/studyboard; AppImage: AppRun).
 #
-# The packages carry the C++ runtime of the compiler that built them (GCC 13's libstdc++ and
-# libgcc_s) in lib/studyboard-cxxrt/, outside the executable's RPATH. They are used only
-# when the system's libstdc++ is older than the bundled one, judged by the highest
-# GLIBCXX_3.4.<n> symbol version each provides (docs/BUILDING.md §8). Otherwise the system's
-# runtime serves the whole process: OpenGL drivers loaded later (Mesa's LLVM) may need a
-# newer libstdc++ than the one bundled.
+# The packages carry the build machine's C++ runtime (libstdc++ and libgcc_s, new enough for
+# GCC 13's output) in lib/studyboard-cxxrt/, outside the executable's RPATH. It is used only
+# when the system's libstdc++ lacks a symbol version the application needs: when the highest
+# GLIBCXX_3.4.<n> the system's library provides is lower than the highest one studyapp
+# requires (docs/BUILDING.md §8). Otherwise the system's runtime serves the whole process —
+# OpenGL drivers loaded into it (Mesa's LLVM) were built against the system's runtime.
 #
 # STUDYBOARD_LAUNCHER_DEBUG=1 prints the choice to stderr. The exit status is the
 # application's (exec).
@@ -49,20 +49,22 @@ system_libstdcxx() {
 
 choice=system
 if [ -e "$runtime/libstdc++.so.6" ]; then
+    required=$(glibcxx_level "$executable") # its version needs name GLIBCXX_3.4.<n>
     bundled=$(glibcxx_level "$runtime/libstdc++.so.6")
     system_file=$(system_libstdcxx)
     system=0
     if [ -n "$system_file" ]; then
         system=$(glibcxx_level "$system_file")
     fi
-    if [ "$system" -lt "$bundled" ]; then
+    if [ "$system" -lt "$required" ]; then
         choice=bundled
         LD_LIBRARY_PATH="$runtime${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         export LD_LIBRARY_PATH
     fi
     if [ "${STUDYBOARD_LAUNCHER_DEBUG:-}" = 1 ]; then
-        echo "studyboard: C++ runtime: $choice (bundled GLIBCXX_3.4.$bundled," \
-            "system GLIBCXX_3.4.$system${system_file:+ in $system_file})" >&2
+        echo "studyboard: C++ runtime: $choice (needs GLIBCXX_3.4.$required," \
+            "system GLIBCXX_3.4.$system${system_file:+ in $system_file}," \
+            "bundled GLIBCXX_3.4.$bundled)" >&2
     fi
 fi
 

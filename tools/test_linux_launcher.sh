@@ -18,12 +18,13 @@ cp -- "$launcher" "$prefix/bin/studyboard"
 chmod +x "$prefix/bin/studyboard"
 cat > "$prefix/bin/studyapp" <<'EOF'
 #!/bin/sh
+# Stands for an executable whose version needs include GLIBCXX_3.4.3 and GLIBCXX_3.4.31.
 echo "path=${LD_LIBRARY_PATH:-}"
 for argument in "$@"; do echo "arg=$argument"; done
 exit "${STUB_EXIT:-0}"
 EOF
 chmod +x "$prefix/bin/studyapp"
-printf 'junk GLIBCXX_3.4.9 GLIBCXX_3.4.32 GLIBCXX_3.4.30 junk' > "$prefix/$runtime_dir/libstdc++.so.6"
+printf 'junk GLIBCXX_3.4.9 GLIBCXX_3.4.35 GLIBCXX_3.4.30 junk' > "$prefix/$runtime_dir/libstdc++.so.6"
 
 failures=0
 fail() {
@@ -44,22 +45,24 @@ run() {
         2> "$scratch/stderr"
 }
 
-# Case A: a newer system runtime serves the process; LD_LIBRARY_PATH is left alone.
+# Case A: a system runtime that provides what the application needs serves the process,
+# even though the bundled one is newer; LD_LIBRARY_PATH is left alone.
 system_runtime 33
 export LD_LIBRARY_PATH=/keep
 output=$(run --self-test)
 [ "$output" = "path=/keep
 arg=--self-test" ] || fail "newer system runtime: $output"
-grep -q "C++ runtime: system (bundled GLIBCXX_3.4.32, system GLIBCXX_3.4.33" "$scratch/stderr" ||
+grep -q "C++ runtime: system (needs GLIBCXX_3.4.31, system GLIBCXX_3.4.33 in .*, bundled GLIBCXX_3.4.35)" "$scratch/stderr" ||
     fail "newer system runtime: $(cat "$scratch/stderr")"
 unset LD_LIBRARY_PATH
 
-# Same level: the system's.
-system_runtime 32
+# Exactly the version needed: the system's.
+system_runtime 31
 output=$(run)
 [ "$output" = "path=" ] || fail "equal runtimes: $output"
 
-# Case B: an older system runtime: the bundled one comes first, the caller's path after it.
+# Case B: a system runtime without the needed version: the bundled one comes first, the
+# caller's path after it.
 system_runtime 30
 export LD_LIBRARY_PATH=/keep
 output=$(run)

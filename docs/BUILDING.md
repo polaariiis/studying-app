@@ -312,22 +312,26 @@ build/package/app/studyapp --self-test                      # or run the install
 | macOS | `StudyBoard-<v>-macos-arm64.dmg` | `studyapp.app` with the Qt frameworks (macdeployqt) and the `.icns` built from the committed PNGs |
 | Linux | `StudyBoard-<v>-linux-x86_64.AppImage` and `.tar.gz` | `bin/studyboard` (launcher; the AppImage's `AppRun`) and `bin/studyapp`, Qt libraries and plugins, GCC 13's `libstdc++`/`libgcc_s` in `lib/studyboard-cxxrt/`, `.desktop` entry and icons; built on Ubuntu 22.04 (glibc 2.35) so it runs there and later. Start it with `bin/studyboard` |
 
-**The Linux C++ runtime.** StudyBoard needs GCC 13's `libstdc++` (`GLIBCXX_3.4.32`); Ubuntu
-22.04 ships an older one. The packages carry GCC 13's copy in `lib/studyboard-cxxrt/`, which
-is *not* on the executable's RPATH, and linuxdeploy is told not to copy the build
-machine's runtime into `lib/` (`tools/check_linux_appdir.sh` fails the build if one is
-there). The launcher `bin/studyboard` (`resources/linux/studyboard.in`) compares the highest
-`GLIBCXX_3.4.<n>` version of the bundled library with that of the system's (found with
-`ldconfig -p`) and prepends `lib/studyboard-cxxrt` to `LD_LIBRARY_PATH` only when the
-system's is lower (or unreadable). Otherwise the system's runtime serves the whole process
-— necessary because the OpenGL driver (Mesa, with LLVM) loads into the same process and may
-need a newer `libstdc++` than the bundled one. `STUDYBOARD_LAUNCHER_DEBUG=1` prints the
-choice. The launcher `exec`s the application (its exit status is the application's) and
-quotes every path. `tools/test_linux_launcher.sh` (CTest `packaging.linux_launcher`, Linux)
-checks the choice with fake runtimes: newer, equal and older system library, the caller's
-`LD_LIBRARY_PATH` kept, arguments with spaces and shell characters, the exit status, a
-start through a symbolic link, and the AppImage layout. `bin/studyapp` started directly
-works only where the system's runtime is new enough.
+**The Linux C++ runtime.** Code built by GCC 13 needs a newer `libstdc++` than Ubuntu
+22.04 ships (the application currently needs `GLIBCXX_3.4.31`; 22.04 provides up to
+`3.4.30`). The packages carry the build machine's runtime (`libstdc++`/`libgcc_s` from the
+toolchain PPA — at the time of writing GCC 15's, `GLIBCXX_3.4.35`) in
+`lib/studyboard-cxxrt/`, which is *not* on the executable's RPATH; linuxdeploy is told not
+to copy it into `lib/`, and `tools/check_linux_appdir.sh` fails the build if it is there or
+if the bundled library lacks a version `studyapp` needs. The launcher `bin/studyboard`
+(`resources/linux/studyboard.in`) reads the highest `GLIBCXX_3.4.<n>` that `studyapp`
+requires and the highest the system's `libstdc++` provides (found with `ldconfig -p`), and
+prepends `lib/studyboard-cxxrt` to `LD_LIBRARY_PATH` only when the system's is lower (or
+cannot be read). Otherwise the system's runtime serves the whole process — the OpenGL
+driver (Mesa, with LLVM) loads into it and was built against the system's runtime.
+`STUDYBOARD_LAUNCHER_DEBUG=1` prints the choice. The launcher `exec`s the application (its
+exit status is the application's) and quotes every path. `tools/test_linux_launcher.sh`
+(CTest `packaging.linux_launcher`, Linux) checks the choice with fake runtimes: a system
+library newer than needed (system chosen although the bundled one is newer), exactly as
+needed, and older (bundled chosen); the caller's `LD_LIBRARY_PATH` kept; arguments with
+spaces and shell characters; the exit status; a start through a symbolic link; the AppImage
+layout. The smoke tests check the real choice: bundled on Ubuntu 22.04, the system's on
+24.04. `bin/studyapp` started directly works only where the system's runtime is new enough.
 
 Every package is **smoke-tested in CI on a fresh runner without Qt or a compiler**
 (`package.yml`, job `smoke`): `studyapp --self-test` checks the Qt platform and

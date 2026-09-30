@@ -120,7 +120,8 @@ docs/ARCHITECTURE.md D47–D51, docs/BUILDING.md §7–§8, docs/CODING_STYLE.md
 - accessibility: accessible names on every control (audited by a test), F6/Shift+F6
 - packaging: CPack (NSIS + ZIP, DMG), AppImage/.tar.gz via linuxdeploy; `studyapp
   --self-test` (incl. OpenGL 3.3 rendering) smoke-tested on clean runners; Linux launcher
-  `bin/studyboard` picks the bundled GCC 13 runtime only when the system's is older;
+  `bin/studyboard` uses the bundled C++ runtime only when the system's lacks a version the
+  application needs;
   packages are UNSIGNED / signing-ready (secrets listed in `.github/workflows/release.yml`)
 - engineering: clang-tidy gated in CI (`.clang-tidy`, `tools/run_clang_tidy.py`)
 - CI for Linux/macOS runs on pushes to `phase-*` branches (`ci.yml`, `package.yml`)

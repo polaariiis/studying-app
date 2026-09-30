@@ -203,6 +203,13 @@ jobs:
           # Through the launcher, as users start it; the self-test includes OpenGL rendering.
           STUDYBOARD_LAUNCHER_DEBUG=1 xvfb-run -a "$launcher" --self-test 2>&1 | tee -a smoke.log
           grep -q '^ok: OpenGL 3.3 core rendering' smoke.log
+          # Ubuntu 22.04's libstdc++ lacks what the application needs, 24.04's has it.
+          case "${{ matrix.os }}" in
+            ubuntu-22.04) expected=bundled ;;
+            *) expected=system ;;
+          esac
+          grep -q "C++ runtime: $expected " smoke.log \
+            || { echo "expected the $expected C++ runtime" | tee -a smoke.log; exit 1; }
           STUDYBOARD_LAUNCHER_DEBUG=1 APPIMAGE_EXTRACT_AND_RUN=1 \
             xvfb-run -a packages/StudyBoard-*.AppImage --self-test 2>&1 | tee -a smoke.log
           # The launcher passes the application's exit status on (an unknown option: 1).

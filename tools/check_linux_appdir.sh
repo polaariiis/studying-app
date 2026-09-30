@@ -27,6 +27,18 @@ for runtime in libstdc++.so.6 libgcc_s.so.1; do
     [ ! -e "$usr/lib/$runtime" ] || problem "lib/$runtime would override the system's runtime"
 done
 
+# The bundled runtime must provide every GLIBCXX version the application needs.
+level() {
+    grep -aoE 'GLIBCXX_3\.4\.[0-9]+' -- "$1" 2>/dev/null | sed 's/^GLIBCXX_3\.4\.//' |
+        sort -n | tail -n 1
+}
+needed=$(level "$usr/bin/studyapp")
+provided=$(level "$usr/lib/studyboard-cxxrt/libstdc++.so.6")
+echo "info: studyapp needs GLIBCXX_3.4.${needed:-?}, the bundled runtime has 3.4.${provided:-?}"
+if [ -z "$needed" ] || [ -z "$provided" ] || [ "$provided" -lt "$needed" ]; then
+    problem "the bundled libstdc++ does not provide what studyapp needs"
+fi
+
 for module in Core Gui Widgets OpenGL OpenGLWidgets Pdf PrintSupport Svg DBus XcbQpa; do
     [ -e "$usr/lib/libQt6$module.so.6" ] || problem "Qt module $module is missing"
 done

@@ -65,10 +65,10 @@ studyapp_deploy_qt_to_build_tree(studyapp)
 if(UNIX AND NOT APPLE)
     # The installed executable finds the deployed Qt in ../lib.
     set_target_properties(studyapp PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
-    # GCC 13's libstdc++ is newer than the one Ubuntu 22.04 ships: packages carry the
-    # compiler's own copy (docs/ARCHITECTURE.md §13) in a directory outside RPATH. The
+    # GCC 13's output needs a newer libstdc++ than Ubuntu 22.04 ships: packages carry the
+    # compiler's runtime (docs/ARCHITECTURE.md §13) in a directory outside RPATH. The
     # launcher bin/studyboard (the AppImage's AppRun) puts it on the library path only when
-    # the system's libstdc++ is older (docs/BUILDING.md §8).
+    # the system's libstdc++ lacks a version the application needs (docs/BUILDING.md §8).
     set(STUDYAPP_CXXRT_DIR "${CMAKE_INSTALL_LIBDIR}/studyboard-cxxrt")
     configure_file("${PROJECT_SOURCE_DIR}/resources/linux/studyboard.in"
         "${CMAKE_CURRENT_BINARY_DIR}/studyboard" @ONLY)
