@@ -8,6 +8,7 @@ add_subdirectory(render)
 add_subdirectory(canvas)
 add_subdirectory(persistence)
 add_subdirectory(application)
+add_subdirectory(ipc)
 
 # Qt-dependent modules
 if(STUDYAPP_BUILD_APP)

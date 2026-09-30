@@ -12,6 +12,7 @@ add_subdirectory(render)
 add_subdirectory(canvas)
 add_subdirectory(persistence)
 add_subdirectory(application)
+add_subdirectory(ipc)
 add_subdirectory(architecture)
 
 if(STUDYAPP_BUILD_APP)

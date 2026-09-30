@@ -44,6 +44,8 @@ RULES: dict[str, Rule] = {
     "canvas": Rule(frozenset({"core", "document", "render"})),
     "persistence": Rule(frozenset({"core", "document", "study"}), sqlite=True),
     "application": Rule(frozenset({"core", "document", "study", "persistence"})),
+    # Process-level messaging over IPCFileLab's C library (D52); nothing depends on it yet.
+    "ipc": Rule(frozenset({"core"})),
     "render_gl": Rule(frozenset({"core", "render"}), qt=True, opengl=True),
     "platform": Rule(
         frozenset({"core", "document", "study", "render", "canvas", "application"}), qt=True

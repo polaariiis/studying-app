@@ -10,6 +10,7 @@ following third-party software, each under its own license. Versions are pinned 
 | [Qt PDF](https://doc.qt.io/qt-6/qtpdf-index.html) with [PDFium](https://pdfium.googlesource.com/pdfium/) | 6.8 (LTS) | LGPL-3.0 (Qt PDF); BSD-3-Clause / Apache-2.0 (PDFium and its bundled libraries) | Reading and rendering imported PDFs (Phase 8) | Yes — dynamically linked Qt module (`Qt6Pdf`) |
 | [SQLite](https://sqlite.org/) | 3.50.4 | Public domain | Persistence | Yes — statically linked (unless `STUDYAPP_USE_SYSTEM_SQLITE=ON`) |
 | [tl::expected](https://github.com/TartanLlama/expected) | 1.1.0 | CC0-1.0 | `Result<T>` in `core` | Yes — header-only |
+| [IPCFileLab](https://github.com/polaariiis/IPCFileLab) | pinned commit | None stated yet (same author as StudyBoard) | Messages between processes (`ipc`, D52) | No — the application does not link it yet |
 | [GoogleTest](https://github.com/google/googletest) | 1.17.0 | BSD-3-Clause | Unit tests | No — test builds only |
 | [Google Benchmark](https://github.com/google/benchmark) | 1.9.1 | Apache-2.0 | Micro-benchmarks (`bench/`) | No — optional developer builds only |
 

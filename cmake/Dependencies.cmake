@@ -59,6 +59,17 @@ else()
 endif()
 add_library(studyapp::sqlite3 ALIAS studyapp_sqlite3)
 
+# ---------------------------------------------------------------------------- IPCFileLab
+# Portable C11 library: a file-backed single-slot message channel between processes
+# (docs/ARCHITECTURE.md D52). Private dependency of studyapp_ipc only. Built as a library;
+# its own programs and tests stay off (IPC_BUILD_PROGRAMS / IPC_BUILD_TESTS).
+FetchContent_Declare(ipcfilelab
+    URL https://github.com/polaariiis/IPCFileLab/archive/85cc01e8505aa0cac1a15eec7bf8eba6b001c361.tar.gz
+    URL_HASH SHA256=25912c9086eddedb713fd29489fdf0ffd0a65f035eb9c02be28bfd08fac36e31
+    SYSTEM)
+FetchContent_MakeAvailable(ipcfilelab)
+set_target_properties(IPC.Core PROPERTIES FOLDER "third_party")
+
 # ---------------------------------------------------------------------------- GoogleTest
 if(STUDYAPP_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
