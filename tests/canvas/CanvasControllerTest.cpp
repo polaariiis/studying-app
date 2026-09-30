@@ -1402,6 +1402,95 @@ TEST(CanvasControllerTest, TextRastersFollowTheZoomWithinABudget) {
     EXPECT_TRUE(f.renderer.textures.empty());
 }
 
+TEST(CanvasControllerTest, TextResizePreviewIsLaidOutForItsNewWidthNotStretched) {
+    // 1.2-TXT-01: dragging a text box's width handle shows the text laid out for the new
+    // width; the element's cached raster (same content version) is not stretched into it.
+    CanvasFixture f;
+    FakeTextLayout layout;
+    f.controller.setTextLayout(&layout);
+    auto created = document::commands::createElement(
+        f.doc.workspace, f.layer,
+        {.transform = {.position = {100, 100}},
+         .payload = document::TextBox{.size = {200, 28}, .text = "hello world"}},
+        f.doc.ids);
+    ASSERT_OK(created);
+    const core::ElementId id = created->id;
+    ASSERT_OK(f.port.execute(std::move(created->command)));
+    // The size of the one text texture drawn in the last frame.
+    const auto drawnTextSize = [&]() -> std::pair<int, int> {
+        for (const render::DrawItem& item : f.renderer.lastContent) {
+            if (item.texture.isValid()) {
+                return f.renderer.textures.at(item.texture.index);
+            }
+        }
+        return {0, 0};
+    };
+    (void)f.frame();
+    ASSERT_EQ(layout.rasterized, 1);
+    ASSERT_FLOAT_EQ(layout.lastPixelsPerUnit, 1.0F);
+    EXPECT_EQ(drawnTextSize(), (std::pair{200, 28}));
+
+    f.controller.setTool(ToolKind::Select);
+    const Camera& camera = f.controller.camera();
+    f.click(camera.worldToView({150, 110}));
+    ASSERT_TRUE(f.controller.selection().contains(id));
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    int redraws = 0;
+    f.controller.setRedrawCallback([&] { ++redraws; });
+
+    // Drag the right handle (300, 114): each new width is laid out once, for this box only.
+    f.pointer(PointerPhase::Down, camera.worldToView({300, 114}));
+    f.pointer(PointerPhase::Move, camera.worldToView({380, 114}));
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 2);
+    EXPECT_EQ(drawnTextSize(), (std::pair{280, 28}));
+    f.pointer(PointerPhase::Move, camera.worldToView({340, 114}));
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 3);
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+    EXPECT_EQ(f.renderer.textures.size(), 1U); // the previous raster is released
+    // A frame without pointer movement rasterises nothing and asks for no further frame.
+    redraws = 0;
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 3);
+    EXPECT_EQ(redraws, 0);
+    // The preview writes nothing: the element and its text are unchanged until release.
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{200, 28}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps);
+
+    // Release: one resize command; text unchanged.
+    f.pointer(PointerPhase::Up, camera.worldToView({340, 114}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    const auto& resized = std::get<document::TextBox>(f.element(id).payload);
+    EXPECT_EQ(resized.size, (core::Vec2{240, 28}));
+    EXPECT_EQ(resized.text, "hello world");
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+
+    // Undo and redo restore the geometry, and the raster follows.
+    ASSERT_OK(f.port.undo());
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{200, 28}));
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{200, 28}));
+    ASSERT_OK(f.port.redo());
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{240, 28}));
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+
+    // A cancelled drag writes nothing and shows the box at its own size again.
+    const std::size_t afterRedo = f.doc.editor.history().undoCount();
+    f.pointer(PointerPhase::Down, camera.worldToView({340, 114}));
+    f.pointer(PointerPhase::Move, camera.worldToView({420, 114}));
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{320, 28}));
+    f.controller.onKey({.key = Key::Escape});
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{240, 28}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), afterRedo);
+    EXPECT_EQ(f.renderer.textures.size(), 1U);
+}
+
 TEST(CanvasControllerTest, TextBoxesKeepPaintersOrderInBatches) {
     CrowdedFixture f(1300);
     FakeTextLayout layout;
