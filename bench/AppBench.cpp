@@ -152,7 +152,15 @@ void BM_OpenWorkspace(benchmark::State& state) {
         (void)(*opened)->close();
     }
 }
-BENCHMARK(BM_OpenWorkspace)->Arg(10'000)->Unit(benchmark::kMillisecond);
+// 10 000 is the reference; the other sizes are the stress series (docs/STRESS_TESTING.md).
+BENCHMARK(BM_OpenWorkspace)
+    ->Arg(1'000)
+    ->Arg(5'000)
+    ->Arg(10'000)
+    ->Arg(25'000)
+    ->Arg(50'000)
+    ->Arg(100'000)
+    ->Unit(benchmark::kMillisecond);
 
 /// Moving every element of a 10 000-stroke page (Select All, drag): the command, applying
 /// it and writing it to SQLite (the autosave), all on the GUI thread.
@@ -174,7 +182,12 @@ void BM_MoveAllAndSave(benchmark::State& state) {
     }
     state.counters["commandMs"] = commandMs / static_cast<double>(state.iterations());
 }
-BENCHMARK(BM_MoveAllAndSave)->Arg(10'000)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_MoveAllAndSave)
+    ->Arg(1'000)
+    ->Arg(10'000)
+    ->Arg(50'000)
+    ->Arg(100'000)
+    ->Unit(benchmark::kMillisecond);
 
 // ---------------------------------------------------------------------------- search
 
@@ -205,7 +218,7 @@ void BM_PlannerCreateTask(benchmark::State& state) {
         benchmark::DoNotOptimize(created);
     }
 }
-BENCHMARK(BM_PlannerCreateTask)->Arg(100)->Arg(10'000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_PlannerCreateTask)->Arg(100)->Arg(1'000)->Arg(10'000)->Unit(benchmark::kMicrosecond);
 
 // ---------------------------------------------------------------------------- assets
 
@@ -323,7 +336,7 @@ void BM_ExportPage(benchmark::State& state) {
     state.counters["MB"] = static_cast<double>(std::filesystem::file_size(target)) / 1e6;
 }
 BENCHMARK(BM_ExportPage)
-    ->ArgsProduct({{100, 10'000}, {0, 1, 2}})
+    ->ArgsProduct({{100, 1'000, 10'000}, {0, 1, 2}})
     ->Unit(benchmark::kMillisecond)
     ->Iterations(3);
 

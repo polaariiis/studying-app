@@ -3,6 +3,8 @@
 add_executable(studyapp_benchmarks
     CanvasBench.cpp
     PageLoadBench.cpp
+    ProcessMemory.hpp
+    StressBench.cpp
     SyntheticPage.hpp)
 target_link_libraries(studyapp_benchmarks PRIVATE
     studyapp::canvas
@@ -10,7 +12,8 @@ target_link_libraries(studyapp_benchmarks PRIVATE
     studyapp::render_test_support
     benchmark::benchmark_main
     studyapp_project_options
-    studyapp_warnings)
+    studyapp_warnings
+    $<$<PLATFORM_ID:Windows>:psapi>)
 target_compile_features(studyapp_benchmarks PRIVATE cxx_std_20)
 set_target_properties(studyapp_benchmarks PROPERTIES FOLDER "bench")
 
