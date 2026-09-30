@@ -490,7 +490,9 @@ What exists (`src/canvas`), and where it differs from the sketches above.
   edge stays (dragging past it flips the box), images keep their aspect ratio on corners
   (Shift frees it; for shapes Shift keeps it), line ends snap to 45° with Shift, sizes never
   drop below 4 view px. The drag draws the element at its new geometry (shapes
-  tessellated per frame, text and images stretch their texture) and writes nothing;
+  tessellated per frame, images stretch their texture; since 1.2 a text box is laid out
+  and rasterised again for its new width, as its raster is cached with the size it was
+  laid out for) and writes nothing;
   release commits `commands::resizeElement` (connector ends attached to the element keep
   their relative place on its bounds) or, for a connector end, `setConnectorEnds` with the
   end re-attached to whatever it is dropped on. Limitation: attached connectors are

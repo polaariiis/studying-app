@@ -249,8 +249,9 @@ private:
     void requestRedraw() const;
     void updateErasePreview(render::Renderer& renderer, int lodBucket);
     void endTextEdit();
-    /// The texture of a text box at `pixelsPerUnit`, (re)rasterised when its content
-    /// changed or a finer resolution is due (refinements within kTextRefinePixelBudget).
+    /// The texture of a text box at `pixelsPerUnit`, (re)rasterised when its content or its
+    /// size changed (a resize preview is laid out for its new width, not stretched) or a
+    /// finer resolution is due (refinements within kTextRefinePixelBudget).
     render::TextureHandle textTexture(const document::Element& element, std::uint64_t version,
                                       float pixelsPerUnit, render::Renderer& renderer);
 
@@ -366,6 +367,7 @@ private:
     // Text.
     struct TextTexture {
         std::uint64_t version = 0;
+        core::Vec2 size{}; ///< the box size it was laid out for
         float pixelsPerUnit = 0.0F;
         render::TextureHandle texture{};
     };

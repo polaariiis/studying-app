@@ -744,7 +744,10 @@ render::TextureHandle CanvasController::textTexture(const document::Element& ele
     const float ppu = std::min(pixelsPerUnit, cap);
     auto [it, inserted] = textTextures_.try_emplace(element.id);
     TextTexture& cached = it->second;
-    const bool changed = inserted || cached.version != version || !cached.texture.isValid();
+    // The size is compared too: a resize preview has the element's content version but
+    // another size, and its text wraps differently.
+    const bool changed = inserted || cached.version != version || cached.size != box.size ||
+                         !cached.texture.isValid();
     bool refine = !changed && cached.pixelsPerUnit < ppu * 0.999F;
     const double cost = static_cast<double>(box.size.x) * static_cast<double>(box.size.y) *
                         static_cast<double>(ppu) * static_cast<double>(ppu);
@@ -758,6 +761,7 @@ render::TextureHandle CanvasController::textTexture(const document::Element& ele
         }
         cached.texture = renderer.createTexture(textLayout_->rasterize(box.text, box.size, ppu));
         cached.version = version;
+        cached.size = box.size;
         cached.pixelsPerUnit = ppu;
         ++textRasterized_;
         if (refine) {
@@ -1171,8 +1175,9 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
             return;
         }
         if (preview_->resized && preview_->resized->id == id) {
-            // Being resized: drawn at its new geometry. Text boxes and images stretch their
-            // texture (below); other kinds are tessellated for this frame.
+            // Being resized: drawn at its new geometry. Images stretch their texture and text
+            // boxes are laid out for their new size (below); other kinds are tessellated for
+            // this frame.
             element = &*preview_->resized;
             if (!std::holds_alternative<document::TextBox>(element->payload) &&
                 !std::holds_alternative<document::Image>(element->payload)) {
