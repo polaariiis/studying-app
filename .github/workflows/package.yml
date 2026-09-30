@@ -174,6 +174,7 @@ jobs:
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "self-test of the ZIP failed" }
           if ($out -notmatch 'OpenGL 3\.3 core rendering') { throw "no OpenGL check ran" }
+          $out -split "`n" | Select-String 'OpenGL|self-test' | ForEach-Object { "::notice::$($_.Line.Trim())" }
           Start-Process -Wait -FilePath "$dir\Uninstall.exe" -ArgumentList '/S'
           Start-Sleep -Seconds 5 # the uninstaller copies itself and finishes asynchronously
           if (Test-Path "$dir\bin\studyapp.exe") { throw "uninstall left the application behind" }
@@ -225,3 +226,11 @@ jobs:
         if: failure() && runner.os != 'Windows'
         shell: bash
         run: tail -n 40 smoke.log | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
+
+      # Also on success: the launcher's runtime choice and the OpenGL driver, as evidence.
+      - name: Report the runtime and OpenGL lines as notices
+        if: success() && runner.os != 'Windows'
+        shell: bash
+        run: |
+          grep -E 'libstdc\+\+|C\+\+ runtime|OpenGL|exit status|self-test' smoke.log \
+            | sed -e 's/%/%25/g' -e 's/^/::notice::/' || true
