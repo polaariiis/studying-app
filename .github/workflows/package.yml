@@ -6,7 +6,7 @@ name: Package
 
 on:
   push:
-    branches: [main, 'phase-*']
+    branches: [main, 'phase-*', 'dev/**']
   workflow_dispatch:
   workflow_call:
 
