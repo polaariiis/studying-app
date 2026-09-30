@@ -99,6 +99,7 @@ flowchart TD
     render["render<br/>backend-neutral render API + tessellation"]
     document["document<br/>workspace & page domain model, patches, undo"]
     study["study<br/>courses, projects, tasks, planning"]
+    ipc["ipc<br/>messages between processes (IPCFileLab)"]
     core["core<br/>geometry, ids, result, utilities"]
 
     app --> ui
@@ -121,6 +122,7 @@ flowchart TD
     document --> core
     study --> core
     render --> core
+    ipc --> core
 ```
 
 External dependencies per module:
@@ -133,6 +135,7 @@ External dependencies per module:
 | `render` | — | No |
 | `canvas` | — | No |
 | `persistence` | SQLite (amalgamation); JSON via SQLite's built-in JSON functions (D26) | No |
+| `ipc` | IPCFileLab (portable C library, private) | No |
 | `application` | — (links `persistence` **privately**) | No |
 | `render_gl` | Qt6::Gui, Qt6::OpenGL | Yes |
 | `platform` | Qt6::Core, Qt6::Gui | Yes |
@@ -876,6 +879,7 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D49 | Automatic backups on close (at most daily, after changes) with 7 daily + 4 weekly retention; the application never collects asset garbage, so snapshots stay complete; Save a Copy writes the in-memory workspace to a new one when writes fail | Scheduled backups while editing; GC honouring backups; backups including assets | A snapshot at close costs one `VACUUM INTO` when nobody waits for the window; keeping assets is simpler and safer than tracking references from backups. Closes the Phase 3 audit item P3-01 |
 | D50 | Packaging (Phase 9): CPack (NSIS + ZIP, DragNDrop DMG, TGZ) plus an AppImage via linuxdeploy, built on the oldest supported Linux (Ubuntu 22.04) with GCC's runtime bundled; every package is smoke-tested on a clean runner with `studyapp --self-test`; signing and notarisation are CPack hooks and workflow steps that run only when certificates are configured | Per-platform installer scripts; Flatpak; signing required for every build | One CMake description for all platforms; the self-test checks exactly what a clean machine lacks (plugins, fonts, Qt PDF, printing) instead of only "it starts"; builds stay reproducible without secrets |
 | D51 | Export draws ink as stroked polylines (Phase 9): runs of points whose width varies by ≤ 5 % become one round-capped, round-joined polyline at the run's mean width; translucent ink of varying width keeps the triangle union so overlaps are not darker; dotted paper is one dashed line per row | Triangles for everything (D45, Phase 8); outlines computed by path union | PDF 4× faster and 3× smaller on a 10 000-stroke page (a 1 000-stroke A4 page: 0.29 s, 1.1 MB); tested against the canvas's own tessellation pixel by pixel (≤ 0.5 % of ink pixels off by more than one pixel) |
+| D52 | Messages between processes go through IPCFileLab, the author's file-backed single-slot channel, ported from Windows-only C++ to portable C11 for this purpose (fetched pinned by commit and SHA-256). A Qt-free module `ipc` wraps its C API in `ipc::FileChannel` (RAII, `std::span`, `core::Result`; a receive timeout is `std::nullopt`, a send timeout `Conflict`); paths are passed as UTF-8. No module depends on `ipc` yet | Qt local sockets (`QLocalSocket`) in `platform`; shared memory; pipes managed per platform | StudyBoard is one process today, so there is no production consumer. The intended first one is a helper process that parses untrusted imported files (PDFs) in isolation; the channel's at-most-once, crash-recovering single slot fits one request at a time. Keeping it Qt-free and outside the document, canvas, rendering and persistence paths keeps it replaceable |
 | D41 | Copy/paste of canvas elements uses a clipboard inside the workspace's `CanvasController` (copies of the `Element` values); paste is one `commands::pasteElements` patch with new ids | The system clipboard with a serialized element format | Elements reference workspace-local assets and elements; a per-workspace clipboard guarantees every pasted image's asset exists in the target (the `image.asset_id` foreign key) and needs no format or import path yet. Pasting into another workspace or application is deferred (it needs asset import alongside the elements) |
 
 New significant decisions should be appended here (or moved to `docs/adr/` once the list

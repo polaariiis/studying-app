@@ -21,6 +21,7 @@ Fetched automatically at configure time (pinned by version and SHA-256 in
 |---|---|---|
 | tl::expected | 1.1.0 | `core` (`Result<T>`) |
 | SQLite amalgamation | 3.50.4 | `persistence` (private) |
+| IPCFileLab (C11) | pinned commit | `ipc` (private); its own programs and tests are not built |
 | GoogleTest | 1.17.0 | tests |
 | Google Benchmark | 1.9.1 | `bench/` only (`STUDYAPP_BUILD_BENCHMARKS=ON`) |
 
