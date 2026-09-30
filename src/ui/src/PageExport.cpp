@@ -87,14 +87,15 @@ QPainterPath meshPath(const render::MeshData& mesh) {
 }
 
 /// Text boxes are laid out exactly like platform::QtTextLayout lays them out on the canvas
-/// (application font at kTextSize pixels, no margin, wrapped within the box minus padding).
+/// (application font at the box's font size in pixels, no margin, wrapped within the box
+/// minus padding).
 void paintText(QPainter& painter, const document::TextBox& box) {
     if (box.text.empty()) {
         return;
     }
     QTextDocument document;
     QFont font = QGuiApplication::font();
-    font.setPixelSize(static_cast<int>(canvas::kTextSize));
+    font.setPixelSize(std::max(1, static_cast<int>(std::lround(box.fontSize))));
     document.setDefaultFont(font);
     document.setDocumentMargin(0.0);
     document.setPlainText(

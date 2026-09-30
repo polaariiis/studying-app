@@ -20,6 +20,8 @@ namespace studyapp::ui {
 [[nodiscard]] QIcon penOptionsIcon(const QColor& ink, double width, const QColor& border);
 /// A shape kind as line art in `color` (optionally with a light fill).
 [[nodiscard]] QIcon shapeIcon(document::ShapeKind kind, const QColor& color, bool filled = false);
+/// Text size (style button of the text tool): a letter "A" drawn larger for larger sizes.
+[[nodiscard]] QIcon textSizeIcon(float fontSize, const QColor& color);
 /// A shape kind as line art in `color` (optionally with a light fill).
 
 } // namespace studyapp::ui

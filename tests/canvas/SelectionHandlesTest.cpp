@@ -82,12 +82,18 @@ TEST(SelectionHandlesTest, ImagesKeepTheirAspectAndTextBoxesTheirLayoutHeight) {
     dragged = dragHandle(image, HandleKind::BottomRight, {300, 130}, {.constrain = true});
     EXPECT_EQ(sizeOf(*dragged), (core::Vec2{200, 30})); // Shift: free
     const auto text = box(document::TextBox{.size = {200, 40}, .text = "some text"});
-    dragged = dragHandle(text, HandleKind::Right, {200, 500},
-                         {.textHeight = [](std::string_view, float width) {
-                             return width < 150.0F ? 80.0F : 40.0F;
-                         }});
-    EXPECT_EQ(sizeOf(*dragged), (core::Vec2{100, 80})); // narrower: two lines
+    // Two lines below 150 wide, each as high as the font size plus 4.
+    const auto layout = [](std::string_view, float width, float fontSize) {
+        return (width < 150.0F ? 2.0F : 1.0F) * (fontSize + 4.0F);
+    };
+    dragged = dragHandle(text, HandleKind::Right, {200, 500}, {.textHeight = layout});
+    EXPECT_EQ(sizeOf(*dragged), (core::Vec2{100, 40})); // narrower: two lines at 16
     EXPECT_EQ(dragged->transform.position, (core::DVec2{100, 100}));
+    // The box's own font size is laid out (1.2-TXT-02), and it is kept.
+    const auto large = box(document::TextBox{.size = {200, 36}, .text = "x", .fontSize = 32});
+    dragged = dragHandle(large, HandleKind::Right, {200, 500}, {.textHeight = layout});
+    EXPECT_EQ(sizeOf(*dragged), (core::Vec2{100, 72}));
+    EXPECT_EQ(std::get<document::TextBox>(dragged->payload).fontSize, 32.0F);
 }
 
 TEST(SelectionHandlesTest, LineEndsAndConnectorEnds) {

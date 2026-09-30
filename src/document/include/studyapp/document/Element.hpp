@@ -68,10 +68,20 @@ struct Stroke {
 
 bool operator==(const Stroke& lhs, const Stroke& rhs);
 
+/// Font size of a text box (1.2): the font's pixel size in world units. Whole numbers only,
+/// so the canvas, the editor and exports (which set a whole pixel size) lay text out alike.
+inline constexpr float kDefaultTextFontSize = 16.0F;
+inline constexpr float kMinTextFontSize = 6.0F;
+inline constexpr float kMaxTextFontSize = 144.0F;
+
+/// A finite whole number in [kMinTextFontSize, kMaxTextFontSize].
+[[nodiscard]] bool isValidTextFontSize(float size) noexcept;
+
 /// Typed text. Plain text in Phase 2; the rich-text model is introduced in Phase 6.
 struct TextBox {
-    core::Vec2 size{}; ///< box size in local units; components >= 0
-    std::string text;  ///< UTF-8
+    core::Vec2 size{};                     ///< box size in local units; components >= 0
+    std::string text;                      ///< UTF-8
+    float fontSize = kDefaultTextFontSize; ///< isValidTextFontSize
 
     [[nodiscard]] friend bool operator==(const TextBox&, const TextBox&) = default;
 };

@@ -2,6 +2,7 @@
 
 #include <studyapp/core/Ids.hpp>
 #include <studyapp/core/Vec2.hpp>
+#include <studyapp/document/Element.hpp>
 #include <studyapp/render/Renderer.hpp>
 
 #include <optional>
@@ -11,11 +12,13 @@
 namespace studyapp::canvas {
 
 // Text on the canvas (docs/CANVAS.md §9). Phase 6 text boxes hold plain UTF-8 text in one
-// style; the rich-text model comes later. Text is laid out and rasterised by a TextLayout
-// the UI provides (Qt); the canvas only decides when (text, size or zoom bucket changed)
-// and caches the result as a texture.
+// style, since 1.2 at the box's own font size (document::TextBox::fontSize); the rich-text
+// model comes later. Text is laid out and rasterised by a TextLayout the UI provides (Qt);
+// the canvas only decides when (text, font size, box size or zoom bucket changed) and
+// caches the result as a texture.
 
-inline constexpr float kTextSize = 16.0F;          ///< font pixel size, world units
+/// Default font pixel size, world units (text boxes without their own size).
+inline constexpr float kTextSize = document::kDefaultTextFontSize;
 inline constexpr float kTextPadding = 4.0F;        ///< between the box and the text
 inline constexpr float kDefaultTextWidth = 240.0F; ///< a click creates a box this wide
 inline constexpr float kMinTextWidth = 24.0F;
@@ -31,13 +34,14 @@ public:
     TextLayout(TextLayout&&) = delete;
     TextLayout& operator=(TextLayout&&) = delete;
 
-    /// Height (world units, padding included, at least one line) of `text` wrapped within
-    /// a box `width` wide.
-    [[nodiscard]] virtual float heightFor(std::string_view text, float width) = 0;
-    /// The box's content: `size` world units at `pixelsPerUnit`, RGBA8 premultiplied, the
-    /// text in black on transparent (the display transform recolours it on dark paper).
+    /// Height (world units, padding included, at least one line) of `text` at `fontSize`
+    /// wrapped within a box `width` wide.
+    [[nodiscard]] virtual float heightFor(std::string_view text, float width, float fontSize) = 0;
+    /// The box's content: `size` world units at `pixelsPerUnit`, the text at `fontSize`,
+    /// RGBA8 premultiplied, in black on transparent (the display transform recolours it on
+    /// dark paper).
     [[nodiscard]] virtual render::ImageData rasterize(std::string_view text, const core::Vec2& size,
-                                                      float pixelsPerUnit) = 0;
+                                                      float fontSize, float pixelsPerUnit) = 0;
 };
 
 /// A text box being edited (in the UI's editor overlay; not document data until it is
@@ -47,10 +51,11 @@ struct TextEdit {
     core::DVec2 position{};                 ///< world, the box's top-left corner
     float width = kDefaultTextWidth;        ///< world units
     std::string text;                       ///< UTF-8, as the editor starts
+    float fontSize = kTextSize;             ///< written with the text when the edit finishes
 };
 
-/// Height of `text` without a layout (headless use): one line of 1.4 × kTextSize per line
+/// Height of `text` without a layout (headless use): one line of 1.4 × `fontSize` per line
 /// break, plus padding. The UI's TextLayout is used whenever it is present.
-[[nodiscard]] float fallbackTextHeight(std::string_view text) noexcept;
+[[nodiscard]] float fallbackTextHeight(std::string_view text, float fontSize = kTextSize) noexcept;
 
 } // namespace studyapp::canvas

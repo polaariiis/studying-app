@@ -587,7 +587,7 @@ as 16-byte BLOBs (never row ids); `FractionalIndex` values are stored verbatim i
 | `Layer` | `layer` |
 | `Element` header | `element`: `kind` = `ElementKind`, transform columns, `locked`; `page_id` is derived in SQL from the layer (`(SELECT page_id FROM layer WHERE id = ?)`) and kept in step when a layer moves; `min_x … max_y` = `document::worldBounds()` |
 | `Stroke` | `stroke`: `brush`, `color`, `base_width`, `point_count`, `point_format` = 1, `points` (codec v1, bit-exact) |
-| `TextBox` | `text_box`: `width`, `height`, `sizing` = 2 (fixed), `content` = `{"v":1,"text":"…"}` (built and read with SQLite's JSON functions), `plain_text` = the text |
+| `TextBox` | `text_box`: `width`, `height`, `sizing` = 2 (fixed), `content` = `{"v":1,"text":"…"}` plus, since 1.2, an optional `"size":24` (a font size other than the default 16; absent = 16, so the version stays 1 and 1.0 still reads the text — it keeps the text and drops the size if it edits the box; a `size` that is not a number, or not a whole number in [6, 144], makes the workspace fail to load like other corrupt rows) (built and read with SQLite's JSON functions), `plain_text` = the text |
 | `Shape` | `shape`: `shape_kind` 0–2 and, since Phase 6, 6 = arrow (no schema change: the column has no CHECK; 3–5 stay reserved for the planned triangle/polygon/polyline and a row with them fails the load), `width`, `height`, nullable `stroke_color` / `fill_color`, `stroke_width` |
 | `Image` | `image`: `asset_id` (→ `asset`, `ON DELETE RESTRICT`), `width`, `height` |
 | `Connector` | `connector`: `start_*` / `end_*` positions, nullable `*_element_id`, `color`, `width` |

@@ -32,13 +32,18 @@ enum class EraserMode : std::uint8_t {
 /// PenStyle{} (the pen's defaults: black, opaque) and resets the other tool's style too;
 /// to change one field, copy the current settings (or kDefaultHighlighter) and edit it.
 struct ToolSettings {
-    PenStyle pen{};                             ///< ToolKind::Pen
-    PenStyle highlighter = kDefaultHighlighter; ///< ToolKind::Highlighter
-    EraserMode eraser = EraserMode::Partial;    ///< ToolKind::Eraser and a pen's eraser end
-    ShapeStyle shape{};                         ///< ToolKind::Shape
+    PenStyle pen{};                                  ///< ToolKind::Pen
+    PenStyle highlighter = kDefaultHighlighter;      ///< ToolKind::Highlighter
+    EraserMode eraser = EraserMode::Partial;         ///< ToolKind::Eraser and a pen's eraser end
+    ShapeStyle shape{};                              ///< ToolKind::Shape
+    float textSize = document::kDefaultTextFontSize; ///< ToolKind::Text: new boxes' font size
 
     [[nodiscard]] friend bool operator==(const ToolSettings&, const ToolSettings&) = default;
 };
+
+/// `size` as a valid text font size (document::isValidTextFontSize): rounded to a whole
+/// number and clamped to [kMinTextFontSize, kMaxTextFontSize]; non-finite: the default.
+[[nodiscard]] float sanitizedTextFontSize(float size) noexcept;
 
 /// Stroke widths accepted (pen and highlighter), in world units at pressure 1.
 inline constexpr float kMinPenWidth = 0.25F;
@@ -49,7 +54,8 @@ inline constexpr float kMaxPenWidth = 64.0F;
 /// becomes opaque and the highlighter gets kHighlighterAlpha; each tool always draws its
 /// own brush (document::Brush::Pen, document::Brush::Highlighter). Shapes: the outline
 /// width is clamped the same way (an outline is always drawn), a transparent outline
-/// becomes opaque, and an unknown kind becomes a rectangle.
+/// becomes opaque, and an unknown kind becomes a rectangle. The text size is made valid with
+/// sanitizedTextFontSize().
 [[nodiscard]] ToolSettings sanitized(ToolSettings settings) noexcept;
 
 } // namespace studyapp::canvas

@@ -80,8 +80,11 @@ struct ToolContext {
     /// Starts editing text in the UI's editor (the text tool); nothing is written until the
     /// edit is finished.
     std::function<void(TextEdit)> beginTextEdit;
-    /// Height of text at a width (the canvas's text layout), for resizing text boxes.
-    std::function<float(std::string_view, float)> textHeight;
+    /// Height of text at a width and font size (the canvas's text layout), for resizing text
+    /// boxes.
+    std::function<float(std::string_view, float, float)> textHeight;
+    /// Font size of new text boxes (the text tool).
+    float textSize = kTextSize;
 };
 
 class Tool {

@@ -96,7 +96,7 @@ std::vector<std::string> runSelfTest(const ShellServices& services, canvas::Text
     // Fonts and text layout: a text box raster with ink in it.
     {
         const render::ImageData raster =
-            textLayout.rasterize("Self-test Ag", {200.0F, 40.0F}, 1.0F);
+            textLayout.rasterize("Self-test Ag", {200.0F, 40.0F}, canvas::kTextSize, 1.0F);
         bool ink = false;
         for (std::size_t i = 3; i < raster.pixels.size() && !ink; i += 4) {
             ink = raster.pixels[i] != 0;

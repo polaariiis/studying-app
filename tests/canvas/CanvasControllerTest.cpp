@@ -1242,13 +1242,18 @@ TEST(CanvasControllerTest, ShapeStyleIsSanitizedAndDecidesNewShapesOnly) {
 struct FakeTextLayout final : TextLayout {
     int rasterized = 0;
     float lastPixelsPerUnit = 0.0F;
-    float heightFor(std::string_view text, float /*width*/) override {
-        return 20.0F * static_cast<float>(std::count(text.begin(), text.end(), '\n') + 1) + 8.0F;
+    float lastFontSize = 0.0F;
+    /// One line per line break, (font size + 4) high (20 at the default size), plus padding.
+    float heightFor(std::string_view text, float /*width*/, float fontSize) override {
+        return (fontSize + 4.0F) *
+                   static_cast<float>(std::count(text.begin(), text.end(), '\n') + 1) +
+               8.0F;
     }
-    render::ImageData rasterize(std::string_view /*text*/, const core::Vec2& size,
+    render::ImageData rasterize(std::string_view /*text*/, const core::Vec2& size, float fontSize,
                                 float pixelsPerUnit) override {
         ++rasterized;
         lastPixelsPerUnit = pixelsPerUnit;
+        lastFontSize = fontSize;
         render::ImageData image{
             .width = std::max(1, static_cast<int>(std::ceil(size.x * pixelsPerUnit))),
             .height = std::max(1, static_cast<int>(std::ceil(size.y * pixelsPerUnit))),
@@ -1489,6 +1494,112 @@ TEST(CanvasControllerTest, TextResizePreviewIsLaidOutForItsNewWidthNotStretched)
     EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{240, 28}));
     EXPECT_EQ(f.doc.editor.history().undoCount(), afterRedo);
     EXPECT_EQ(f.renderer.textures.size(), 1U);
+}
+
+TEST(CanvasControllerTest, TextFontSizeAppliesToTheSelectedTextBoxesAsOneCommand) {
+    // 1.2-TXT-02: the selected text boxes get the size and the height laid out for it; only
+    // their rasters are made again, at that size.
+    CanvasFixture f;
+    FakeTextLayout layout;
+    f.controller.setTextLayout(&layout);
+    const auto addText = [&](core::DVec2 at, const char* text) {
+        auto created = document::commands::createElement(
+            f.doc.workspace, f.layer,
+            {.transform = {.position = at},
+             .payload = document::TextBox{.size = {200, 28}, .text = text}},
+            f.doc.ids);
+        EXPECT_TRUE(created.has_value());
+        const core::ElementId id = created->id;
+        EXPECT_TRUE(f.port.execute(std::move(created->command)).has_value());
+        return id;
+    };
+    const core::ElementId first = addText({100, 100}, "first");
+    const core::ElementId other = addText({100, 300}, "other");
+    (void)f.frame();
+    ASSERT_EQ(layout.rasterized, 2);
+    const auto boxOf = [&](core::ElementId id) {
+        return std::get<document::TextBox>(f.element(id).payload);
+    };
+
+    // Nothing selected: nothing changes.
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    ASSERT_OK(f.controller.applyTextFontSize(32));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps);
+
+    f.controller.setTool(ToolKind::Select);
+    f.click(f.controller.camera().worldToView({150, 110}));
+    ASSERT_TRUE(f.controller.selection().contains(first));
+    ASSERT_OK(f.controller.applyTextFontSize(32));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    EXPECT_EQ(boxOf(first),
+              (document::TextBox{.size = {200, 44}, .text = "first", .fontSize = 32}));
+    EXPECT_EQ(boxOf(other).fontSize, document::kDefaultTextFontSize);
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 3); // only the changed box
+    EXPECT_EQ(layout.lastFontSize, 32.0F);
+    // The same size again writes nothing; sizes are made valid (whole, within range).
+    ASSERT_OK(f.controller.applyTextFontSize(32));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    ASSERT_OK(f.controller.applyTextFontSize(1000));
+    EXPECT_EQ(boxOf(first).fontSize, document::kMaxTextFontSize);
+    ASSERT_OK(f.port.undo());
+    ASSERT_OK(f.port.undo());
+    EXPECT_EQ(boxOf(first), (document::TextBox{.size = {200, 28}, .text = "first"}));
+    (void)f.frame();
+    EXPECT_EQ(layout.lastFontSize, document::kDefaultTextFontSize);
+    ASSERT_OK(f.port.redo());
+    EXPECT_EQ(boxOf(first).fontSize, 32.0F);
+
+    // Resizing afterwards lays the box out at its own size (44 high for one line at 32).
+    const Camera& camera = f.controller.camera();
+    f.pointer(PointerPhase::Down, camera.worldToView({300, 122}));
+    f.pointer(PointerPhase::Move, camera.worldToView({260, 122}));
+    (void)f.frame();
+    EXPECT_EQ(layout.lastFontSize, 32.0F);
+    f.pointer(PointerPhase::Up, camera.worldToView({260, 122}));
+    EXPECT_EQ(boxOf(first),
+              (document::TextBox{.size = {160, 44}, .text = "first", .fontSize = 32}));
+}
+
+TEST(CanvasControllerTest, TextFontSizeWhileEditingIsWrittenWithTheText) {
+    // 1.2-TXT-02: new boxes start at the tool's size; a size chosen while editing changes the
+    // edit only, and finishing writes it with the text in one command.
+    CanvasFixture f;
+    FakeTextLayout layout;
+    f.controller.setTextLayout(&layout);
+    ToolSettings settings = f.controller.toolSettings();
+    settings.textSize = 24;
+    f.controller.setToolSettings(settings);
+    f.controller.setTool(ToolKind::Text);
+    f.click(f.controller.camera().worldToView({100, 100}));
+    ASSERT_TRUE(f.controller.textEdit().has_value());
+    EXPECT_EQ(f.controller.textEdit()->fontSize, 24.0F);
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    ASSERT_OK(f.controller.applyTextFontSize(48));
+    EXPECT_EQ(f.controller.textEdit()->fontSize, 48.0F);
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps); // nothing written yet
+    EXPECT_FLOAT_EQ(f.controller.textHeightFor("hi", 240, 48), 60.0F);
+    ASSERT_OK(f.controller.finishTextEdit("hi"));
+    ASSERT_EQ(f.elements().size(), 1U);
+    const core::ElementId id = f.elements().front();
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload),
+              (document::TextBox{.size = {kDefaultTextWidth, 60}, .text = "hi", .fontSize = 48}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+
+    // Editing it again starts at its size and keeps it.
+    f.click(f.controller.camera().worldToView({110, 110}));
+    ASSERT_TRUE(f.controller.textEdit().has_value());
+    EXPECT_EQ(f.controller.textEdit()->fontSize, 48.0F);
+    ASSERT_OK(f.controller.finishTextEdit("hi\nthere"));
+    EXPECT_EQ(
+        std::get<document::TextBox>(f.element(id).payload),
+        (document::TextBox{.size = {kDefaultTextWidth, 112}, .text = "hi\nthere", .fontSize = 48}));
+    // The tool's size is made valid like the other tool settings.
+    settings.textSize = 3.4F;
+    f.controller.setToolSettings(settings);
+    EXPECT_EQ(f.controller.toolSettings().textSize, document::kMinTextFontSize);
+    EXPECT_EQ(sanitizedTextFontSize(20.4F), 20.0F);
+    EXPECT_EQ(sanitizedTextFontSize(std::numeric_limits<float>::quiet_NaN()), kTextSize);
 }
 
 TEST(CanvasControllerTest, TextBoxesKeepPaintersOrderInBatches) {
