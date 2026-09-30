@@ -368,6 +368,49 @@ TEST_F(WorkspaceStoreTest, EveryElementKindRoundTripsWithAllFields) {
     EXPECT_EQ(count("SELECT count(*) FROM element WHERE min_x <= max_x AND min_y <= max_y"), 8);
 }
 
+TEST_F(WorkspaceStoreTest, TextFontSizeIsAnOptionalKeyOfVersionOneContent) {
+    // 1.2-TXT-02: the content stays {"v":1,...}; "size" is written only when it is not the
+    // default, so text without it (every 1.0 workspace) keeps the default.
+    const auto layer = addSavedPath();
+    const auto plain = addSaved(layer, document::TextBox{.size = {100, 28}, .text = "plain"});
+    addSaved(layer, document::TextBox{.size = {200, 48}, .text = "big", .fontSize = 32});
+    EXPECT_EQ(count("SELECT count(*) FROM text_box WHERE json_extract(content, '$.v') = 1"), 2);
+    EXPECT_EQ(count("SELECT count(*) FROM text_box WHERE json_type(content, '$.size') IS NULL "
+                    "AND plain_text = 'plain'"),
+              1);
+    EXPECT_EQ(count("SELECT count(*) FROM text_box WHERE json_type(content, '$.size') = "
+                    "'integer' AND json_extract(content, '$.size') = 32"),
+              1);
+    expectRoundTrip();
+
+    // A size change is persisted, and undoing it back to the default removes the key.
+    const std::vector<document::commands::TextFontSizeChange> larger{
+        {.element = plain, .fontSize = 24, .size = {100, 36}}};
+    doc.run(document::commands::setTextFontSize(doc.workspace, larger));
+    save();
+    EXPECT_EQ(count("SELECT count(*) FROM text_box WHERE json_extract(content, '$.size') = 24"), 1);
+    expectRoundTrip();
+    undoAndSave();
+    EXPECT_EQ(count("SELECT count(*) FROM text_box WHERE json_type(content, '$.size') IS NULL"), 1);
+    expectRoundTrip();
+    redoAndSave();
+    expectRoundTrip();
+
+    // Keys this build does not know are ignored (as 1.0 ignores "size").
+    ASSERT_OK(db().execute("UPDATE text_box SET content = json_set(content, '$.later', 'x')"));
+    expectRoundTrip();
+    // A JSON null reads as no size.
+    ASSERT_OK(
+        db().execute("UPDATE text_box SET content = json_set(content, '$.size', json('null')) "
+                     "WHERE plain_text = 'big'"));
+    auto loaded = reload();
+    ASSERT_OK(loaded);
+    for (const auto id : loaded->elementsOf(layer)) {
+        const auto& box = std::get<document::TextBox>(loaded->findElement(id)->payload);
+        EXPECT_EQ(box.fontSize, box.text == "plain" ? 24.0F : document::kDefaultTextFontSize);
+    }
+}
+
 TEST_F(WorkspaceStoreTest, ElementUpdatesPersist) {
     const auto layer = addSavedPath();
     const auto id = addSaved(layer, makeStroke());
@@ -746,6 +789,21 @@ TEST_F(CorruptDataTest, RejectsElementOnAnotherPageThanItsLayer) {
 
 TEST_F(CorruptDataTest, RejectsInvalidValuesThroughDocumentInvariants) {
     expectLoadFails("UPDATE layer SET opacity = 2.5");
+}
+
+TEST_F(CorruptDataTest, RejectsInvalidTextFontSizes) {
+    // 1.2-TXT-02: a "size" that is not a number fails decoding; a number outside the valid
+    // font sizes (or not whole) fails the document invariants. The load never half-succeeds.
+    addSaved(layer, document::TextBox{.size = {100, 28}, .text = "t"});
+    ASSERT_OK(reload());
+    for (const char* size : {"'24'", "0", "5", "145", "16.5", "1e40", "json('true')"}) {
+        SCOPED_TRACE(size);
+        const std::string sql =
+            std::string("UPDATE text_box SET content = json_set(content, '$.size', ") + size + ")";
+        expectLoadFails(sql);
+        ASSERT_OK(db().execute("UPDATE text_box SET content = json_remove(content, '$.size')"));
+        ASSERT_OK(reload()); // repaired
+    }
 }
 
 TEST_F(CorruptDataTest, RejectsBlankNames) {

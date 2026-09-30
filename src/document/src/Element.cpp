@@ -11,6 +11,11 @@ StrokePoints makeStrokePoints(std::vector<StrokePoint> points) {
     return std::make_shared<const std::vector<StrokePoint>>(std::move(points));
 }
 
+bool isValidTextFontSize(float size) noexcept {
+    return std::isfinite(size) && size >= kMinTextFontSize && size <= kMaxTextFontSize &&
+           std::floor(size) == size;
+}
+
 bool operator==(const Stroke& lhs, const Stroke& rhs) {
     if (lhs.brush != rhs.brush || lhs.color != rhs.color || lhs.baseWidth != rhs.baseWidth) {
         return false;

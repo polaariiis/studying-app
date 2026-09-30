@@ -166,8 +166,9 @@ std::optional<Element> dragHandle(const Element& element, HandleKind handle, con
     double height = std::max(max.y - min.y, options.minSize);
     if (auto* text = std::get_if<document::TextBox>(&result.payload)) {
         const auto w = static_cast<float>(width);
-        height = options.textHeight ? static_cast<double>(options.textHeight(text->text, w))
-                                    : static_cast<double>(size.y);
+        height = options.textHeight
+                     ? static_cast<double>(options.textHeight(text->text, w, text->fontSize))
+                     : static_cast<double>(size.y);
         min.y = element.transform.position.y; // text boxes grow downwards
     }
     result.transform.position = min;

@@ -282,7 +282,8 @@ void BM_TextRaster(benchmark::State& state) {
     const std::string text = "Osmosis: water moves across a semipermeable membrane\n"
                              "from low to high solute concentration.";
     for (auto _ : state) {
-        benchmark::DoNotOptimize(layout.rasterize(text, {240.0F, 64.0F}, pixelsPerUnit));
+        benchmark::DoNotOptimize(
+            layout.rasterize(text, {240.0F, 64.0F}, canvas::kTextSize, pixelsPerUnit));
     }
 }
 BENCHMARK(BM_TextRaster)->Arg(10)->Arg(42)->Unit(benchmark::kMicrosecond);

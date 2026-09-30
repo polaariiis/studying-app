@@ -1266,6 +1266,65 @@ private Q_SLOTS:
         QCOMPARE(boxes().at(0).text, std::string("Pm\nW\xC3\xB6rld \xE2\x9C\x93"));
     }
 
+    // 1.2-TXT-02: Tools ▸ Text Size sets the size of new text boxes (remembered), of the box
+    // being edited (the editor follows at once; written with the text) and of the selected
+    // text boxes (one undoable command). The style button shows it for the text tool.
+    void textSizeThroughTheShell() {
+        const QString name = QStringLiteral("textsize");
+        {
+            Shell shell(settings(name));
+            QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("TextSize"))));
+            shell.window->activateWindow();
+            QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+            const auto boxes = [&] {
+                std::vector<document::TextBox> out;
+                const auto page = *shell.window->activePage();
+                for (const auto id : shell.ws().elementsOf(shell.ws().layersOf(page).front())) {
+                    out.push_back(std::get<document::TextBox>(shell.ws().findElement(id)->payload));
+                }
+                return out;
+            };
+            auto* style = shell.window->findChild<QToolButton*>(QStringLiteral("inkStyleButton"));
+            shell.action("actionToolText")->trigger();
+            QCOMPARE(style->toolTip(), QStringLiteral("Text size: 16"));
+            QVERIFY(shell.action("actionTextSize_16")->isChecked());
+            auto* canvas = shell.window->findChild<QWidget*>(QStringLiteral("canvasWidget"));
+            QTest::mouseClick(canvas, Qt::LeftButton, {}, {200, 200});
+            auto* editor = shell.window->findChild<QTextEdit*>(QStringLiteral("textEditor"));
+            QVERIFY(editor != nullptr);
+            QTRY_VERIFY(editor->hasFocus());
+            const int before = editor->font().pixelSize();
+            const auto undoBefore = shell.window->session()->history().undoCount();
+            shell.action("actionTextSize_32")->trigger();
+            QVERIFY(editor->isVisible()); // the edit goes on
+            QVERIFY(std::abs(editor->font().pixelSize() - 2 * before) <= 1);
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore);
+            QTest::keyClicks(editor, QStringLiteral("Big"));
+            QTest::keyClick(editor, Qt::Key_Escape);
+            QCOMPARE(boxes().size(), std::size_t{1});
+            QCOMPARE(boxes()[0].fontSize, 32.0F);
+            QCOMPARE(boxes()[0].text, std::string("Big"));
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 1);
+
+            // The selected box: one command; undo restores it.
+            shell.action("actionToolSelect")->trigger();
+            QTest::mouseClick(canvas, Qt::LeftButton, {}, {210, 210});
+            shell.action("actionTextSize_12")->trigger();
+            QCOMPARE(boxes()[0].fontSize, 12.0F);
+            QCOMPARE(boxes()[0].text, std::string("Big"));
+            QCOMPARE(shell.window->session()->history().undoCount(), undoBefore + 2);
+            QVERIFY(shell.action("actionTextSize_12")->isChecked());
+            QCOMPARE(style->toolTip(), QStringLiteral("Text size: 12"));
+            shell.action("actionUndo")->trigger();
+            QCOMPARE(boxes()[0].fontSize, 32.0F);
+            QVERIFY(shell.window->close());
+        }
+        {
+            Shell shell(settings(name)); // the size for new boxes is remembered
+            QVERIFY(shell.action("actionTextSize_12")->isChecked());
+        }
+    }
+
     // Text being typed is written, not dropped, when the page changes or the workspace
     // closes from the keyboard (the focus never leaves the editor then); a popup such as the
     // editor's own context menu does not end the edit.
@@ -1898,6 +1957,8 @@ private Q_SLOTS:
             .baseWidth = 20.0F,
             .points = document::makeStrokePoints({{100, 300, 1}, {300, 300, 1}, {100, 310, 1}})});
         add(document::TextBox{.size = {220, 40}, .text = "Export text"}, {100, 400});
+        // 1.2-TXT-02: a text box with its own font size is exported at that size.
+        add(document::TextBox{.size = {300, 80}, .text = "Large text", .fontSize = 32}, {400, 400});
 
         const document::Workspace before = shell.ws();
         const auto undoCount = shell.window->session()->history().undoCount();
@@ -1924,10 +1985,19 @@ private Q_SLOTS:
         };
         QVERIFY(pixel(image, {200, 200}).red() < 60);  // the stroke
         QVERIFY(pixel(image, {205, 250}).red() > 230); // paper
-        // Text is laid out as on the canvas (platform::QtTextLayout's raster at 2 px/unit).
-        {
+        // Text is laid out as on the canvas (platform::QtTextLayout's raster at 2 px/unit), at
+        // each box's font size.
+        struct ExportedText {
+            const char* text;
+            core::Vec2 size;
+            float fontSize;
+            core::DVec2 at;
+        };
+        for (const ExportedText& box :
+             {ExportedText{"Export text", {220, 40}, canvas::kTextSize, {100, 400}},
+              ExportedText{"Large text", {300, 80}, 32.0F, {400, 400}}}) {
             const render::ImageData raster =
-                shell.textLayout.rasterize("Export text", {220, 40}, 2.0F);
+                shell.textLayout.rasterize(box.text, box.size, box.fontSize, 2.0F);
             QImage canvasText(raster.pixels.data(), raster.width, raster.height,
                               QImage::Format_RGBA8888_Premultiplied);
             QImage onPaper(canvasText.size(), QImage::Format_RGB32);
@@ -1940,9 +2010,9 @@ private Q_SLOTS:
             for (int dx = -2; dx <= 2; ++dx) {
                 for (int dy = -2; dy <= 2; ++dy) {
                     const QImage exported =
-                        image.copy(static_cast<int>((100 - area.min.x) * 2) + dx,
-                                   static_cast<int>((400 - area.min.y) * 2) + dy, onPaper.width(),
-                                   onPaper.height());
+                        image.copy(static_cast<int>((box.at.x - area.min.x) * 2) + dx,
+                                   static_cast<int>((box.at.y - area.min.y) * 2) + dy,
+                                   onPaper.width(), onPaper.height());
                     best = std::min(best, differingShare(onPaper, exported));
                 }
             }

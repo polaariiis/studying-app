@@ -44,8 +44,8 @@ struct Handle {
 struct HandleDragOptions {
     bool constrain = false; ///< Shift: keep the aspect ratio (images: free instead); lines: 45°
     double minSize = 1.0;   ///< world units; boxes never get smaller
-    /// Height of a text box's text at a width (the canvas's text layout).
-    std::function<float(std::string_view, float)> textHeight;
+    /// Height of a text box's text at a width and font size (the canvas's text layout).
+    std::function<float(std::string_view, float, float)> textHeight;
 };
 
 /// `element` with `handle` dragged to `world`: boxes keep the opposite corner or edge

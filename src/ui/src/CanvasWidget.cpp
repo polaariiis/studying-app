@@ -168,7 +168,7 @@ void CanvasWidget::positionTextEditor() {
     const canvas::Camera& camera = controller_->camera();
     const double zoom = camera.zoom();
     QFont font = QGuiApplication::font();
-    font.setPixelSize(std::max(1, static_cast<int>(std::lround(canvas::kTextSize * zoom))));
+    font.setPixelSize(std::max(1, static_cast<int>(std::lround(edit->fontSize * zoom))));
     if (textEditor_->font() != font) {
         textEditor_->setFont(font);
     }
@@ -177,12 +177,18 @@ void CanvasWidget::positionTextEditor() {
         textEditor_->document()->setDocumentMargin(padding); // the box's padding, zoomed
     }
     const std::string text = textEditor_->toPlainText().toStdString();
-    const double height = controller_->textHeightFor(text, edit->width) * zoom;
+    const double height = controller_->textHeightFor(text, edit->width, edit->fontSize) * zoom;
     const core::DVec2 topLeft = camera.worldToView(edit->position);
     textEditor_->setGeometry(static_cast<int>(std::floor(topLeft.x)),
                              static_cast<int>(std::floor(topLeft.y)),
                              static_cast<int>(std::ceil(edit->width * zoom)) + 1,
                              static_cast<int>(std::ceil(height)) + 1);
+}
+
+void CanvasWidget::refreshTextEditor() {
+    if (textEditor_ != nullptr && textEditor_->isVisible()) {
+        positionTextEditor();
+    }
 }
 
 void CanvasWidget::finishTextEditing() {

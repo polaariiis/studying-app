@@ -244,8 +244,9 @@ void CanvasController::dispatch(detail::Tool& tool, const PointerEvent& event) {
         .ids = *ids_,
         .commit = [this](core::Result<document::Command> command) { commit(std::move(command)); },
         .beginTextEdit = [this](TextEdit edit) { beginTextEdit(std::move(edit)); },
-        .textHeight = [this](std::string_view text,
-                             float width) { return textHeightFor(text, width); },
+        .textHeight = [this](std::string_view text, float width,
+                             float fontSize) { return textHeightFor(text, width, fontSize); },
+        .textSize = toolSettings_.textSize,
     };
     tool.onPointer(event, context);
 }
@@ -385,7 +386,9 @@ void CanvasController::cancelGesture() {
             .ids = *ids_,
             .commit = [](core::Result<document::Command>) {},
             .beginTextEdit = [](TextEdit) {},
-            .textHeight = [](std::string_view text, float) { return fallbackTextHeight(text); },
+            .textHeight = [](std::string_view text, float,
+                             float fontSize) { return fallbackTextHeight(text, fontSize); },
+            .textSize = toolSettings_.textSize,
         };
         gestureTool_->cancel(context);
         gestureTool_ = nullptr;
@@ -682,8 +685,39 @@ void CanvasController::cancelTextEdit() {
     endTextEdit();
 }
 
-float CanvasController::textHeightFor(std::string_view text, float width) const {
-    return textLayout_ != nullptr ? textLayout_->heightFor(text, width) : fallbackTextHeight(text);
+float CanvasController::textHeightFor(std::string_view text, float width, float fontSize) const {
+    return textLayout_ != nullptr ? textLayout_->heightFor(text, width, fontSize)
+                                  : fallbackTextHeight(text, fontSize);
+}
+
+core::Result<void> CanvasController::applyTextFontSize(float fontSize) {
+    const float size = sanitizedTextFontSize(fontSize);
+    if (textEdit_) {
+        if (textEdit_->fontSize != size) {
+            textEdit_->fontSize = size; // the UI's editor follows it (CanvasWidget)
+            requestRedraw();
+        }
+        return {};
+    }
+    const document::Workspace& workspace = document_->workspace();
+    std::vector<document::commands::TextFontSizeChange> changes;
+    for (const core::ElementId id : selection_.ids()) {
+        const document::Element* element = workspace.findElement(id);
+        const auto* box =
+            element != nullptr ? std::get_if<document::TextBox>(&element->payload) : nullptr;
+        if (box == nullptr || box->fontSize == size) {
+            continue;
+        }
+        changes.push_back({.element = id,
+                           .fontSize = size,
+                           .size = {box->size.x, textHeightFor(box->text, box->size.x, size)}});
+    }
+    if (changes.empty()) {
+        return {};
+    }
+    lastError_.reset();
+    commit(document::commands::setTextFontSize(workspace, changes));
+    return lastError_ ? core::Result<void>{tl::unexpected(*lastError_)} : core::Result<void>{};
 }
 
 core::Result<void> CanvasController::finishTextEdit(std::string text) {
@@ -701,10 +735,11 @@ core::Result<void> CanvasController::finishTextEdit(std::string text) {
         if (workspace.findElement(*edit.element) == nullptr) {
             return {};
         }
-        command = blank
-                      ? document::commands::deleteElement(workspace, *edit.element)
-                      : document::commands::editText(workspace, *edit.element, text,
-                                                     {edit.width, textHeightFor(text, edit.width)});
+        command = blank ? document::commands::deleteElement(workspace, *edit.element)
+                        : document::commands::editText(
+                              workspace, *edit.element, text,
+                              {edit.width, textHeightFor(text, edit.width, edit.fontSize)},
+                              edit.fontSize);
     } else {
         if (blank) {
             return {}; // an empty new box is not created
@@ -714,11 +749,13 @@ core::Result<void> CanvasController::finishTextEdit(std::string text) {
         if (!layer) {
             return {};
         }
-        const core::Vec2 size{edit.width, textHeightFor(text, edit.width)};
+        const core::Vec2 size{edit.width, textHeightFor(text, edit.width, edit.fontSize)};
         auto created = document::commands::createElement(
             workspace, *layer,
             {.transform = {.position = edit.position},
-             .payload = document::TextBox{.size = size, .text = std::move(text)}},
+             .payload = document::TextBox{.size = size,
+                                          .text = std::move(text),
+                                          .fontSize = edit.fontSize}},
             *ids_);
         if (!created) {
             return tl::unexpected(created.error());
@@ -747,7 +784,7 @@ render::TextureHandle CanvasController::textTexture(const document::Element& ele
     // The size is compared too: a resize preview has the element's content version but
     // another size, and its text wraps differently.
     const bool changed = inserted || cached.version != version || cached.size != box.size ||
-                         !cached.texture.isValid();
+                         cached.fontSize != box.fontSize || !cached.texture.isValid();
     bool refine = !changed && cached.pixelsPerUnit < ppu * 0.999F;
     const double cost = static_cast<double>(box.size.x) * static_cast<double>(box.size.y) *
                         static_cast<double>(ppu) * static_cast<double>(ppu);
@@ -759,9 +796,11 @@ render::TextureHandle CanvasController::textTexture(const document::Element& ele
         if (cached.texture.isValid()) {
             renderer.destroyTexture(cached.texture);
         }
-        cached.texture = renderer.createTexture(textLayout_->rasterize(box.text, box.size, ppu));
+        cached.texture =
+            renderer.createTexture(textLayout_->rasterize(box.text, box.size, box.fontSize, ppu));
         cached.version = version;
         cached.size = box.size;
+        cached.fontSize = box.fontSize;
         cached.pixelsPerUnit = ppu;
         ++textRasterized_;
         if (refine) {

@@ -32,7 +32,15 @@ ToolSettings sanitized(ToolSettings settings) noexcept {
     if (!document::isKnownShapeKind(shape.kind)) {
         shape.kind = document::ShapeKind::Rectangle;
     }
+    settings.textSize = sanitizedTextFontSize(settings.textSize);
     return settings;
+}
+
+float sanitizedTextFontSize(float size) noexcept {
+    if (!std::isfinite(size)) {
+        return document::kDefaultTextFontSize;
+    }
+    return std::clamp(std::round(size), document::kMinTextFontSize, document::kMaxTextFontSize);
 }
 
 } // namespace studyapp::canvas

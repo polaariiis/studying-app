@@ -589,6 +589,65 @@ TEST(CommandsTest, EditTextReplacesTextAndSizeInOneUndoableEdit) {
         ErrorCode::NotFound);
 }
 
+TEST(CommandsTest, TextFontSizeIsOneUndoableEditThatKeepsTextAndWidth) {
+    // 1.2-TXT-02.
+    TestWorkspace t;
+    const auto layer = t.addPath();
+    const auto a = t.addElement(layer, TextBox{.size = {100, 20}, .text = "a"});
+    const auto b = t.addElement(layer, TextBox{.size = {80, 20}, .text = "b", .fontSize = 24});
+    const auto boxOf = [&](core::ElementId id) {
+        return std::get<TextBox>(t.workspace.findElement(id)->payload);
+    };
+    EXPECT_EQ(boxOf(a).fontSize, kDefaultTextFontSize); // new boxes: the default
+
+    const auto undoBefore = t.editor.history().undoCount();
+    const std::vector<commands::TextFontSizeChange> changes{
+        {.element = a, .fontSize = 24, .size = {100, 36}},
+        {.element = b, .fontSize = 24, .size = {80, 20}}}; // b already has them: left out
+    auto command = commands::setTextFontSize(t.workspace, changes);
+    ASSERT_OK(command);
+    EXPECT_EQ(command->label, "Change text size");
+    EXPECT_EQ(command->patch.changes().size(), 1U);
+    t.run(std::move(command));
+    EXPECT_EQ(t.editor.history().undoCount(), undoBefore + 1);
+    EXPECT_EQ(boxOf(a), (TextBox{.size = {100, 36}, .text = "a", .fontSize = 24}));
+    ASSERT_OK(t.editor.undo());
+    EXPECT_EQ(boxOf(a), (TextBox{.size = {100, 20}, .text = "a"}));
+    ASSERT_OK(t.editor.redo());
+    EXPECT_EQ(boxOf(a).fontSize, 24.0F);
+
+    // Unchanged: an empty command. Errors as for editText.
+    auto same = commands::setTextFontSize(t.workspace, changes);
+    ASSERT_OK(same);
+    EXPECT_TRUE(same->patch.empty());
+    const auto stroke = t.addElement(layer, makeStroke());
+    const std::vector<commands::TextFontSizeChange> notText{{.element = stroke, .fontSize = 20}};
+    EXPECT_EQ(commands::setTextFontSize(t.workspace, notText).error().code,
+              ErrorCode::InvalidArgument);
+    const std::vector<commands::TextFontSizeChange> unknown{
+        {.element = core::ElementId{t.ids.next()}, .fontSize = 20}};
+    EXPECT_EQ(commands::setTextFontSize(t.workspace, unknown).error().code, ErrorCode::NotFound);
+
+    // Invalid sizes are rejected by the workspace, which stays unchanged.
+    for (const float invalid : {0.0F, 5.0F, 145.0F, 16.5F, std::numeric_limits<float>::quiet_NaN(),
+                                std::numeric_limits<float>::infinity()}) {
+        const std::vector<commands::TextFontSizeChange> bad{
+            {.element = a, .fontSize = invalid, .size = {100, 20}}};
+        auto rejected = commands::setTextFontSize(t.workspace, bad);
+        ASSERT_OK(rejected);
+        EXPECT_EQ(t.editor.execute(std::move(*rejected)).error().code, ErrorCode::InvalidArgument)
+            << invalid;
+        EXPECT_EQ(boxOf(a).fontSize, 24.0F);
+    }
+
+    // editText writes a font size chosen while editing; without one it keeps the box's.
+    t.run(commands::editText(t.workspace, a, "a b", {100, 64}, 48.0F));
+    EXPECT_EQ(boxOf(a), (TextBox{.size = {100, 64}, .text = "a b", .fontSize = 48}));
+    t.run(commands::editText(t.workspace, a, "a b c", {100, 64}));
+    EXPECT_EQ(boxOf(a).fontSize, 48.0F);
+    EXPECT_TRUE(isValidTextFontSize(6.0F) && isValidTextFontSize(144.0F));
+}
+
 TEST(CommandsTest, TheConnectorIndexAndSetConnectorEnds) {
     TestWorkspace t;
     const auto layer = t.addPath();

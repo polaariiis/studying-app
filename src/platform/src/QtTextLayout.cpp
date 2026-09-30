@@ -19,10 +19,11 @@ QString toQString(std::string_view text) {
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
 }
 
-/// The document text boxes are laid out with (plain text, no margin, wrapped).
-void prepare(QTextDocument& document, std::string_view text, float width) {
+/// The document text boxes are laid out with (plain text at the box's font size, no margin,
+/// wrapped).
+void prepare(QTextDocument& document, std::string_view text, float width, float fontSize) {
     QFont font = QGuiApplication::font();
-    font.setPixelSize(static_cast<int>(canvas::kTextSize));
+    font.setPixelSize(std::max(1, static_cast<int>(std::lround(fontSize))));
     document.setDefaultFont(font);
     document.setDocumentMargin(0.0);
     document.setPlainText(toQString(text));
@@ -31,14 +32,14 @@ void prepare(QTextDocument& document, std::string_view text, float width) {
 
 } // namespace
 
-float QtTextLayout::heightFor(std::string_view text, float width) {
+float QtTextLayout::heightFor(std::string_view text, float width, float fontSize) {
     QTextDocument document;
-    prepare(document, text, width);
+    prepare(document, text, width, fontSize);
     return static_cast<float>(document.size().height()) + 2.0F * canvas::kTextPadding;
 }
 
 render::ImageData QtTextLayout::rasterize(std::string_view text, const core::Vec2& size,
-                                          float pixelsPerUnit) {
+                                          float fontSize, float pixelsPerUnit) {
     render::ImageData image;
     if (text.empty() || !(pixelsPerUnit > 0.0F)) {
         return image;
@@ -49,7 +50,7 @@ render::ImageData QtTextLayout::rasterize(std::string_view text, const core::Vec
     raster.fill(Qt::transparent);
     {
         QTextDocument document;
-        prepare(document, text, size.x);
+        prepare(document, text, size.x, fontSize);
         QPainter painter(&raster);
         painter.setRenderHint(QPainter::TextAntialiasing);
         painter.scale(pixelsPerUnit, pixelsPerUnit);

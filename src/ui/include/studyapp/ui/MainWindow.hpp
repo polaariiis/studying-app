@@ -238,6 +238,12 @@ private:
     void syncInkActions();
     /// Swatch and width icons of the style menus; they depend on the theme only.
     void refreshInkIcons();
+    /// Tools ▸ Text Size (1.2): remembers `size` for new text boxes and applies it to the
+    /// text being edited or the selected text boxes (canvas::CanvasController).
+    void chooseTextSize(float size);
+    /// The size the Text Size menu shows as checked: the edited box's, else the selected
+    /// text boxes' (when they share one), else the size for new boxes.
+    [[nodiscard]] float shownTextSize() const;
 
     // Chrome.
     void syncThemeActions();
@@ -348,11 +354,16 @@ private:
     bool eraseWholeStrokes_ = false;
     QActionGroup* eraserModeGroup_ = nullptr;
     QMenu* eraserMenu_ = nullptr;
+    /// Font size of new text boxes (canvas::ToolSettings::textSize), remembered per user;
+    /// choosing a size also applies it to the text being edited or the selected text boxes.
+    float textSize_ = 0.0F; ///< canvas::kTextSize until the settings are read
+    QActionGroup* textSizeGroup_ = nullptr;
+    QMenu* textSizeMenu_ = nullptr;
     /// The toolbar's style button: the style of the ink tool chosen last (pen/highlighter).
     /// A plain button with QToolButton::setMenu: QAction::setMenu would make the style
     /// menus' own entries in the Tools menu point at the button.
     QToolButton* inkStyleButton_ = nullptr;
-    /// Whose style the button shows: canvas::ToolKind Pen, Highlighter or Shape.
+    /// Whose style the button shows: canvas::ToolKind Pen, Highlighter, Shape or Text.
     int styleShown_ = 0;
     QAction* navigationAction_ = nullptr;
     QActionGroup* themeGroup_ = nullptr;

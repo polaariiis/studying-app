@@ -197,8 +197,12 @@ Result<void> checkPayload(const Stroke& stroke) {
 }
 
 Result<void> checkPayload(const TextBox& text) {
-    return isNonNegative(text.size) ? Result<void>{}
-                                    : invalid("text box size must be finite and non-negative");
+    if (!isNonNegative(text.size)) {
+        return invalid("text box size must be finite and non-negative");
+    }
+    return isValidTextFontSize(text.fontSize)
+               ? Result<void>{}
+               : invalid("text font size must be a whole number in [6, 144]");
 }
 
 Result<void> checkPayload(const Shape& shape) {

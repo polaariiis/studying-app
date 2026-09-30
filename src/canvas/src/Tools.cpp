@@ -574,16 +574,18 @@ void TextTool::onPointer(const PointerEvent& event, ToolContext& context) {
                     context.beginTextEdit({.element = hit,
                                            .position = element.transform.position,
                                            .width = box->size.x,
-                                           .text = box->text});
+                                           .text = box->text,
+                                           .fontSize = box->fontSize});
                     return;
                 }
             }
-            context.beginTextEdit({.position = startWorld_});
+            context.beginTextEdit({.position = startWorld_, .fontSize = context.textSize});
             return;
         }
         const auto width = static_cast<float>(std::abs(world.x - startWorld_.x));
         context.beginTextEdit({.position = {std::min(world.x, startWorld_.x), startWorld_.y},
-                               .width = std::max(width, kMinTextWidth)});
+                               .width = std::max(width, kMinTextWidth),
+                               .fontSize = context.textSize});
         return;
     }
     case PointerPhase::Cancel:

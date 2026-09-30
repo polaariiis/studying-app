@@ -56,6 +56,8 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <array>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -83,6 +85,10 @@ const QString kShapeKindKey = QStringLiteral("tools/shapeKind");
 const QString kShapeColorKey = QStringLiteral("tools/shapeColor");
 const QString kShapeWidthKey = QStringLiteral("tools/shapeWidth");
 const QString kShapeFillKey = QStringLiteral("tools/shapeFill");
+const QString kTextSizeKey = QStringLiteral("tools/textSize");
+
+/// Tools ▸ Text Size presets (font pixel sizes, world units; 16 is the default).
+constexpr std::array<int, 7> kTextSizePresets{12, 16, 20, 24, 32, 48, 72};
 
 struct ShapeKindName {
     document::ShapeKind kind;
@@ -451,7 +457,8 @@ void MainWindow::createActions() {
         action->setActionGroup(toolGroup_);
         connect(action, &QAction::triggered, this, [this, tool] {
             if (tool == canvas::ToolKind::Pen || tool == canvas::ToolKind::Highlighter ||
-                tool == canvas::ToolKind::Shape || tool == canvas::ToolKind::Connector) {
+                tool == canvas::ToolKind::Shape || tool == canvas::ToolKind::Connector ||
+                tool == canvas::ToolKind::Text) {
                 // Connectors are drawn in the shape style's colour and width.
                 styleShown_ = static_cast<int>(
                     tool == canvas::ToolKind::Connector ? canvas::ToolKind::Shape : tool);
@@ -547,6 +554,27 @@ void MainWindow::createActions() {
         });
     }
     eraserMenu_->addActions(eraserModeGroup_->actions());
+
+    // Text size (1.2): for new text boxes, and applied to the edited or selected ones.
+    textSize_ = canvas::kTextSize;
+    textSizeMenu_ = new QMenu(tr("Te&xt Size"), this);
+    textSizeMenu_->setObjectName(QStringLiteral("menuTextSize"));
+    textSizeGroup_ = new QActionGroup(this);
+    textSizeGroup_->setExclusive(true);
+    for (const int size : kTextSizePresets) {
+        auto* action =
+            new QAction(size == static_cast<int>(canvas::kTextSize) ? tr("%1 (default)").arg(size)
+                                                                    : QString::number(size),
+                        textSizeGroup_);
+        action->setObjectName(QStringLiteral("actionTextSize_%1").arg(size));
+        action->setCheckable(true);
+        action->setData(size);
+        connect(action, &QAction::triggered, this,
+                [this, size] { chooseTextSize(static_cast<float>(size)); });
+    }
+    textSizeMenu_->addActions(textSizeGroup_->actions());
+    // The checked size follows the edited or selected text box when the menu opens.
+    connect(textSizeMenu_, &QMenu::aboutToShow, this, &MainWindow::syncInkActions);
 
     // ---- View
     navigationAction_ = make(tr("&Navigation"), QStringLiteral("actionNavigation"),
@@ -742,6 +770,7 @@ void MainWindow::createMenus() {
     toolsMenu->addMenu(pen_.menu);
     toolsMenu->addMenu(highlighter_.menu);
     toolsMenu->addMenu(shape_.menu);
+    toolsMenu->addMenu(textSizeMenu_);
     toolsMenu->addMenu(eraserMenu_);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
@@ -957,6 +986,11 @@ void MainWindow::readSettings() {
         }
     }
     shapeFill_ = settings_->value(kShapeFillKey, false).toBool();
+    bool textSizeOk = false;
+    const float textSize = settings_->value(kTextSizeKey).toFloat(&textSizeOk);
+    if (textSizeOk) {
+        textSize_ = textSize; // made valid by applyToolSettings
+    }
     applyToolSettings();
 }
 
@@ -977,6 +1011,7 @@ void MainWindow::writeSettings() {
     settings_->setValue(kShapeColorKey, shape_.color.name(QColor::HexArgb));
     settings_->setValue(kShapeWidthKey, shape_.width);
     settings_->setValue(kShapeFillKey, shapeFill_);
+    settings_->setValue(kTextSizeKey, textSize_);
     for (const ShapeKindName& entry : kShapeKinds) {
         if (static_cast<int>(entry.kind) == shapeKind_) {
             settings_->setValue(kShapeKindKey, QString::fromLatin1(entry.name));
@@ -1873,7 +1908,9 @@ void MainWindow::applyToolSettings() {
                       .color = toCoreColor(shape_.color),
                       .width = shape_.width,
                       .fill = shapeFill_};
+    settings.textSize = textSize_;
     settings = canvas::sanitized(settings);
+    textSize_ = settings.textSize;
     shapeKind_ = static_cast<int>(settings.shape.kind);
     shape_.color = toQColor(settings.shape.color);
     shape_.width = settings.shape.width;
@@ -1916,6 +1953,48 @@ void MainWindow::refreshInkIcons() {
     }
 }
 
+void MainWindow::chooseTextSize(float size) {
+    textSize_ = size;
+    styleShown_ = static_cast<int>(canvas::ToolKind::Text);
+    applyToolSettings(); // new boxes; also syncs the menu and the style button
+    if (!open_) {
+        return;
+    }
+    if (auto applied = open_->controller->applyTextFontSize(textSize_); !applied) {
+        dialogs_->showError(this, tr("The text size could not be changed."),
+                            errorText(applied.error()));
+    }
+    if (canvasWidget_ != nullptr) {
+        canvasWidget_->refreshTextEditor(); // the editor shows the new size at once
+    }
+    syncInkActions();
+}
+
+float MainWindow::shownTextSize() const {
+    if (!open_) {
+        return textSize_;
+    }
+    const canvas::CanvasController& controller = *open_->controller;
+    if (const auto& edit = controller.textEdit()) {
+        return edit->fontSize;
+    }
+    std::optional<float> shared;
+    const document::Workspace& workspace = open_->session->workspace();
+    for (const core::ElementId id : controller.selection().ids()) {
+        const document::Element* element = workspace.findElement(id);
+        const auto* box =
+            element != nullptr ? std::get_if<document::TextBox>(&element->payload) : nullptr;
+        if (box == nullptr) {
+            continue;
+        }
+        if (shared && *shared != box->fontSize) {
+            return textSize_; // mixed sizes: none of them is shown
+        }
+        shared = box->fontSize;
+    }
+    return shared.value_or(textSize_);
+}
+
 void MainWindow::syncInkActions() {
     if (pen_.colors == nullptr || highlighter_.colors == nullptr || shape_.colors == nullptr) {
         return;
@@ -1939,11 +2018,24 @@ void MainWindow::syncInkActions() {
             action->setChecked(std::abs(action->data().toFloat() - ink->width) < 0.01F);
         }
     }
+    const float textSize = shownTextSize();
+    if (textSizeGroup_ != nullptr) {
+        for (QAction* action : textSizeGroup_->actions()) {
+            action->setChecked(static_cast<float>(action->data().toInt()) == textSize);
+        }
+    }
     if (inkStyleButton_ == nullptr) {
         return;
     }
     const QColor border = toQColor(themes_->tokens().borderStrong);
     const auto shownTool = static_cast<canvas::ToolKind>(styleShown_);
+    if (shownTool == canvas::ToolKind::Text) {
+        inkStyleButton_->setMenu(textSizeMenu_);
+        inkStyleButton_->setIcon(textSizeIcon(textSize, toQColor(themes_->tokens().textSecondary)));
+        inkStyleButton_->setToolTip(tr("Text size: %1").arg(static_cast<int>(textSize)));
+        inkStyleButton_->setAccessibleName(inkStyleButton_->toolTip());
+        return;
+    }
     const InkControls& shown = shownTool == canvas::ToolKind::Highlighter ? highlighter_
                                : shownTool == canvas::ToolKind::Shape     ? shape_
                                                                           : pen_;

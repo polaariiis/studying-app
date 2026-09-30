@@ -176,7 +176,7 @@ struct Element {
 |---|---|---|
 | (index) | `Workspace::connectorsAttachedTo(element)`: connectors attached to an element, maintained with every applied change and checked by `validate()` (Phase 6) | — |
 | `Stroke` (1) | brush, colour (straight RGBA; highlighters are translucent), base width, points `{x, y, pressure}` in element-local space | smoothing, LOD (Phase 4); `Brush::Highlighter` is drawn at full width regardless of pressure (Phase 6) |
-| `TextBox` (2) | box size, **plain** UTF-8 text | rich-text model (§4.3, Phase 6) |
+| `TextBox` (2) | box size, **plain** UTF-8 text, font size (1.2; whole number in [6, 144], default 16) | rich-text model (§4.3, Phase 6) |
 | `Shape` (3) | kind (rectangle, ellipse, line), size, stroke colour/width, fill | polygons, dashes, corner radius (Phase 6) |
 | `Image` (4) | `AssetId` (content-addressed asset store since Phase 3), displayed size | crop (Phase 6) |
 | `Connector` (5) | two ends (world position + optional attached element), colour, width | routing, arrow caps, labels (Phase 6) |

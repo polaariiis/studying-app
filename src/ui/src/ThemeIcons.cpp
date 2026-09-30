@@ -1,5 +1,6 @@
 #include "ThemeIcons.hpp"
 
+#include <QFont>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -115,6 +116,23 @@ QIcon shapeIcon(document::ShapeKind kind, const QColor& color, bool filled) {
             break;
         }
         }
+    }
+    return QIcon(pixmap);
+}
+
+QIcon textSizeIcon(float fontSize, const QColor& color) {
+    QPixmap pixmap = blank();
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::TextAntialiasing);
+        QFont font = painter.font();
+        font.setPixelSize(static_cast<int>(std::clamp(6.0F + fontSize * 0.25F, 8.0F, 18.0F)));
+        font.setBold(true);
+        painter.setFont(font);
+        painter.setPen(color);
+        painter.drawText(QRectF(0.0, 0.0, kLogicalSize, kLogicalSize), Qt::AlignCenter,
+                         QStringLiteral("A"));
     }
     return QIcon(pixmap);
 }

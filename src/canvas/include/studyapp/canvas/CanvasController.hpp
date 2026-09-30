@@ -153,8 +153,15 @@ public:
     core::Result<void> finishTextEdit(std::string text);
     /// Ends the edit without writing anything.
     void cancelTextEdit();
-    /// Height the box being edited needs for `text` (the editor overlay follows it).
-    [[nodiscard]] float textHeightFor(std::string_view text, float width) const;
+    /// Height a box `width` wide needs for `text` at `fontSize` (the editor overlay follows
+    /// it for the box being edited).
+    [[nodiscard]] float textHeightFor(std::string_view text, float width, float fontSize) const;
+    /// Applies a font size (made valid, sanitizedTextFontSize) to text (1.2): to the box
+    /// being edited — written with its text when the edit finishes — or else to the
+    /// selected text boxes as one command ("Change text size"; their heights follow the
+    /// layout, their width and text stay). Nothing selected or editing: nothing changes (the
+    /// size for new boxes is ToolSettings::textSize).
+    core::Result<void> applyTextFontSize(float fontSize);
 
     // ---- images (docs/CANVAS.md §10) -------------------------------------------------------
     /// Decodes image assets (the UI's implementation over the workspace; not owned: it must
@@ -249,9 +256,9 @@ private:
     void requestRedraw() const;
     void updateErasePreview(render::Renderer& renderer, int lodBucket);
     void endTextEdit();
-    /// The texture of a text box at `pixelsPerUnit`, (re)rasterised when its content or its
-    /// size changed (a resize preview is laid out for its new width, not stretched) or a
-    /// finer resolution is due (refinements within kTextRefinePixelBudget).
+    /// The texture of a text box at `pixelsPerUnit`, (re)rasterised when its content, font
+    /// size or box size changed (a resize preview is laid out for its new width, not
+    /// stretched) or a finer resolution is due (refinements within kTextRefinePixelBudget).
     render::TextureHandle textTexture(const document::Element& element, std::uint64_t version,
                                       float pixelsPerUnit, render::Renderer& renderer);
 
@@ -367,7 +374,8 @@ private:
     // Text.
     struct TextTexture {
         std::uint64_t version = 0;
-        core::Vec2 size{}; ///< the box size it was laid out for
+        core::Vec2 size{};     ///< the box size it was laid out for
+        float fontSize = 0.0F; ///< the font size it was laid out at
         float pixelsPerUnit = 0.0F;
         render::TextureHandle texture{};
     };
