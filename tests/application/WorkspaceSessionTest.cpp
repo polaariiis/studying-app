@@ -515,6 +515,48 @@ TEST_F(WorkspaceSessionTest, SaveCopyKeepsChangesTheDatabaseRefused) {
     ASSERT_OK((*copy)->close());
 }
 
+TEST_F(WorkspaceSessionTest, SaveCopyRefusesMissingAssetFilesBeforeWritingAnything) {
+    auto session = create();
+    ASSERT_NE(session, nullptr);
+    const auto layer = addPath(*session);
+    const auto source = dir / "photo.png";
+    std::ofstream(source, std::ios::binary) << "image bytes";
+    auto asset = session->importAsset(source, "image/png");
+    ASSERT_OK(asset);
+    addElement(*session, layer, document::Image{.asset = *asset, .size = {40, 30}});
+    auto file = session->assetPath(*asset);
+    ASSERT_OK(file);
+    const auto aside = dir / "aside.png";
+    std::filesystem::rename(*file, aside);
+
+    const auto copyRoot = dir / "Rescued.studyws";
+    auto refused = session->saveCopy(copyRoot);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, core::ErrorCode::NotFound);
+    EXPECT_NE(refused.error().message.find(asset->toString()), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(copyRoot)); // nothing half-written
+
+    std::filesystem::rename(aside, *file); // with the file back, the same target works
+    ASSERT_OK(session->saveCopy(copyRoot));
+    EXPECT_TRUE(WorkspaceSession::isWorkspace(copyRoot));
+}
+
+TEST_F(WorkspaceSessionTest, LeftoverTemporaryFilesDoNotBlockOpening) {
+    auto session = create();
+    ASSERT_NE(session, nullptr);
+    ASSERT_OK(session->close());
+    session.reset();
+    // Still open for writing (an import of another process, say): Windows cannot remove it.
+    const auto leftover = root() / "temporary" / "busy.part";
+    std::filesystem::create_directories(leftover.parent_path());
+    std::ofstream busy(leftover, std::ios::binary);
+    busy << "partial";
+    busy.flush();
+    auto reopened = WorkspaceSession::open(root(), {}, services());
+    ASSERT_OK(reopened);
+    ASSERT_OK((*reopened)->close());
+}
+
 TEST_F(WorkspaceSessionTest, WriteFailureKeepsTheEditQueuedAndRetries) {
     auto session = create();
     ASSERT_NE(session, nullptr);

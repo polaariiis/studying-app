@@ -58,6 +58,7 @@
 
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace studyapp::ui {
 
@@ -232,13 +233,15 @@ MainWindow::MainWindow(ThemeManager& themes, QSettings& settings, const Workspac
 }
 
 MainWindow::~MainWindow() {
-    detach(true); // best effort: pending writes are flushed; failures are logged
+    jobs_->waitForDone(); // their file work writes into the workspace, which is still locked
+    detach(true);         // best effort: pending writes are flushed; failures are logged
 }
 
 void MainWindow::setUp() {
     setObjectName(QStringLiteral("mainWindow"));
     setWindowIcon(applicationIcon());
     resize(1200, 760);
+    jobs_ = std::make_unique<QThreadPool>();
 
     createActions();
     createMenus();
@@ -277,8 +280,8 @@ void MainWindow::createActions() {
     closeWorkspaceAction_ = make(tr("&Close Workspace"), QStringLiteral("actionCloseWorkspace"),
                                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_W));
     connect(closeWorkspaceAction_, &QAction::triggered, this, [this] {
-        if (closeWorkspace()) {
-            settings_->remove(kLastKey); // closed on purpose: start on the welcome screen
+        if (closeWorkspace() && !open_) { // not continuing in a rescued copy
+            settings_->remove(kLastKey);  // closed on purpose: start on the welcome screen
         }
     });
     // Changes are saved continuously; Save only makes sure nothing is pending.
@@ -1102,7 +1105,7 @@ bool MainWindow::openWorkspace(const std::filesystem::path& root, OpenMode mode)
         return false;
     }
     // The new workspace is open; now let go of the previous one.
-    if (!closeWorkspace()) {
+    if (std::optional<std::filesystem::path> rescued; !releaseWorkspace(rescued)) {
         return false; // the user kept the previous one (unsaved changes); the new one closes
     }
     // Opening never writes: an empty workspace opens on an empty canvas (New Page etc. are
@@ -1132,7 +1135,7 @@ bool MainWindow::createWorkspace(const std::filesystem::path& root) {
                       errorText(created.error()));
         return false;
     }
-    if (!closeWorkspace()) {
+    if (std::optional<std::filesystem::path> rescued; !releaseWorkspace(rescued)) {
         return false;
     }
     application::WorkspaceSession& session = **created;
@@ -1148,12 +1151,31 @@ bool MainWindow::createWorkspace(const std::filesystem::path& root) {
 }
 
 bool MainWindow::closeWorkspace() {
+    std::optional<std::filesystem::path> rescued; // a copy saved instead (P3-01)
+    if (!releaseWorkspace(rescued)) {
+        return false;
+    }
+    if (rescued && services_) {
+        (void)openWorkspace(*rescued); // carry on in the copy
+    }
+    return true;
+}
+
+bool MainWindow::releaseWorkspace(std::optional<std::filesystem::path>& rescued) {
     if (!open_) {
         return true;
     }
     finishTextEditing(); // written (and flushed below) before the workspace closes
     planner_->finishEditing();
-    std::optional<std::filesystem::path> rescued; // a copy saved instead (P3-01)
+    closing_ = true; // imports finishing during the questions below wait
+    const auto keepOpen = [this] {
+        closing_ = false;
+        for (auto& finish : std::exchange(deferredFinishes_, {})) {
+            finish();
+        }
+        updateStatus();
+        return false;
+    };
     if (open_->owned) {
         // Writes are continuous; this only catches what a failed write left pending
         // (P3-01): never close silently over unsaved changes.
@@ -1167,8 +1189,7 @@ bool MainWindow::closeWorkspace() {
             case ShellDialogs::UnsavedChoice::Retry:
                 continue;
             case ShellDialogs::UnsavedChoice::Cancel:
-                updateStatus();
-                return false;
+                return keepOpen();
             case ShellDialogs::UnsavedChoice::SaveCopy: {
                 // Everything as it is in memory, into a new workspace; then this one closes.
                 const auto target = dialogs_->chooseNewWorkspace(this);
@@ -1194,15 +1215,25 @@ bool MainWindow::closeWorkspace() {
             break;
         }
     }
+    if (backgroundJobs_ > 0) {
+        // Imports still copying write into this workspace's temporary/: finish them while
+        // it is locked (a copy takes about 0.4 s per 50 MB); their results are dropped.
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        jobs_->waitForDone();
+        QApplication::restoreOverrideCursor();
+    }
+    deferredFinishes_.clear();
+    closing_ = false;
     detach(true);
-    if (rescued && services_) {
-        (void)openWorkspace(*rescued); // carry on in the copy
+    if (rescued) {
+        rememberWorkspace(*rescued); // in Open Recent, and opened on the next start
     }
     return true;
 }
 
 void MainWindow::attach(std::unique_ptr<OpenWorkspace> workspace,
                         std::optional<core::PageId> page) {
+    detach(true); // normally closed already; never replace a workspace the canvas still shows
     open_ = std::move(workspace);
     application::WorkspaceSession& session = *open_->session;
     // Every applied patch — canvas edits, structure edits, undo and redo — keeps the
@@ -1294,7 +1325,7 @@ void MainWindow::openWorkspaceDialog() {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     writeSettings();
-    if (!closeWorkspace()) {
+    if (std::optional<std::filesystem::path> rescued; !releaseWorkspace(rescued)) {
         event->ignore(); // unsaved changes and the user kept the workspace open
         return;
     }
@@ -1954,17 +1985,28 @@ void MainWindow::runInBackground(std::function<std::function<void()>()> work) {
     const std::weak_ptr<void> workspace = open_->alive;
     const QPointer<MainWindow> window(this);
     ++backgroundJobs_;
-    QThreadPool::globalInstance()->start([work = std::move(work), workspace, window] {
-        std::function<void()> finish = work();
+    jobs_->start([work = std::move(work), workspace, window] {
+        std::function<void()> finish;
+        try {
+            finish = work();
+        } catch (const std::exception& error) { // e.g. std::bad_alloc, filesystem errors
+            finish = [window, what = QString::fromLocal8Bit(error.what())] {
+                window->dialogs_->showError(window, tr("The file could not be imported."), what);
+            };
+        }
         QMetaObject::invokeMethod(
             qApp,
-            [finish = std::move(finish), workspace, window] {
+            [finish = std::move(finish), workspace, window]() mutable {
                 if (window == nullptr) {
                     return;
                 }
                 --window->backgroundJobs_;
                 if (!workspace.expired() && finish) {
-                    finish();
+                    if (window->closing_) {
+                        window->deferredFinishes_.push_back(std::move(finish));
+                    } else {
+                        finish();
+                    }
                 }
                 window->updateStatus();
             },

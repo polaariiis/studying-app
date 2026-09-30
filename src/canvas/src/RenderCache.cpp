@@ -90,12 +90,20 @@ void RenderCache::prebuild(std::span<const Request> requests, int lodBucket) {
     }
     // Parallel: each entry is written by one thread only.
     const float pixels = pixelsPerUnit(lodBucket);
-    detail::parallelFor(
-        pending.size(), kPrebuildPerThread, [&](std::size_t begin, std::size_t end) {
-            for (std::size_t i = begin; i < end; ++i) {
-                pending[i].first->parts = buildElementMeshes(*pending[i].second, pixels);
-            }
-        });
+    try {
+        detail::parallelFor(
+            pending.size(), kPrebuildPerThread, [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i) {
+                    pending[i].first->parts = buildElementMeshes(*pending[i].second, pixels);
+                }
+            });
+    } catch (...) {
+        // Marked up to date above: drop them all so that ensure() builds them again.
+        for (const auto& [entry, element] : pending) {
+            entries_.erase(element->id);
+        }
+        throw;
+    }
     for (const auto& [entry, element] : pending) {
         entry->bytes = bytesOf(entry->parts);
         cpuBytes_ += entry->bytes;

@@ -25,6 +25,7 @@ class QMenu;
 class QSettings;
 class QSplitter;
 class QStackedWidget;
+class QThreadPool;
 class QToolButton;
 
 namespace studyapp::application {
@@ -121,7 +122,8 @@ public:
     /// Imports still copying files on pool threads (tests wait for 0).
     [[nodiscard]] int backgroundJobCount() const noexcept { return backgroundJobs_; }
     /// Closes the open workspace after writing anything pending. false if changes could
-    /// not be written and the user chose to keep the workspace open.
+    /// not be written and the user chose to keep the workspace open. If the user saved a
+    /// copy instead (P3-01), work continues in the copy.
     bool closeWorkspace();
     [[nodiscard]] bool hasWorkspace() const noexcept;
     [[nodiscard]] application::WorkspaceSession* session() const noexcept;
@@ -170,6 +172,9 @@ private:
     void readSettings();
     void writeSettings();
 
+    /// closeWorkspace without continuing anywhere: where another workspace follows or the
+    /// application quits. A copy saved instead (P3-01) is only remembered, in `rescued`.
+    bool releaseWorkspace(std::optional<std::filesystem::path>& rescued);
     void attach(std::unique_ptr<OpenWorkspace> workspace, std::optional<core::PageId> page);
     void detach(bool closeSession);
     void rememberWorkspace(const std::filesystem::path& root);
@@ -296,6 +301,13 @@ private:
     QAction* insertImageAction_ = nullptr;
     QAction* importPdfAction_ = nullptr;
     int backgroundJobs_ = 0; ///< imports running on pool threads
+    /// The imports' pool: closing a workspace waits for their file work, which writes into
+    /// its temporary/ directory (only while the workspace is locked).
+    std::unique_ptr<QThreadPool> jobs_;
+    /// While closing asks its questions, finished imports wait: they apply if the user keeps
+    /// the workspace and are dropped with it otherwise.
+    bool closing_ = false;
+    std::vector<std::function<void()>> deferredFinishes_;
     QAction* exportPageAction_ = nullptr;
     QAction* exportSectionAction_ = nullptr;
     QAction* printAction_ = nullptr;

@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <deque>
 #include <random>
@@ -330,9 +331,11 @@ Result<std::unique_ptr<WorkspaceSession>> WorkspaceSession::open(const std::file
         }
     }
     if (!readOnly) {
-        // Safe only while holding the lock (docs/DATABASE_SCHEMA.md §9).
+        // Safe only while holding the lock (docs/DATABASE_SCHEMA.md §9). A leftover that
+        // cannot be removed (still open elsewhere, permissions) is no reason to refuse the
+        // workspace: staging names are random, so it is never reused; the next open retries.
         if (auto cleaned = file->cleanTemporary(); !cleaned) {
-            return forward(cleaned);
+            core::logWarning(kLogCategory, "temporary files left: " + cleaned.error().message);
         }
     }
 
@@ -621,7 +624,15 @@ public:
             Staging staging;
             staging.path_ = base / ("studyboard-" + std::string(hex.data()));
             if (std::filesystem::create_directory(staging.path_, ec) && !ec) {
-                return staging;
+                // Owner only, before anything is written: other users of a shared temporary
+                // directory must not read the notebook passing through (POSIX; no-op on
+                // Windows, where the user's temporary directory is private).
+                std::filesystem::permissions(staging.path_, std::filesystem::perms::owner_all,
+                                             std::filesystem::perm_options::replace, ec);
+                if (!ec) {
+                    return staging;
+                }
+                return makeError(ErrorCode::IoError, "cannot restrict a temporary directory");
             }
             staging.path_.clear(); // not ours: never removed
         }
@@ -653,6 +664,17 @@ bool isInside(const std::filesystem::path& path, const std::filesystem::path& di
     const auto resolvedDirectory = std::filesystem::weakly_canonical(directory, directoryError);
     if (pathError || directoryError || resolvedPath.empty()) {
         return true;
+    }
+    // Another drive (Windows: "D:" and "C:"); lexically_relative has no answer for it. Drive
+    // letters compare without case.
+    const auto lower = [](const std::filesystem::path& root) {
+        std::string name = root.root_name().generic_string();
+        std::ranges::transform(name, name.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return name;
+    };
+    if (lower(resolvedPath) != lower(resolvedDirectory)) {
+        return false;
     }
     const auto relative =
         resolvedPath.lexically_normal().lexically_relative(resolvedDirectory.lexically_normal());
@@ -707,14 +729,8 @@ Result<void> WorkspaceSession::saveCopy(const std::filesystem::path& root) {
                          "a copy cannot be saved inside the workspace directory");
     }
     const document::Workspace& ws = impl_->workspace;
-    document::WorkspaceInfo info = ws.info();
-    info.id = core::WorkspaceId::generate(*impl_->ids);
-    auto file = persistence::WorkspaceFile::create(root, info, core::build::kVersion);
-    if (!file) {
-        return forward(file);
-    }
-    // Assets keep their ids (the records reference them); files are copied and re-hashed.
-    persistence::AssetStore assets(file->database(), root);
+    // Every asset file is looked up before anything is written: a copy that lacks one is
+    // refused up front (a row without its file would break the asset store's rules).
     std::vector<core::AssetId> used;
     for (const core::NotebookId notebook : ws.notebooks()) {
         const auto ofNotebook = assetsOf(ws, notebook);
@@ -722,26 +738,69 @@ Result<void> WorkspaceSession::saveCopy(const std::filesystem::path& root) {
     }
     std::sort(used.begin(), used.end());
     used.erase(std::unique(used.begin(), used.end()), used.end());
+    std::vector<std::pair<persistence::AssetInfo, std::filesystem::path>> sources;
+    std::string missing;
     for (const core::AssetId asset : used) {
         auto row = impl_->assets.find(asset);
         auto path = impl_->assets.pathOf(asset);
-        if (!row || !*row || !path) {
-            return makeError(ErrorCode::NotFound, "asset " + asset.toString() + " is missing");
+        std::error_code ec;
+        if (!row || !*row || !path || !std::filesystem::is_regular_file(*path, ec)) {
+            missing += (missing.empty() ? "" : ", ") + asset.toString();
+            continue;
         }
-        auto staged = persistence::AssetStore::stage(root, *path, asset.toString());
-        if (!staged) {
-            return forward(staged);
+        sources.emplace_back(**row, *path);
+    }
+    if (!missing.empty()) {
+        return makeError(ErrorCode::NotFound,
+                         "files of assets are missing (Check Workspace lists them): " + missing);
+    }
+
+    std::error_code ec;
+    const bool existed = std::filesystem::exists(root, ec);
+    bool created = false; // by this call: `root` was missing or empty (create() insists)
+    const auto write = [&]() -> Result<void> {
+        document::WorkspaceInfo info = ws.info();
+        info.id = core::WorkspaceId::generate(*impl_->ids);
+        auto file = persistence::WorkspaceFile::create(root, info, core::build::kVersion);
+        if (!file) {
+            return forward(file);
         }
-        if (auto stored = assets.commit(*staged, (*row)->mediaType, asset, *impl_->clock);
-            !stored) {
-            return forward(stored);
+        created = true;
+        // Assets keep their ids (the records reference them); files are copied and
+        // re-hashed.
+        persistence::AssetStore assets(file->database(), root);
+        for (const auto& [row, path] : sources) {
+            auto staged = persistence::AssetStore::stage(root, path, row.id.toString());
+            if (!staged) {
+                return forward(staged);
+            }
+            if (auto stored = assets.commit(*staged, row.mediaType, row.id, *impl_->clock);
+                !stored) {
+                return forward(stored);
+            }
+        }
+        persistence::WorkspaceStore store(file->database(), *impl_->clock);
+        if (auto written = store.write(document::commands::creationPatch(ws)); !written) {
+            return written;
+        }
+        return file->close();
+    };
+    auto written = write();
+    if (!written && created) {
+        // Half a copy would open as an empty workspace and block a retry into the same
+        // directory: remove what this call wrote (the directory was missing or empty).
+        if (existed) {
+            for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
+                std::filesystem::remove_all(entry.path(), ec);
+            }
+        } else {
+            std::filesystem::remove_all(root, ec);
+        }
+        if (ec) {
+            core::logWarning(kLogCategory, "cannot remove a failed copy: " + ec.message());
         }
     }
-    persistence::WorkspaceStore store(file->database(), *impl_->clock);
-    if (auto written = store.write(document::commands::creationPatch(ws)); !written) {
-        return written;
-    }
-    return file->close();
+    return written;
 }
 
 bool WorkspaceSession::isInsideWorkspace(const std::filesystem::path& path) const {

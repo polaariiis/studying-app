@@ -842,6 +842,70 @@ private Q_SLOTS:
         injectWriteFailure(path, false);
     }
 
+    // Save a Copy chosen while another workspace is being opened: the other one opens (not
+    // the copy, which is only remembered), and exactly one canvas remains.
+    void savingACopyWhileOpeningAnotherOpensTheOther() {
+        Shell shell(settings(QStringLiteral("savecopyopen")));
+        const auto other = freshPath(QStringLiteral("OpenedNext"));
+        QVERIFY(shell.window->createWorkspace(other));
+        const auto path = freshPath(QStringLiteral("FailingToo"));
+        QVERIFY(shell.window->createWorkspace(path));
+        injectWriteFailure(path, true);
+        const auto kept = shell.draw(*shell.window->activePage());
+        QVERIFY(shell.window->session()->pendingWriteCount() > 0);
+        const auto copy = freshPath(QStringLiteral("RescuedToo"));
+        shell.dialogs->unsaved = ScriptedDialogs::UnsavedChoice::SaveCopy;
+        shell.dialogs->newWorkspace = copy;
+        QVERIFY(shell.window->openWorkspace(other));
+        QCOMPARE(shell.window->session()->root(), other);
+        int canvases = 0;
+        for (QWidget* widget : shell.window->findChildren<QWidget*>()) {
+            canvases += widget->inherits("studyapp::ui::CanvasWidget") ? 1 : 0;
+        }
+        QCOMPARE(canvases, 1);
+        QVERIFY(shell.window->recentWorkspaces().contains(
+            QDir::toNativeSeparators(QString::fromStdU16String(copy.u16string()))));
+        QApplication::processEvents(); // a paint of a stale canvas would crash here
+        injectWriteFailure(path, false);
+        auto rescued = application::WorkspaceSession::open(
+            copy, {}, {.clock = shell.clock, .ids = shell.ids, .locker = shell.locker});
+        QVERIFY(rescued.has_value());
+        QVERIFY((*rescued)->workspace().findElement(kept) != nullptr);
+        QVERIFY((*rescued)->close().has_value());
+    }
+
+    // An import finishing while closing asks about unsaved changes waits for the answer:
+    // applied when the user keeps the workspace.
+    void importsFinishingDuringTheCloseQuestionWait() {
+        Shell shell(settings(QStringLiteral("importwait")));
+        const auto path = freshPath(QStringLiteral("ImportWait"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const auto page = *shell.window->activePage();
+        const auto layer = shell.ws().layersOf(page).front();
+        injectWriteFailure(path, true);
+        (void)shell.draw(page);
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("waiting.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        const auto before = shell.ws().elementsOf(layer).size();
+        bool deferred = false;
+        shell.dialogs->unsaved = ScriptedDialogs::UnsavedChoice::Cancel;
+        shell.dialogs->onUnsavedQuestion = [&] {
+            // The dialog's event loop delivers the result; the image must not appear yet.
+            (void)QTest::qWaitFor([&] { return shell.window->backgroundJobCount() == 0; });
+            QApplication::processEvents();
+            deferred = shell.ws().elementsOf(layer).size() == before;
+        };
+        QVERIFY(!shell.window->closeWorkspace());
+        shell.dialogs->onUnsavedQuestion = {};
+        QVERIFY(deferred);
+        QCOMPARE(shell.ws().elementsOf(layer).size(), before + 1); // applied after "Cancel"
+        injectWriteFailure(path, false);
+    }
+
     void failedWritesAreNeverClosedOverSilently() {
         Shell shell(settings(QStringLiteral("unsaved")));
         const auto path = freshPath(QStringLiteral("Unsaved"));

@@ -61,7 +61,8 @@ public:
     /// first problems if either reports any.
     [[nodiscard]] core::Result<void> integrityCheck();
 
-    /// Empties temporary/ (only safe while holding the workspace lock).
+    /// Empties temporary/ (only safe while holding the workspace lock). Removes what it can;
+    /// IoError names the first entry it could not remove.
     [[nodiscard]] core::Result<void> cleanTemporary();
 
     [[nodiscard]] core::Result<void> close() { return database_.close(); }

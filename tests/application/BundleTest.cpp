@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -191,6 +192,16 @@ TEST_F(BundleTest, TheWorkspaceDirectoryIsRecognisedHoweverItIsSpelled) {
     EXPECT_FALSE(session->isInsideWorkspace(root / ".." / "x.pdf"));
     EXPECT_FALSE(session->isInsideWorkspace(dir / "source-copy" / "x.pdf")); // a prefix only
     EXPECT_FALSE(session->isInsideWorkspace(dir / "x.pdf"));
+#ifdef _WIN32
+    // Another drive (a USB stick for Save a Copy); the drive letter's case does not matter.
+    const auto absolute = std::filesystem::absolute(root);
+    const wchar_t drive = absolute.native().front();
+    const wchar_t other = (drive == L'Q' || drive == L'q') ? L'R' : L'Q';
+    EXPECT_FALSE(session->isInsideWorkspace(std::filesystem::path(std::wstring{other} + L":/x")));
+    std::wstring lowered = absolute.native();
+    lowered.front() = static_cast<wchar_t>(std::towlower(lowered.front()));
+    EXPECT_TRUE(session->isInsideWorkspace(std::filesystem::path(lowered) / "x.pdf"));
+#endif
 }
 
 TEST_F(BundleTest, ExportRefusesTargetsInsideTheWorkspaceAndReadOnlyImports) {

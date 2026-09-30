@@ -58,6 +58,18 @@ jobs:
           cmake --build --preset package
           Push-Location build/package; cpack; Pop-Location
           Remove-Item $pfx
+      # A rebuilt package replaces the one package.yml smoke-tested: test this one too.
+      - name: Self-test the signed ZIP
+        if: env.HAVE_CERT == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive (Get-ChildItem build/package -Filter 'StudyBoard-*.zip').FullName `
+            -DestinationPath signed-zip
+          $exe = Get-ChildItem signed-zip -Recurse -Filter studyapp.exe | Select-Object -First 1
+          $out = & $exe.FullName --self-test | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0) { throw "self-test of the signed ZIP failed" }
       - uses: actions/upload-artifact@v4
         if: env.HAVE_CERT == 'true'
         with:
@@ -117,11 +129,23 @@ jobs:
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple "$dmg"
+          # Stapling changed the file: its checksum from CPack no longer matches.
+          (cd build/package && name=$(basename "$dmg") && shasum -a 256 "$name" > "$name.sha256")
+      # A rebuilt package replaces the one package.yml smoke-tested: test this one too.
+      - name: Self-test the signed DMG
+        if: env.HAVE_CERT == 'true'
+        run: |
+          set -euo pipefail
+          hdiutil attach build/package/StudyBoard-*.dmg -mountpoint /Volumes/StudyBoard -nobrowse
+          /Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --self-test
+          hdiutil detach /Volumes/StudyBoard
       - uses: actions/upload-artifact@v4
         if: env.HAVE_CERT == 'true'
         with:
           name: signed-macOS
-          path: build/package/StudyBoard-*.dmg
+          path: |
+            build/package/StudyBoard-*.dmg
+            build/package/StudyBoard-*.dmg.sha256
 
   publish:
     name: Draft release

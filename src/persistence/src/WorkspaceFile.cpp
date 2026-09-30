@@ -310,12 +310,15 @@ Result<void> WorkspaceFile::cleanTemporary() {
         return makeError(ErrorCode::IoError,
                          "cannot list '" + utf8(layout_.temporary()) + "': " + ec.message());
     }
+    std::string failed; // the first; the rest is still removed
     for (const auto& entry : entries) {
         std::filesystem::remove_all(entry, ec);
-        if (ec) {
-            return makeError(ErrorCode::IoError,
-                             "cannot remove '" + utf8(entry) + "': " + ec.message());
+        if (ec && failed.empty()) {
+            failed = "cannot remove '" + utf8(entry) + "': " + ec.message();
         }
+    }
+    if (!failed.empty()) {
+        return makeError(ErrorCode::IoError, std::move(failed));
     }
     return {};
 }
