@@ -28,7 +28,7 @@ namespace studyapp::ipc {
 class FileChannel {
 public:
     /// Largest message, in bytes (16 MiB).
-    static constexpr std::size_t kMaxMessageSize = 16u * 1024u * 1024u;
+    static constexpr std::size_t kMaxMessageSize = std::size_t{16} * 1024 * 1024;
     /// Wait without a limit.
     static constexpr std::chrono::milliseconds kWaitForever{-1};
 

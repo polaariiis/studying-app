@@ -25,6 +25,7 @@ using namespace std::chrono_literals;
 
 std::vector<std::byte> bytes(const std::string& text) {
     std::vector<std::byte> result;
+    result.reserve(text.size());
     for (const char c : text) {
         result.push_back(static_cast<std::byte>(c));
     }
@@ -40,6 +41,7 @@ TEST_F(FileChannelTest, CarriesMessagesIncludingBinaryAndEmptyOnes) {
     auto channel = FileChannel::open(file);
     ASSERT_OK(channel);
     std::vector<std::byte> binary;
+    binary.reserve(256);
     for (int value = 0; value < 256; ++value) {
         binary.push_back(static_cast<std::byte>(value));
     }
