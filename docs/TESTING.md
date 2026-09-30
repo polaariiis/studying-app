@@ -62,8 +62,20 @@ database refused; the workspace directory is recognised however a path is spelle
 the canvas geometry within a pixel and the dotted paper appears in PDF, PNG and SVG; Back Up Now
 and Check Workspace through the shell; Save a Copy from the unsaved-changes question opens the
 copy; every control has an accessible name (audited through `QAccessible` in every planner
-view); F6/Shift+F6 cycle the panes. Packages: `studyapp --self-test` on clean CI runners
-(docs/BUILDING.md §8). Static analysis: the curated `.clang-tidy` has no findings.
+view, in a window wide enough that no toolbar control hides in the overflow menu);
+F6/Shift+F6 cycle the panes; Save a Copy chosen while another workspace opens leaves exactly
+one canvas; imports finishing during the close question wait for the answer.
+`application_tests` (final audit): Save a Copy refuses missing asset files before writing
+anything; leftover temporary files do not block opening; another drive is not "inside" the
+workspace. `persistence_tests`: released migrations are pinned by SHA-256
+(`ReleasedMigrationsAreNeverEdited`). `packaging.linux_launcher` (Linux): the launcher's C++
+runtime choice with fake runtimes. Packages: `studyapp --self-test` (including OpenGL 3.3 core
+rendering through the canvas renderer) on clean CI runners, the Linux launcher's runtime
+choice asserted per Ubuntu release, `tools/check_linux_appdir.sh` on the AppDir
+(docs/BUILDING.md §8). Static analysis: the curated `.clang-tidy` has no findings. The
+release candidate was also started by hand from its installed layout (no Qt or compiler on
+`PATH`): workspace, pen, text, image, PDF import and highlighting, search, planner task,
+PDF export, close and reopen.
 
 Tests use the header-only targets in `tests/support`: `studyapp_test_support`
 (`testing::ManualClock` and `testing::SequentialIds` make every timestamp and id

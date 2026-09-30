@@ -513,7 +513,10 @@ courses) — notebook bundles carry notebooks and their tags only.
 * Accessibility pass (keyboard navigation, screen-reader labels in UI chrome).
 * **Exit:** 1.0 release candidate on all three platforms.
 
-Status: **implemented** (decisions D47–D51; measurements in PERFORMANCE.md).
+Status: **complete** — release candidate on branch `phase-9` (decisions D47–D51;
+measurements in PERFORMANCE.md). CI, packaging and clean-runner smoke tests green on
+Windows, Linux and macOS; the packaged app was also tested by hand on Windows. Merging to
+`main` and tagging a release are the owner's decisions.
 
 1. ✅ Baseline and instrumentation: application-level benchmarks (`bench/AppBench.cpp`),
    start-up/memory script, baseline and regression thresholds (PERFORMANCE.md).
@@ -555,7 +558,11 @@ image whose import finishes after the user moved to another page is inserted on 
 it was started from (the view returns there); the Linux launcher's `LD_LIBRARY_PATH`
 (only where the bundled runtime is used) is inherited by programs StudyBoard starts;
 `linuxdeploy` and `get-cmake` are not pinned to versions; the Windows uninstaller is not
-signed and `signtool` receives the certificate password on its command line.
+signed and `signtool` receives the certificate password on its command line; on Windows
+machines without an OpenGL 3.3 driver (Qt's software fallback offers 3.0) pages cannot be
+shown — `--self-test` reports it; the Linux launcher compares `GLIBCXX` versions only (not
+`CXXABI`/`GCC_` versions, which rise with them); the AppImage's `AppRun` is the launcher,
+so linuxdeploy-plugin-qt's optional GTK theme hint is not applied.
 
 ## Later / candidate features
 

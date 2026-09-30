@@ -104,9 +104,9 @@ Phase 7: COMPLETE (study/planning; audited, non-blocking follow-ups only)
 
 Phase 8: COMPLETE (search, PDF, export, bundles; checkpoint commit 4726655)
 
-Phase 9: RELEASE CANDIDATE on branch `phase-9` (hardening, performance, packaging, final
-audit fixes; see docs/ROADMAP.md Phase 9 for the current status). `main` is updated only
-by the user's merge.
+Phase 9: COMPLETE — release candidate on branch `phase-9` (hardening, performance,
+packaging, final audit fixes; CI and package smoke tests green on all three platforms;
+docs/ROADMAP.md Phase 9). Not merged: `main` is updated only by the user's merge.
 
 Phase 9 established (details: docs/ROADMAP.md Phase 9, docs/PERFORMANCE.md,
 docs/ARCHITECTURE.md D47–D51, docs/BUILDING.md §7–§8, docs/CODING_STYLE.md):
@@ -544,7 +544,7 @@ Focus:
 The built-in command interface is now planned as a POST-V1 update rather than a core Phase 8 requirement.
 
 Phase 9 — Hardening / release
-RELEASE CANDIDATE (branch `phase-9`)
+COMPLETE (release candidate on branch `phase-9`, not merged)
 
 Focus:
 - performance
