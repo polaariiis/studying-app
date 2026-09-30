@@ -44,7 +44,9 @@ never touches them.
    packages, the application's About box and the workspace metadata take it from there.
 3. Pushing a tag `v<version>` on `main` runs `release.yml`: the same package and
    smoke-test jobs, the optional signing jobs, then a **draft** GitHub release with every
-   package, its `.sha256` file and `SHA256SUMS.txt`.
+   package, its `.sha256` file and `SHA256SUMS.txt`. Every package's size and SHA-256, and
+   the version each packaged application reports, are also published as notices on the
+   workflow run (readable without signing in).
 4. A maintainer reviews the draft (files, checksums, notes) and publishes it. Nothing is
    published automatically.
 5. The published packages are recorded in [Release records](#release-records) below.

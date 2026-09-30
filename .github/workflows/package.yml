@@ -120,6 +120,18 @@ jobs:
             | grep -E -A3 "error:|FAILED:|CMake Error|CPack Error|^AppDir: " \
             | head -60 | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
 
+      # Public record of what was built (job logs and artifacts need sign-in; annotations
+      # do not): file, size and SHA-256 of every package (docs/RELEASE.md).
+      - name: Record the packages as notices
+        shell: bash
+        run: |
+          for f in build/package/StudyBoard-*; do
+            case "$f" in *.sha256) continue ;; esac
+            [ -f "$f" ] || continue
+            sum=$( (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f") | cut -d' ' -f1)
+            echo "::notice::package $(basename "$f") $(wc -c < "$f" | tr -d ' ') bytes sha256 $sum"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: packages-${{ runner.os }}
@@ -174,6 +186,16 @@ jobs:
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "self-test of the ZIP failed" }
           if ($out -notmatch 'OpenGL 3\.3 core rendering') { throw "no OpenGL check ran" }
+          $expected = ($installer.Name -replace '^StudyBoard-([^-]+)-.*$', '$1')
+          # A GUI program may show --version in a message box; print it instead, and never wait
+          # on a window.
+          $env:QT_COMMAND_LINE_PARSER_NO_GUI_MESSAGE_BOXES = '1'
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--version' -NoNewWindow `
+            -RedirectStandardOutput version.txt -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "--version did not return" }
+          $version = (Get-Content version.txt -Raw).Trim()
+          Write-Output "::notice::version reported: $version (package $expected)"
+          if ($version -ne "StudyBoard $expected") { throw "version mismatch: $version" }
           $out -split "`n" | Select-String 'OpenGL|self-test' | ForEach-Object { "::notice::$($_.Line.Trim())" }
           Start-Process -Wait -FilePath "$dir\Uninstall.exe" -ArgumentList '/S'
           Start-Sleep -Seconds 5 # the uninstaller copies itself and finishes asynchronously
@@ -217,6 +239,10 @@ jobs:
           xvfb-run -a "$launcher" --no-such-option > /dev/null 2>&1 || status=$?
           echo "exit status for an unknown option: $status" | tee -a smoke.log
           test "$status" -eq 1
+          expected=$(basename packages/StudyBoard-*.tar.gz | sed -E 's/^StudyBoard-([^-]+)-.*$/\1/')
+          version=$(xvfb-run -a "$launcher" --version 2>/dev/null | tail -1)
+          echo "version reported: $version (package $expected)" | tee -a smoke.log
+          test "$version" = "StudyBoard $expected"
 
       - name: macOS — DMG
         if: runner.os == 'macOS'
@@ -225,7 +251,11 @@ jobs:
           set -euo pipefail
           hdiutil attach packages/StudyBoard-*.dmg -mountpoint /Volumes/StudyBoard -nobrowse
           /Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --self-test 2>&1 | tee smoke.log
+          expected=$(basename packages/StudyBoard-*.dmg | sed -E 's/^StudyBoard-([^-]+)-.*$/\1/')
+          version=$(/Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --version 2>/dev/null | tail -1)
+          echo "version reported: $version (package $expected)" | tee -a smoke.log
           hdiutil detach /Volumes/StudyBoard
+          test "$version" = "StudyBoard $expected"
           grep -q '^ok: OpenGL 3.3 core rendering' smoke.log
 
       # Job logs require sign-in; annotations are public.
@@ -239,5 +269,5 @@ jobs:
         if: success() && runner.os != 'Windows'
         shell: bash
         run: |
-          grep -E 'libstdc\+\+|C\+\+ runtime|OpenGL|exit status|self-test' smoke.log \
+          grep -E 'libstdc\+\+|C\+\+ runtime|OpenGL|exit status|self-test|version reported' smoke.log \
             | sed -e 's/%/%25/g' -e 's/^/::notice::/' || true
