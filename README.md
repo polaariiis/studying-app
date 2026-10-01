@@ -114,6 +114,7 @@ More in [docs/ROADMAP.md](docs/ROADMAP.md) (Phase 9, "Not in Phase 9").
 | Database schema | [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) |
 | Canvas | [docs/CANVAS.md](docs/CANVAS.md) |
 | Rendering | [docs/RENDERING.md](docs/RENDERING.md) |
+| PDF inspection worker (design, D53) | [docs/PDF_WORKER.md](docs/PDF_WORKER.md) |
 | Testing | [docs/TESTING.md](docs/TESTING.md) |
 | Performance, bottlenecks | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
 | Benchmarks | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) |
