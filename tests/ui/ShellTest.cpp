@@ -270,6 +270,16 @@ private:
     QTemporaryDir dir_;
     int counter_ = 0;
 
+    /// Regular files directly in `directory` (none if it is missing).
+    static std::size_t filesIn(const std::filesystem::path& directory) {
+        std::size_t count = 0;
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+            count += entry.is_regular_file() ? 1U : 0U;
+        }
+        return count;
+    }
+
     std::filesystem::path freshPath(const QString& name) {
         return toPath(
             dir_.filePath(name + QString::number(++counter_) + QStringLiteral(".studyws")));
@@ -2334,7 +2344,8 @@ private Q_SLOTS:
     // finishes drops its result: nothing reaches the next workspace, nothing crashes.
     void importsFinishingAfterCloseAreDropped() {
         Shell shell(settings(QStringLiteral("importclose")));
-        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ImportFirst"))));
+        const auto firstPath = freshPath(QStringLiteral("ImportFirst"));
+        QVERIFY(shell.window->createWorkspace(firstPath));
         QImage red(64, 32, QImage::Format_RGB32);
         red.fill(QColor(200, 30, 30));
         const QString png = dir_.filePath(QStringLiteral("late.png"));
@@ -2353,6 +2364,63 @@ private Q_SLOTS:
         QCOMPARE(shell.ws().notebookCount(), notebooks);
         QVERIFY(shell.ws().elementsOf(shell.ws().layersOf(page).front()).empty());
         QCOMPARE(*shell.window->activePage(), page);
+        // 1.2-IMP-01: the dropped results removed what they had staged in the first
+        // workspace at once, not at its next open.
+        QCOMPARE(filesIn(firstPath / "temporary"), std::size_t{0});
+    }
+
+    // 1.2-IMP-01: an import that finishes after the user moved to another page does not
+    // take them back. An image still goes to the page it was started on (placed in the view
+    // that page was left with); a PDF is still imported, but only opened if the user is
+    // still on the page where the import started.
+    void importsFinishingAfterThePageChangedKeepThePage() {
+        Shell shell(settings(QStringLiteral("importpage")));
+        const auto path = freshPath(QStringLiteral("ImportPage"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const auto elementsOn = [&](core::PageId page) {
+            return shell.ws().elementsOf(shell.ws().layersOf(page).front()).size();
+        };
+        const auto first = *shell.window->activePage();
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("moved.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        // Results come through the event loop: this page change always happens first.
+        shell.action("actionNewPage")->trigger();
+        const auto second = *shell.window->activePage();
+        QVERIFY(second != first);
+        shell.waitForImports();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QCOMPARE(*shell.window->activePage(), second); // no jump back
+        QCOMPARE(elementsOn(first), std::size_t{1});   // where it was started
+        QCOMPARE(elementsOn(second), std::size_t{0});
+        const auto image = std::get<document::Image>(
+            shell.ws()
+                .findElement(shell.ws().elementsOf(shell.ws().layersOf(first)[0])[0])
+                ->payload);
+        // Fitted to the view as usual (the size depends on the platform's viewport).
+        QVERIFY(image.size.x > 0.0F);
+        QCOMPARE(image.size.x, 2.0F * image.size.y);
+
+        // A PDF started here, finished after the user went back to the first page.
+        const auto pages = shell.ws().pageCount();
+        shell.dialogs->importDocument = toPath(writePdf(QStringLiteral("moved.pdf")));
+        shell.action("actionImportPdf")->trigger();
+        QVERIFY(shell.window->openPage(first));
+        shell.waitForImports();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QVERIFY(shell.ws().pageCount() > pages);      // imported
+        QCOMPARE(*shell.window->activePage(), first); // not opened
+
+        // Without a page change the imported document is opened, as before.
+        shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
+        const auto opened = *shell.window->activePage();
+        QVERIFY(opened != first && opened != second);
+        QVERIFY(shell.ws().findPage(opened)->document.has_value());
+        QCOMPARE(filesIn(path / "temporary"), std::size_t{0});
     }
 
     // Phase 9: File ▸ Back Up Now writes a database snapshot; File ▸ Check Workspace

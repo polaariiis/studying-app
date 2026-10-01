@@ -172,6 +172,13 @@ public:
     /// `pixelSize`: at one world unit per pixel, scaled down to fit 60 % of the view,
     /// centred in the view, on the page's target layer, selected. One command.
     core::Result<void> insertImage(core::AssetId asset, const core::Vec2& pixelSize);
+    /// Inserts an image element for `asset` on `page`, which is not the page shown (an
+    /// import that finished after the user moved on, 1.2-IMP-01): placed as insertImage
+    /// would have placed it in the view the page was left with (`center`, `zoom`, in the
+    /// current viewport), on that page's target layer; the view and selection stay. One
+    /// command. InvalidArgument: no such page (e.g. deleted meanwhile) or an empty size.
+    core::Result<void> insertImageOnPage(core::PageId page, const core::DVec2& center, double zoom,
+                                         core::AssetId asset, const core::Vec2& pixelSize);
 
     // ---- document pages (PDF, Phase 8; docs/CANVAS.md §10) -----------------------------
     /// Renders the pages of imported documents shown behind page content (not owned; the
