@@ -27,6 +27,7 @@ if(STUDYAPP_BUILD_APP)
         studyapp::ui
         studyapp::application
         studyapp::platform
+        studyapp::ipc
         studyapp::test_support
         Qt6::Gui
         Qt6::Pdf
@@ -35,5 +36,9 @@ if(STUDYAPP_BUILD_APP)
         studyapp_warnings)
     target_compile_features(studyapp_app_benchmarks PRIVATE cxx_std_20)
     studyapp_enable_qt(studyapp_app_benchmarks)
+    # BM_PdfInspectInWorker starts the built application as the PDF worker (D53).
+    target_compile_definitions(studyapp_app_benchmarks PRIVATE
+        STUDYAPP_EXECUTABLE="$<TARGET_FILE:studyapp>")
+    add_dependencies(studyapp_app_benchmarks studyapp)
     set_target_properties(studyapp_app_benchmarks PROPERTIES FOLDER "bench")
 endif()

@@ -7,6 +7,7 @@ studyapp_add_module(ui
         include/studyapp/ui/DesignTokens.hpp
         include/studyapp/ui/MainWindow.hpp
         include/studyapp/ui/PanBenchmark.hpp
+        include/studyapp/ui/PdfWorker.hpp
         include/studyapp/ui/SelfTest.hpp
         include/studyapp/ui/ShellDialogs.hpp
         include/studyapp/ui/ThemeManager.hpp
@@ -22,6 +23,9 @@ studyapp_add_module(ui
         src/NavigationPanel.hpp
         src/PageExport.cpp
         src/PageExport.hpp
+        src/PdfInspectionClient.cpp
+        src/PdfInspectionClient.hpp
+        src/PdfWorker.cpp
         src/PlannerPanel.cpp
         src/PlannerPanel.hpp
         src/SessionDocumentPort.hpp
@@ -46,6 +50,7 @@ studyapp_add_module(ui
         Qt6::Svg
         studyapp::application
         studyapp::canvas
+        studyapp::ipc
         studyapp::render_gl
 )
 studyapp_enable_qt(studyapp_ui)
