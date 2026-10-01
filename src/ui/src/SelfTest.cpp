@@ -1,6 +1,7 @@
 #include <studyapp/ui/SelfTest.hpp>
 
 #include "PageExport.hpp"
+#include "PdfInspectionClient.hpp"
 #include "SessionDocumentRasterizer.hpp"
 
 #include <studyapp/application/Search.hpp>
@@ -20,6 +21,7 @@
 #include <QPrinter>
 #include <QTemporaryDir>
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
 
@@ -154,6 +156,16 @@ std::vector<std::string> runSelfTest(const ShellServices& services, canvas::Text
     auto info = inspectPdf(pdf);
     checks.check(info.has_value() && info->pageSizes.size() == 2, "read a PDF (Qt PDF)",
                  info ? std::string{} : info.error().message);
+    // The same, in a worker process started from this executable (`--pdf-worker`, D53):
+    // checks that the installed application can start itself and inspect a PDF that way.
+    {
+        const std::atomic<bool> stop{false};
+        const auto inWorker = inspectPdfInWorker(pdf, core::JobId::generate(services.ids), stop);
+        checks.check(inWorker.has_value() && info.has_value() &&
+                         inWorker->pageSizes == info->pageSizes,
+                     "inspect a PDF in the worker process",
+                     inWorker ? std::string{} : inWorker.error().message);
+    }
     if (info) {
         auto asset = session->importAsset(pdf, "application/pdf");
         std::optional<application::WorkspaceStructure::ImportedDocument> imported;

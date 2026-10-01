@@ -180,7 +180,9 @@ step. Costs are measured on the reference laptop.
 
 * **Workload:** reading an imported PDF.
 * **Observed (measured):** 3.9–6.4 ms per tile on a worker thread; 55 ms to import a
-  200-page PDF.
+  200-page PDF. Since 1.2 the page sizes are read in a worker process (D53): 81 ms for a
+  200-page PDF and 43 ms for a 1-page PDF (in-process: 38.9 ms and 1.07 ms), on the import's
+  pool thread; tiles are still rendered in-process.
 * **Cause:** PDFium rendering.
 * **Done:** one worker thread, tile textures cached (192 MB), queued requests dropped when
   the page changes.

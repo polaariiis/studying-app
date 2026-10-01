@@ -5,6 +5,7 @@
 // studyapp_app_benchmarks. Runs on the offscreen Qt platform (no window, no GPU).
 
 #include "PageExport.hpp"
+#include "PdfInspectionClient.hpp"
 #include "SessionDocumentRasterizer.hpp"
 #include "SyntheticPage.hpp"
 
@@ -12,6 +13,8 @@
 #include <studyapp/application/Search.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/application/WorkspaceStructure.hpp>
+#include <studyapp/core/Clock.hpp>
+#include <studyapp/core/IdGenerator.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/platform/QtTextLayout.hpp>
 #include <studyapp/testing/TempDirectory.hpp>
@@ -23,6 +26,7 @@
 #include <QPdfWriter>
 
 #include <benchmark/benchmark.h>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -297,7 +301,28 @@ void BM_PdfInspect(benchmark::State& state) {
         benchmark::DoNotOptimize(ui::inspectPdf(file));
     }
 }
-BENCHMARK(BM_PdfInspect)->Arg(200)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_PdfInspect)->Arg(1)->Arg(200)->Unit(benchmark::kMillisecond);
+
+/// The same inspection through the worker process (D53): job directory and channels, start
+/// of `studyapp --pdf-worker`, its reply and exit, cleanup — the cost one import pays.
+void BM_PdfInspectInWorker(benchmark::State& state) {
+    testing::TempDirectory dir;
+    const auto file = writePdf(dir / "doc.pdf", static_cast<int>(state.range(0)));
+    const core::SystemClock clock;
+    core::UuidV7Generator ids(clock);
+    const std::atomic<bool> stop{false};
+    ui::PdfWorkerOptions options;
+    options.program = QString::fromUtf8(STUDYAPP_EXECUTABLE);
+    for (auto _ : state) {
+        auto info = ui::inspectPdfInWorker(file, core::JobId::generate(ids), stop, options);
+        if (!info) {
+            state.SkipWithError(info.error().message.c_str());
+            return;
+        }
+        benchmark::DoNotOptimize(info);
+    }
+}
+BENCHMARK(BM_PdfInspectInWorker)->Arg(1)->Arg(200)->Unit(benchmark::kMillisecond);
 
 void BM_PdfTile(benchmark::State& state) {
     Fixture f;

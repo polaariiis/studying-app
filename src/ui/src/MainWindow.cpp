@@ -3,6 +3,7 @@
 #include "CanvasWidget.hpp"
 #include "NavigationPanel.hpp"
 #include "PageExport.hpp"
+#include "PdfInspectionClient.hpp"
 #include "PlannerPanel.hpp"
 #include "SessionDocumentPort.hpp"
 #include "SessionDocumentRasterizer.hpp"
@@ -57,6 +58,7 @@
 #include <QVBoxLayout>
 
 #include <array>
+#include <atomic>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -198,6 +200,8 @@ public:
 
     [[nodiscard]] bool ok() const noexcept { return staged_.has_value(); }
     [[nodiscard]] const core::Error& error() const { return staged_.error(); }
+    /// The staged file (still owned here), e.g. for the PDF worker to read.
+    [[nodiscard]] const std::filesystem::path& file() const { return staged_->file; }
     /// The staged file, for finishAssetImport (which stores or removes it); once only.
     [[nodiscard]] const application::StagedAssetFile& take() {
         taken_ = true;
@@ -244,6 +248,8 @@ struct MainWindow::OpenWorkspace {
     std::unordered_map<core::PageId, View> views;
     /// Expires when this workspace is closed: background results for it are dropped.
     std::shared_ptr<void> alive = std::make_shared<int>(0);
+    /// Set when this workspace is released: running PDF worker jobs end at once (D53 §10).
+    std::shared_ptr<std::atomic<bool>> importStop = std::make_shared<std::atomic<bool>>(false);
 };
 
 // ---------------------------------------------------------------------------- construction
@@ -1281,6 +1287,9 @@ bool MainWindow::releaseWorkspace(std::optional<std::filesystem::path>& rescued)
             break;
         }
     }
+    // PDF inspections in a worker process are stopped (the worker is killed) instead of
+    // being waited for (D53 §10); the decision to close is final at this point.
+    open_->importStop->store(true);
     if (backgroundJobs_ > 0) {
         // Imports still copying write into this workspace's temporary/: finish them while
         // it is locked (a copy takes about 0.4 s per 50 MB); their results are dropped.
@@ -1574,6 +1583,13 @@ void MainWindow::showActivePage() {
     planner_->setActivePage(page);
     updateActions();
     updateStatus();
+}
+
+void MainWindow::setPdfWorker(QString program, QStringList arguments,
+                              std::filesystem::path tempRoot) {
+    pdfWorkerProgram_ = std::move(program);
+    pdfWorkerArguments_ = std::move(arguments);
+    pdfWorkerTempRoot_ = std::move(tempRoot);
 }
 
 void MainWindow::setTimeZone(const study::TimeZone* zone) {
@@ -2222,21 +2238,32 @@ void MainWindow::importPdf() {
     if (!chosen) {
         return;
     }
-    // Reading the page sizes and copying the file happen on a pool thread; the section is
-    // created here. Only read: the PDF is copied into the workspace and never written.
+    // Copying the file and reading its page sizes happen off the GUI thread; the section is
+    // created here. The copy is staged first and its page sizes are read by a worker
+    // process (docs/PDF_WORKER.md, D53), so a PDF that crashes or hangs the parser fails
+    // only this import. Only read: the PDF is copied into the workspace and never written.
     // The imported document is opened only if the user is still on this page when it is
     // ready (1.2-IMP-01).
     const std::optional<core::PageId> startedOn = activePage();
+    const core::JobId job = core::JobId::generate(*open_->ids); // on the GUI thread (D53 §7)
+    PdfWorkerOptions worker;
+    worker.program = pdfWorkerProgram_;
+    worker.arguments = pdfWorkerArguments_;
+    worker.tempRoot = pdfWorkerTempRoot_;
     runInBackground([this, stage = open_->session->prepareAssetImport(*chosen), source = *chosen,
-                     startedOn]() -> std::function<void()> {
-        auto info = std::make_shared<core::Result<PdfInfo>>(inspectPdf(source));
-        auto staged = std::make_shared<StagedImport>(
-            *info ? stage()
-                  : core::Result<application::StagedAssetFile>(tl::unexpected(info->error())));
+                     startedOn, job, stop = open_->importStop,
+                     worker = std::move(worker)]() -> std::function<void()> {
+        auto staged = std::make_shared<StagedImport>(stage());
+        auto info = std::make_shared<core::Result<PdfInfo>>(
+            staged->ok() ? inspectPdfInWorker(staged->file(), job, *stop, worker)
+                         : core::Result<PdfInfo>(tl::unexpected(staged->error())));
         return [this, info, staged, source, startedOn] {
             const QString file = QString::fromStdU16String(source.u16string());
             const QString failed = tr("The PDF could not be imported.");
             if (!*info) {
+                if (info->error().code == core::ErrorCode::Conflict) {
+                    return; // stopped: the workspace is being closed
+                }
                 dialogs_->showError(this, failed, tr("%1: %2").arg(file, errorText(info->error())));
                 return;
             }

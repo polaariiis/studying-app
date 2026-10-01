@@ -144,6 +144,12 @@ public:
     /// Local time of the planner (the composition root passes the system zone); UTC until
     /// set.
     void setTimeZone(const study::TimeZone* zone);
+    /// The PDF inspection worker process (docs/PDF_WORKER.md, D53): `program` started with
+    /// `arguments` + `--pdf-worker <job-directory>`, job directories under `tempRoot`. The
+    /// defaults (empty values) are this application and the system temp directory; tests
+    /// and tools point them elsewhere.
+    void setPdfWorker(QString program, QStringList arguments = {},
+                      std::filesystem::path tempRoot = {});
 
     /// Shows `page` on the canvas (where the user left it, if it was open before).
     bool openPage(core::PageId page);
@@ -357,6 +363,10 @@ private:
     /// Font size of new text boxes (canvas::ToolSettings::textSize), remembered per user;
     /// choosing a size also applies it to the text being edited or the selected text boxes.
     float textSize_ = 0.0F; ///< canvas::kTextSize until the settings are read
+    /// The PDF inspection worker (D53): empty program = this application.
+    QString pdfWorkerProgram_;
+    QStringList pdfWorkerArguments_;
+    std::filesystem::path pdfWorkerTempRoot_;
     QActionGroup* textSizeGroup_ = nullptr;
     QMenu* textSizeMenu_ = nullptr;
     /// The toolbar's style button: the style of the ink tool chosen last (pen/highlighter).

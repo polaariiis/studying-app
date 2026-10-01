@@ -13,8 +13,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <list>
+#include <string>
 
 namespace studyapp::ui {
 
@@ -79,43 +81,95 @@ render::ImageData renderTile(QPdfDocument& pdf, const canvas::DocumentTileKey& k
 
 } // namespace
 
-core::Result<PdfInfo> inspectPdf(const std::filesystem::path& file) {
+ipc::pdf::InspectReply inspectPdfLocally(const std::filesystem::path& file) {
+    using ipc::pdf::InspectStatus;
+    ipc::pdf::InspectReply reply;
+    const auto fail = [&](InspectStatus status, std::uint32_t detail = 0) {
+        reply.status = status;
+        reply.detail = detail;
+        reply.pages.clear();
+        return reply;
+    };
     QPdfDocument pdf;
     switch (pdf.load(toQString(file))) {
     case QPdfDocument::Error::None:
         break;
     case QPdfDocument::Error::IncorrectPassword:
-        return makeError(ErrorCode::Unsupported, "password-protected PDFs are not supported");
+        return fail(InspectStatus::Protected, 0);
     case QPdfDocument::Error::UnsupportedSecurityScheme:
-        return makeError(ErrorCode::Unsupported, "the PDF's security scheme is not supported");
+        return fail(InspectStatus::Protected, 1);
     case QPdfDocument::Error::FileNotFound:
-        return makeError(ErrorCode::IoError, "the file could not be opened");
+        return fail(InspectStatus::Unreadable, 1);
     default:
-        return makeError(ErrorCode::IoError, "the file is not a readable PDF document");
+        return fail(InspectStatus::Unreadable, 0);
     }
     const int count = pdf.pageCount();
     if (count <= 0) {
-        return makeError(ErrorCode::InvalidArgument, "the PDF has no pages");
+        return fail(InspectStatus::NoPages);
     }
     if (count > kMaxPdfPages) {
-        return makeError(ErrorCode::InvalidArgument,
-                         "the PDF has " + std::to_string(count) + " pages; at most " +
-                             std::to_string(kMaxPdfPages) + " are supported");
+        return fail(InspectStatus::TooManyPages, static_cast<std::uint32_t>(count));
     }
-    PdfInfo info;
-    info.pageSizes.reserve(static_cast<std::size_t>(count));
+    reply.pages.reserve(static_cast<std::size_t>(count));
     for (int i = 0; i < count; ++i) {
         const QSizeF points = pdf.pagePointSize(i);
-        const double w = points.width();
-        const double h = points.height();
-        if (!(std::isfinite(w) && std::isfinite(h) && w > 0.0 && h > 0.0 &&
-              w <= kMaxPdfPagePoints && h <= kMaxPdfPagePoints)) {
+        if (!ipc::pdf::validPageSize(points.width(), points.height())) {
+            return fail(InspectStatus::BadPageSize, static_cast<std::uint32_t>(i + 1));
+        }
+        reply.pages.push_back({.width = points.width(), .height = points.height()});
+    }
+    reply.status = InspectStatus::Ok;
+    return reply;
+}
+
+core::Result<PdfInfo> pdfInfoFrom(const ipc::pdf::InspectReply& reply) {
+    using ipc::pdf::InspectStatus;
+    switch (reply.status) {
+    case InspectStatus::Ok:
+        break;
+    case InspectStatus::Protected:
+        return reply.detail == 0
+                   ? makeError(ErrorCode::Unsupported, "password-protected PDFs are not supported")
+                   : makeError(ErrorCode::Unsupported,
+                               "the PDF's security scheme is not supported");
+    case InspectStatus::Unreadable:
+        return reply.detail == 1
+                   ? makeError(ErrorCode::IoError, "the file could not be opened")
+                   : makeError(ErrorCode::IoError, "the file is not a readable PDF document");
+    case InspectStatus::NoPages:
+        return makeError(ErrorCode::InvalidArgument, "the PDF has no pages");
+    case InspectStatus::TooManyPages:
+        return makeError(ErrorCode::InvalidArgument,
+                         "the PDF has " + std::to_string(reply.detail) + " pages; at most " +
+                             std::to_string(kMaxPdfPages) + " are supported");
+    case InspectStatus::BadPageSize:
+        return makeError(ErrorCode::InvalidArgument, "page " + std::to_string(reply.detail) +
+                                                         " of the PDF has no supported size");
+    case InspectStatus::InvalidRequest:
+    case InspectStatus::UnsupportedRequest:
+    case InspectStatus::Internal:
+        return makeError(ErrorCode::IoError, "the PDF could not be read");
+    }
+    // Checked again here: a reply from another process is input, not truth (D53 §12).
+    if (reply.pages.empty() || reply.pages.size() > static_cast<std::size_t>(kMaxPdfPages)) {
+        return makeError(ErrorCode::IoError, "the PDF could not be read");
+    }
+    PdfInfo info;
+    info.pageSizes.reserve(reply.pages.size());
+    for (std::size_t i = 0; i < reply.pages.size(); ++i) {
+        const ipc::pdf::PageSizePt& page = reply.pages[i];
+        if (!ipc::pdf::validPageSize(page.width, page.height)) {
             return makeError(ErrorCode::InvalidArgument,
                              "page " + std::to_string(i + 1) + " of the PDF has no supported size");
         }
-        info.pageSizes.push_back({w * document::kUnitsPerPoint, h * document::kUnitsPerPoint});
+        info.pageSizes.push_back(
+            {page.width * document::kUnitsPerPoint, page.height * document::kUnitsPerPoint});
     }
     return info;
+}
+
+core::Result<PdfInfo> inspectPdf(const std::filesystem::path& file) {
+    return pdfInfoFrom(inspectPdfLocally(file));
 }
 
 // ---------------------------------------------------------------------------- rasterizer
