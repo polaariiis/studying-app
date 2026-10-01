@@ -97,6 +97,25 @@ ctest --preset debug -L unit        # by label
 ```
 
 
+**1.2 additions (PDF inspection worker, D53).** `ipc_tests` (`PdfInspectionTest`): request
+and reply round trips for every status; malformed requests (size, magic, reserved field, nil
+job, empty, relative, non-UTF-8, overlong or NUL-containing and too long paths) and
+unsupported versions and kinds; malformed replies (magic, version, unknown status, size,
+page count, nil job, details that do not fit the status) and page sizes that are not finite,
+positive and ≤ 14 400 pt. `ui.PdfWorkerTest` (real processes: the `pdf_worker_helper` test
+program — the real worker code or one misbehaviour — and the built `studyapp --pdf-worker`):
+a staged PDF inspected in the worker equals in-process inspection; `studyapp` itself works as
+the worker under `QCoreApplication`; unreadable, password-protected, oversized-page and
+5001-page PDFs give today's messages; a missing program, a worker exiting non-zero or without
+a reply, crashing (before or after a valid reply), replying for another job, with garbage,
+an unknown status or an unsupported page size, or replying and never exiting, fail the job
+without using its reply; a hanging worker is killed at the deadline and a stop cancels within
+one slice; job directories are per job and short (a too deep root is refused); two jobs at
+once get their own answers; no job directory is ever left. `ui.ShellTest`: every PDF import
+goes through the worker (helper in real mode); a crashing worker fails only that import, and
+closing the workspace stops a hanging worker promptly, leaving neither a job directory nor a
+staged file. Packages: `studyapp --self-test` inspects a PDF in the worker process.
+
 ## 1. Principles
 
 * **Most logic is testable without a GUI, a GPU or a display.** That is the payoff of the

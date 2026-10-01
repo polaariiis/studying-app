@@ -107,10 +107,15 @@ decoding time for very large images.
 | Benchmark | Workload | Result | Baseline |
 |---|---|---|---|
 | `BM_PdfInspect/200` | Import a 200-page PDF: read page sizes | 55 ms | 47 ms |
+| `BM_PdfInspect/1`, `/200` (1.2 run) | Read page sizes in-process (1 page / 200 pages) | 1.07 / 38.9 ms | — |
+| `BM_PdfInspectInWorker/1`, `/200` | The same through `studyapp --pdf-worker` (D53): job directory, process start, IPC, exit, cleanup | 43.3 / 81.0 ms | the in-process row above |
 | `BM_PdfTile/-1` | Render a preview tile (worker thread) | 6.4 ms | 5.5 ms |
 | `BM_PdfTile/1` | Render a level-1 tile | 3.9 ms | 3.1 ms |
 
-Not measured: page navigation through a long document, and documents over 200 pages.
+Not measured: page navigation through a long document, and documents over 200 pages. The
+worker rows were measured in one run on the reference laptop (Windows, Release, 5
+repetitions, wall time); since 1.2 every PDF import pays the worker's ≈ 42 ms once, on its
+pool thread.
 
 ## Search
 

@@ -1,8 +1,9 @@
 # StudyBoard — Isolated PDF Inspection Worker (D53)
 
-> **Status: design (1.2, task 1.2-PDF-01, backlog V-05/V-06, roadmap S6). Not implemented.**
-> Implementation is roadmap step S7. Until then StudyBoard inspects PDFs in-process as
-> described in §1. Decision record: [ARCHITECTURE.md §18, D53](ARCHITECTURE.md#18-decision-log).
+> **Status: implemented in 1.2** (design: task 1.2-PDF-01, roadmap S6; implementation:
+> task 1.2-PDF-02, roadmap S7; backlog V-05/V-06). Decision record:
+> [ARCHITECTURE.md §18, D53](ARCHITECTURE.md#18-decision-log). §1 describes the state before
+> 1.2; §22 lists what the implementation settled or corrected, and the measured costs.
 
 This document specifies the first production use of the `ipc` module (D52): reading the
 page count and page sizes of an imported PDF in a separate process, so that a PDF that
@@ -271,12 +272,13 @@ has a **wall-clock deadline** owned by the client.
   `waitForFinished(1000)`, cleanup, Failed(`Timeout`) → `IoError` "the PDF could not be read
   in time".
 
-**Cancellation** uses one `std::stop_source` per open workspace in `MainWindow`; each PDF
-job gets its `std::stop_token`. It is requested by:
+**Cancellation** uses one stop flag per open workspace in `MainWindow` (a shared
+`std::atomic<bool>`; §22 explains why not `std::stop_token`); each PDF job reads it. It is
+requested by:
 
 | Trigger | Effect |
 |---|---|
-| Workspace close / switch / window close (`releaseWorkspace`) | `request_stop()` **before** `jobs_->waitForDone()`; every running client kills its worker within one 200 ms slice, cleans up and ends `Cancelled`; the finish step is then dropped as in S5 (the staged file is removed by `StagedImport`) |
+| Workspace close / switch / window close (`releaseWorkspace`) | the flag is set **before** `jobs_->waitForDone()`; every running client kills its worker within one 200 ms slice, cleans up and ends `Cancelled`; the finish step is then dropped as in S5 (the staged file is removed by `StagedImport`) |
 | Application shutdown | the window closes the workspace first (same path) |
 | A future Cancel command (V-11) | the same token; no other mechanism |
 
@@ -502,8 +504,8 @@ Modules and build:
 5. `ui`: `PdfWorker.hpp/.cpp` — `int runPdfWorker(const QString& jobDirectory)` (open both
    channels, receive with a 10 s limit, inspect, reply, exit codes of §5, 60 s self-limit).
 6. `ui`: `PdfInspectionClient.hpp/.cpp` — `core::Result<PdfInfo> inspectPdfInWorker(const
-   std::filesystem::path& staged, core::JobId job, std::stop_token stop, const
-   PdfClientOptions& options)` with `options.program` (default `applicationFilePath()`),
+   std::filesystem::path& staged, core::JobId job, const std::atomic<bool>& stop, const
+   PdfWorkerOptions& options)` with `options.program` (default `applicationFilePath()`),
    `options.deadline` (30 s), `options.slice` (200 ms); the state enum of §9 for logging and
    tests; an RAII guard for kill + directory removal.
 7. `app/main.cpp`: if the first argument is `--pdf-worker`, run the worker under
@@ -511,8 +513,8 @@ Modules and build:
    platforms that QtPdf inspection works there.
 8. `MainWindow::importPdf`: generate the JobId on the GUI thread; in the job, stage first,
    then `inspectPdfInWorker(staged, job, stop)`; keep `StagedImport`, the S5 navigation rule
-   and the existing messages; `std::stop_source` per open workspace, `request_stop()` in
-   `releaseWorkspace` before `jobs_->waitForDone()`, a fresh source for the next workspace.
+   and the existing messages; a stop flag per open workspace, set in
+   `releaseWorkspace` before `jobs_->waitForDone()`, a fresh flag for the next workspace.
 9. `SelfTest`: add "inspect a PDF in the worker process" (packages' smoke tests then cover it).
 
 Tests: §19, including a small helper executable under `tests/ui/` registered like the other
@@ -524,3 +526,44 @@ import times (docs/PERFORMANCE.md §3.6–3.7, BENCHMARKS.md), update ARCHITECTU
 
 Not in S7: tile rendering, a Cancel button (V-11), any change to IPCFileLab or to the
 document model, schema or persistence.
+
+## 22. Implementation notes (S7)
+
+Implemented as specified, with these points settled by the implementation:
+
+* **Stop signal.** D53 named `std::stop_token`; Apple's libc++ on the macOS runner (Xcode 15)
+  has neither `std::jthread` nor `std::stop_token` (see `canvas/src/ParallelFor.hpp`), so the
+  per-workspace stop is a shared `std::atomic<bool>` (`OpenWorkspace::importStop`) — the same
+  semantics: set once in `releaseWorkspace` before waiting for the pool, read by the client
+  between slices.
+* **Two details on reply statuses.** To keep today's messages exactly, `Unreadable` carries
+  `detail` 1 for "the file could not be opened" (0: not a readable PDF), and `Protected`
+  carries `detail` 1 for an unsupported security scheme (0: password). The codec accepts only
+  0 or 1 for both.
+* **PDF limits** (`kMaxPages`, `kMaxPagePoints`, `validPageSize`) are defined once, in the
+  protocol header `ipc/PdfInspection.hpp`; `ui::kMaxPdfPages` and `ui::kMaxPdfPagePoints`
+  refer to them, so the worker, the codec and StudyBoard's own check use the same values.
+* **Code:** `core::JobId` (`core/Ids.hpp`); the codec `ipc::pdf` (`ipc/PdfInspection.hpp`);
+  `ui::inspectPdfLocally` (the worker's inspection) and `ui::pdfInfoFrom` (the one place
+  that turns a result into page sizes or today's error message;
+  `SessionDocumentRasterizer.hpp`); `ui::runPdfWorker` (`ui/PdfWorker.hpp`); the client
+  `ui::runPdfInspectionJob` / `ui::inspectPdfInWorker` (`ui/src/PdfInspectionClient.*`, a
+  `PdfJob` whose destructor is the only cleanup); `app/main.cpp` starts the worker under
+  `QCoreApplication` before any `QApplication`; `MainWindow::importPdf` stages first, then
+  inspects in the worker; `MainWindow::setPdfWorker` points tests at a helper.
+* **QCoreApplication is enough.** QtPdf opens and measures PDFs without a GUI platform
+  plugin: verified on Windows with the built `studyapp` (`ui.PdfWorkerTest`) and in every
+  package by `studyapp --self-test` ("inspect a PDF in the worker process").
+
+**Measured** (reference laptop, Release, `studyapp_app_benchmarks`, 5 repetitions, wall
+time; docs/BENCHMARKS.md):
+
+| PDF | In-process (`BM_PdfInspect`) | Through the worker (`BM_PdfInspectInWorker`) |
+|---|---:|---:|
+| 1 page | 1.07 ms | 43.3 ms |
+| 200 pages | 38.9 ms | 81.0 ms |
+
+The worker adds about 42 ms per import, nearly independent of the PDF: process creation,
+Qt and QtPdf start-up, the two channel exchanges and the directory cleanup. It is paid on
+the import's pool thread, next to copying the file (≈ 0.4 s per 50 MB), never on the GUI
+thread. Tile rendering is unchanged and stays in-process (§17).
