@@ -17,6 +17,24 @@ target_link_libraries(studyapp_benchmarks PRIVATE
 target_compile_features(studyapp_benchmarks PRIVATE cxx_std_20)
 set_target_properties(studyapp_benchmarks PROPERTIES FOLDER "bench")
 
+# Workspace maintenance on ~1 GB and ~5 GB workspaces (1.2-PERF-01, V-07): Check Workspace,
+# backups, bundles, Save a Copy. Generates its workspaces once outside the repository
+# (STUDYAPP_MAINTENANCE_DIR); docs/BENCHMARKS.md. Qt-free.
+add_executable(studyapp_maintenance_benchmarks
+    MaintenanceBench.cpp
+    ProcessMemory.hpp
+    SyntheticPage.hpp)
+target_link_libraries(studyapp_maintenance_benchmarks PRIVATE
+    studyapp::application
+    studyapp::persistence
+    studyapp::test_support
+    benchmark::benchmark_main
+    studyapp_project_options
+    studyapp_warnings
+    $<$<PLATFORM_ID:Windows>:psapi>)
+target_compile_features(studyapp_maintenance_benchmarks PRIVATE cxx_std_20)
+set_target_properties(studyapp_maintenance_benchmarks PROPERTIES FOLDER "bench")
+
 # Application-level benchmarks (Phase 9): session, search, planner, assets, text, PDF,
 # export and bundles through the real Qt adapters (offscreen platform). Needs Qt.
 if(STUDYAPP_BUILD_APP)

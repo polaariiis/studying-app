@@ -220,6 +220,43 @@ step. Costs are measured on the reference laptop.
   measured**; inferred from hashing speed: seconds for gigabytes of assets.
 * **Limitation (accepted for 1.0):** they run on the GUI thread without progress.
 * **Future:** run them in the background with progress.
+* **Measured in 1.2 (1.2-PERF-01, V-07; docs/BENCHMARKS.md "Workspace maintenance"):** on
+  synthetic ~1 GB and ~5 GB workspaces (Release, reference laptop, median of 5 runs; 3 for
+  the 5 GB copies). Every one of these operations runs synchronously on the GUI thread
+  (MainWindow: wait cursor, no event processing, no progress), so the window takes no input
+  and paints nothing for the whole time below; Windows shows it as "Not Responding" after
+  about 5 s.
+
+  | Operation | ~1 GB | ~5 GB | Scales with |
+  |---|---:|---:|---|
+  | Check Workspace | 6.5 s | 33.5 s | asset bytes (SHA-256) |
+  | – of that: database `integrity_check` | 0.24 s | 0.97 s | database size |
+  | – of that: asset verification | 6.6 s | 32.5 s | asset bytes |
+  | Back Up Now | 0.22 s | 1.0 s | database size (assets are not copied, D49) |
+  | Closing with the daily backup (closing without it) | 0.22 s (0.03 s) | 1.15 s (0.11 s) | database size |
+  | Recovery check (`quick_check` + `foreign_key_check`) | 0.19 s | 0.99 s | database size |
+  | Export Workspace (bundle) | 5.4 s | fails after 24 s: bundles are limited to 4 GiB (D46) | asset bytes (CRC-32) |
+  | Open Bundle as Workspace | 11.8 s | not measurable (no bundle > 4 GiB) | asset bytes (CRC-32 + SHA-256) |
+  | Import Notebook (the whole workspace as a bundle) | 21.5 s | not measurable (no bundle > 4 GiB) | asset bytes |
+  | Save a Copy | 9.1 s | 45.3 s | asset bytes (copied and hashed) |
+
+* **Cause (measured):** CPU, not the disk: CPU time equals wall time in every case, and
+  StudyBoard's own SHA-256 hashes 159 MiB/s and its CRC-32 287 MiB/s in memory (one core).
+  Costs are linear in the asset bytes (1 GB → 5 GB: ×5.0–5.1); runs vary by < 2 %, except
+  the very first database check after generation (cold file cache: 1.0 s and 4.8 s) and a
+  Check Workspace with a colder cache (8.4 s and 41.7 s: the same CPU time plus disk waits).
+* **Memory (measured):** small. Verifying assets streams them (peak 6 MB in a process that
+  only verifies); the session-based operations peak at the size of the loaded workspace
+  (120 MB at 1 GB, 420 MB at 5 GB, of which ≈ 266 MB is the open 200 000-stroke workspace).
+* **Decision (V-07):** backups, the close-time backup and the recovery check stay as they
+  are (≈ 1 s at 5 GB). Check Workspace, the bundle operations and Save a Copy freeze the
+  window for seconds per gigabyte of assets — beyond the 5 s "Not Responding" point already
+  at ~1 GB for Check Workspace, Export, Open and Import Bundle and Save a Copy — and are candidates for
+  running off the GUI thread with progress (their work is file reading and hashing; only the
+  asset list and the final database steps need the session). A faster SHA-256 and CRC-32
+  would cut every one of them. Bundles of workspaces over 4 GiB cannot be exported at all,
+  and the failure is reported only after the whole attempt. These are recorded as new
+  backlog items, not implemented in S8.
 
 ### 3.12 Opening a large workspace
 

@@ -138,6 +138,54 @@ strokes.
 Before Phase 9 the 100-stroke page took 465 ms (1.7 MB) as PDF and 10 000 strokes 10.2 s
 (32 MB); ink is now exported as stroked outlines instead of triangles.
 
+## Workspace maintenance (1.2)
+
+`studyapp_maintenance_benchmarks` (1.2-PERF-01, backlog V-07; `bench/MaintenanceBench.cpp`).
+Raw results: `bench/results/maintenance.json`. Release build, reference laptop (Ryzen 5
+8645HS, 7.3 GB usable RAM, WD SN740 512 GB NVMe, Windows 10 Home 19045, Windows Defender
+real-time protection on), 2026-10-01, source `75d974f` + this benchmark. Each operation ran
+in its own process (its peak-memory counter is its own); 5 runs, 3 for the copying
+operations at 5 GB; median shown, all runs in the JSON. The file cache was warm after the
+first run (the ~1 GB workspace fits in memory; the ~5 GB one mostly does) — it hardly
+matters here, since every operation is CPU-bound (CPU time = wall time).
+
+**Fixtures** (generated once, deterministic content, outside the repository): pages of
+handwriting (2 000 strokes each), image elements and imported PDF sections (12 pages each);
+asset bytes are pseudo-random, incompressible like the JPEG and PDF data they stand for.
+
+| | ~1 GB | ~5 GB |
+|---|---:|---:|
+| Workspace on disk | 1 053 MB | 5 264 MB |
+| `workspace.db` | 44 MB | 221 MB |
+| Assets | 965 MB in 136 files | 4 824 MB in 680 files |
+| Images (5 MiB) / PDFs (20 MiB) | 120 / 16 | 600 / 80 |
+| Pages (of which PDF pages) / strokes | 212 (192) / 40 000 | 1 060 (960) / 200 000 |
+| Backups | 1 snapshot, 44 MB | 1 snapshot, 219 MB |
+
+| Benchmark | Operation | ~1 GB | ~5 GB | Peak memory (1 / 5 GB) |
+|---|---|---:|---:|---:|
+| `BM_CheckWorkspace` | Check Workspace | 6.55 s | 33.47 s | 120 / 420 MB |
+| `BM_DatabaseIntegrityCheck` | its `PRAGMA integrity_check` | 0.24 s | 0.97 s | 42 MB |
+| `BM_AssetVerify` | its asset verification | 6.55 s | 32.52 s | 6 MB |
+| `BM_QuickAndForeignKeyCheck` | recovery check | 0.19 s | 0.99 s | 42 MB |
+| `BM_BackUpNow` | Back Up Now (snapshot 44 / 219 MB) | 0.22 s | 1.01 s | 124 / 420 MB |
+| `BM_CloseWithDailyBackup` | closing with the daily backup | 0.22 s | 1.15 s | 124 / 419 MB |
+| `BM_CloseWithoutBackup` | closing without it | 0.03 s | 0.11 s | — |
+| `BM_ExportBundle` | Export Workspace (bundle 1 009 MB) | 5.37 s | **fails after 24.37 s** ("over 4 GiB") | 124 / 420 MB |
+| `BM_ExtractBundle` | Open Bundle as Workspace | 11.76 s | not measurable | 123 MB |
+| `BM_ImportBundle` | Import Notebook (whole workspace) | 21.53 s | not measurable | 209 MB |
+| `BM_SaveCopy` | Save a Copy | 9.13 s | 45.32 s | 150 / 431 MB |
+| `BM_HashThroughput/0`, `/1` | SHA-256 / CRC-32 of 256 MiB in memory | 159 / 287 MiB/s | | |
+
+Spread: max/min within 2 % for every operation except the first database check after the
+workspaces were generated (1.01 s and 4.77 s, cold cache). With a colder file cache (a single
+Check Workspace after all the copying benchmarks had evicted the assets) it took 8.4 s and
+41.7 s for ~1 / ~5 GB — the same CPU time (6.9 / 34.7 s) plus waiting for the disk — so
+expect up to about 25 % more than the medians on a first check after other work. Bundles larger than 4 GiB cannot
+be written (no zip64, D46), so the ~5 GB bundle operations have no input; scaled from ~1 GB
+(an estimate, not a measurement) a 4 GiB bundle would take about 50 s to open and 90 s to
+import.
+
 ## Regression thresholds
 
 Changes that exceed these on the reference laptop are investigated before they are merged
@@ -168,6 +216,12 @@ python tools/run_benchmarks.py --build build/ci-full        # every suite, JSON 
 ```
 
 or individual suites, e.g. `build/ci-full/bench/studyapp_benchmarks
---benchmark_filter=BM_FirstFrameWholePage`. On Linux and macOS set `QT_QPA_PLATFORM=offscreen`
+--benchmark_filter=BM_FirstFrameWholePage`. The maintenance benchmarks are not part of
+`run_benchmarks.py` (they need ~6 GB of disk for their workspaces plus the largest copy):
+generate the workspaces with `studyapp_maintenance_benchmarks
+--benchmark_filter=BM_MaintenanceFixture`, then run each operation in its own process, e.g.
+`--benchmark_filter=^BM_CheckWorkspace/5/ --benchmark_repetitions=5`; set
+`STUDYAPP_MAINTENANCE_DIR` to choose where the workspaces go and delete that directory
+afterwards. On Linux and macOS set `QT_QPA_PLATFORM=offscreen`
 for `studyapp_app_benchmarks`. Record the machine with the results (the script does); close
 other applications, use mains power, and compare only runs from the same machine.
