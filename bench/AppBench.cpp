@@ -25,8 +25,8 @@
 #include <QPainter>
 #include <QPdfWriter>
 
-#include <benchmark/benchmark.h>
 #include <atomic>
+#include <benchmark/benchmark.h>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
