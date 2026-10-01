@@ -94,8 +94,18 @@ tasks in the workspace — no measurable growth. Larger task sets were **not mea
 
 ## Bundles
 
-A notebook with 10 000 strokes: exporting as a bundle 299 ms, importing 465 ms. Larger
-bundles were **not measured**.
+A notebook with 10 000 strokes: exporting as a bundle 299 ms, importing 465 ms. Since 1.2
+(docs/BENCHMARKS.md "Workspace maintenance"): a ~1 GB workspace exports in 5.4 s, opens as a
+workspace in 11.8 s and imports in 21.5 s; **a workspace whose bundle would exceed 4 GiB
+cannot be exported** (no zip64, D46; a ~5 GB workspace fails after 24 s).
+
+## Workspace size (maintenance)
+
+Measured in 1.2 on ~1 GB and ~5 GB workspaces (docs/PERFORMANCE.md §3.11): Back Up Now and
+the daily backup on close cost about 0.2 s per GB of database (≈ 1 s at 5 GB) — comfortable.
+Check Workspace (6.5 s per GB of assets) and Save a Copy (9 s per GB) are linear in the
+asset bytes and freeze the window meanwhile: tolerable at a few hundred MB, "Not
+Responding" from about 1 GB.
 
 ## Export
 

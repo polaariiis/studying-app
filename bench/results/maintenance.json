@@ -1,0 +1,454 @@
+{
+ "task": "1.2-PERF-01 (V-07, S8)",
+ "machine": {
+  "cpu": "AMD Ryzen 5 8645HS (6 cores, 12 threads)",
+  "ram_GB": 7.3,
+  "storage": "WD PC SN740 512 GB NVMe SSD",
+  "os": "Windows 10 Home 10.0.19045",
+  "antivirus": "Windows Defender real-time protection on",
+  "build": "Release"
+ },
+ "context": {
+  "date": "2026-10-01T07:24:05+05:00",
+  "num_cpus": 12,
+  "mhz_per_cpu": 4292,
+  "caches": [
+   {
+    "type": "Data",
+    "level": 1,
+    "size": 32768,
+    "num_sharing": 2
+   },
+   {
+    "type": "Instruction",
+    "level": 1,
+    "size": 32768,
+    "num_sharing": 2
+   },
+   {
+    "type": "Unified",
+    "level": 2,
+    "size": 1048576,
+    "num_sharing": 2
+   },
+   {
+    "type": "Unified",
+    "level": 3,
+    "size": 16777216,
+    "num_sharing": 12
+   }
+  ],
+  "load_avg": [],
+  "library_version": "v1.0.0-29-g75d974ff-dirty",
+  "library_build_type": "release",
+  "json_schema_version": 1
+ },
+ "fixtures": {
+  "1": {
+   "total_MB": 1052.9,
+   "db_MB": 44.4,
+   "assets_MB": 964.7,
+   "asset_files": 136,
+   "backups_MB": 43.8,
+   "backup_files": 1,
+   "pages": 212,
+   "pdf_pages": 192,
+   "strokes": 40000,
+   "images": 120
+  },
+  "5": {
+   "total_MB": 5263.6,
+   "db_MB": 221.4,
+   "assets_MB": 4823.5,
+   "asset_files": 680,
+   "backups_MB": 218.7,
+   "backup_files": 1,
+   "pages": 1060,
+   "pdf_pages": 960,
+   "strokes": 200000,
+   "images": 600
+  }
+ },
+ "results": [
+  {
+   "operation": "BM_DatabaseIntegrityCheck",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    1.01,
+    0.238,
+    0.225,
+    0.246,
+    0.227
+   ],
+   "median_s": 0.238,
+   "min_s": 0.225,
+   "max_s": 1.01,
+   "cpu_s_median": 0.234,
+   "mem_before_MB": 7.7,
+   "mem_peak_MB": 42.2
+  },
+  {
+   "operation": "BM_QuickAndForeignKeyCheck",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    0.236,
+    0.235,
+    0.192,
+    0.192,
+    0.19
+   ],
+   "median_s": 0.192,
+   "min_s": 0.19,
+   "max_s": 0.236,
+   "cpu_s_median": 0.188,
+   "mem_before_MB": 7.4,
+   "mem_peak_MB": 42.2
+  },
+  {
+   "operation": "BM_AssetVerify",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    6.865,
+    6.577,
+    6.511,
+    6.55,
+    6.538
+   ],
+   "median_s": 6.55,
+   "min_s": 6.511,
+   "max_s": 6.865,
+   "cpu_s_median": 6.531,
+   "mem_before_MB": 6.3,
+   "mem_peak_MB": 6.3
+  },
+  {
+   "operation": "BM_CheckWorkspace",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    6.638,
+    6.547,
+    6.548,
+    6.517,
+    6.537
+   ],
+   "median_s": 6.547,
+   "min_s": 6.517,
+   "max_s": 6.638,
+   "cpu_s_median": 6.547,
+   "mem_before_MB": 91.0,
+   "mem_peak_MB": 120.0
+  },
+  {
+   "operation": "BM_BackUpNow",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    0.22,
+    0.209,
+    0.202,
+    0.236,
+    0.217
+   ],
+   "median_s": 0.217,
+   "min_s": 0.202,
+   "max_s": 0.236,
+   "cpu_s_median": 0.188,
+   "mem_before_MB": 90.8,
+   "mem_peak_MB": 124.2,
+   "backup_MB": 43.8
+  },
+  {
+   "operation": "BM_CloseWithoutBackup",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    0.026,
+    0.027,
+    0.025,
+    0.026,
+    0.025
+   ],
+   "median_s": 0.026,
+   "min_s": 0.025,
+   "max_s": 0.027,
+   "cpu_s_median": 0.031
+  },
+  {
+   "operation": "BM_CloseWithDailyBackup",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    0.221,
+    0.229,
+    0.22,
+    0.245,
+    0.223
+   ],
+   "median_s": 0.223,
+   "min_s": 0.22,
+   "max_s": 0.245,
+   "cpu_s_median": 0.203,
+   "mem_before_MB": 8.6,
+   "mem_peak_MB": 124.4
+  },
+  {
+   "operation": "BM_ExportBundle",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    5.489,
+    5.365,
+    5.447,
+    5.348,
+    5.357
+   ],
+   "median_s": 5.365,
+   "min_s": 5.348,
+   "max_s": 5.489,
+   "cpu_s_median": 5.297,
+   "mem_before_MB": 90.8,
+   "mem_peak_MB": 124.3,
+   "bundle_MB": 1008.6
+  },
+  {
+   "operation": "BM_ExtractBundle",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    11.776,
+    11.764,
+    11.752,
+    11.791,
+    11.753
+   ],
+   "median_s": 11.764,
+   "min_s": 11.752,
+   "max_s": 11.791,
+   "cpu_s_median": 11.703,
+   "mem_before_MB": 8.1,
+   "mem_peak_MB": 122.9
+  },
+  {
+   "operation": "BM_ImportBundle",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    21.533,
+    21.532,
+    21.486,
+    21.605,
+    21.755
+   ],
+   "median_s": 21.533,
+   "min_s": 21.486,
+   "max_s": 21.755,
+   "cpu_s_median": 20.703,
+   "mem_before_MB": 9.2,
+   "mem_peak_MB": 209.0
+  },
+  {
+   "operation": "BM_SaveCopy",
+   "workspace_gb": 1,
+   "runs": 5,
+   "seconds": [
+    9.129,
+    9.152,
+    9.156,
+    9.063,
+    9.07
+   ],
+   "median_s": 9.129,
+   "min_s": 9.063,
+   "max_s": 9.156,
+   "cpu_s_median": 8.391,
+   "mem_before_MB": 91.2,
+   "mem_peak_MB": 150.0
+  },
+  {
+   "operation": "BM_DatabaseIntegrityCheck",
+   "workspace_gb": 5,
+   "runs": 5,
+   "seconds": [
+    4.774,
+    0.968,
+    0.966,
+    0.974,
+    0.97
+   ],
+   "median_s": 0.97,
+   "min_s": 0.966,
+   "max_s": 4.774,
+   "cpu_s_median": 0.969,
+   "mem_before_MB": 7.5,
+   "mem_peak_MB": 42.3
+  },
+  {
+   "operation": "BM_QuickAndForeignKeyCheck",
+   "workspace_gb": 5,
+   "runs": 5,
+   "seconds": [
+    0.988,
+    0.988,
+    0.999,
+    0.988,
+    1.004
+   ],
+   "median_s": 0.988,
+   "min_s": 0.988,
+   "max_s": 1.004,
+   "cpu_s_median": 0.984,
+   "mem_before_MB": 7.4,
+   "mem_peak_MB": 42.4
+  },
+  {
+   "operation": "BM_AssetVerify",
+   "workspace_gb": 5,
+   "runs": 5,
+   "seconds": [
+    32.583,
+    32.486,
+    32.693,
+    32.413,
+    32.521
+   ],
+   "median_s": 32.521,
+   "min_s": 32.413,
+   "max_s": 32.693,
+   "cpu_s_median": 32.266,
+   "mem_before_MB": 6.3,
+   "mem_peak_MB": 6.4
+  },
+  {
+   "operation": "BM_CheckWorkspace",
+   "workspace_gb": 5,
+   "runs": 5,
+   "seconds": [
+    33.482,
+    33.433,
+    33.519,
+    33.438,
+    33.468
+   ],
+   "median_s": 33.468,
+   "min_s": 33.433,
+   "max_s": 33.519,
+   "cpu_s_median": 33.141,
+   "mem_before_MB": 266.6,
+   "mem_peak_MB": 419.9
+  },
+  {
+   "operation": "BM_BackUpNow",
+   "workspace_gb": 5,
+   "runs": 5,
+   "seconds": [
+    1.005,
+    0.996,
+    1.022,
+    0.965,
+    1.056
+   ],
+   "median_s": 1.005,
+   "min_s": 0.965,
+   "max_s": 1.056,
+   "cpu_s_median": 0.859,
+   "mem_before_MB": 267.3,
+   "mem_peak_MB": 420.4,
+   "backup_MB": 218.7
+  },
+  {
+   "operation": "BM_CloseWithoutBackup",
+   "workspace_gb": 5,
+   "runs": 5,
+   "seconds": [
+    0.112,
+    0.112,
+    0.112,
+    0.114,
+    0.113
+   ],
+   "median_s": 0.112,
+   "min_s": 0.112,
+   "max_s": 0.114,
+   "cpu_s_median": 0.125
+  },
+  {
+   "operation": "BM_CloseWithDailyBackup",
+   "workspace_gb": 5,
+   "runs": 5,
+   "seconds": [
+    1.098,
+    1.147,
+    1.163,
+    1.195,
+    1.096
+   ],
+   "median_s": 1.147,
+   "min_s": 1.096,
+   "max_s": 1.195,
+   "cpu_s_median": 0.984,
+   "mem_before_MB": 10.0,
+   "mem_peak_MB": 419.3
+  },
+  {
+   "operation": "BM_ExportBundle",
+   "workspace_gb": 5,
+   "runs": 3,
+   "seconds": [
+    24.045,
+    24.373,
+    24.5
+   ],
+   "median_s": 24.373,
+   "min_s": 24.045,
+   "max_s": 24.5,
+   "cpu_s_median": 23.844,
+   "mem_before_MB": 266.7,
+   "mem_peak_MB": 419.5,
+   "bundle_MB": 0.0,
+   "failed": 1.0,
+   "note": "the archive is too large (over 4 GiB)"
+  },
+  {
+   "operation": "BM_ExtractBundle",
+   "workspace_gb": 5,
+   "runs": 3,
+   "not_measured": "no bundle of this workspace exists: bundles are limited to 4 GiB (no zip64, D46) and its export fails (BM_ExportBundle)"
+  },
+  {
+   "operation": "BM_ImportBundle",
+   "workspace_gb": 5,
+   "runs": 3,
+   "not_measured": "no bundle of this workspace exists: bundles are limited to 4 GiB (no zip64, D46) and its export fails (BM_ExportBundle)"
+  },
+  {
+   "operation": "BM_SaveCopy",
+   "workspace_gb": 5,
+   "runs": 3,
+   "seconds": [
+    45.149,
+    45.324,
+    45.704
+   ],
+   "median_s": 45.324,
+   "min_s": 45.149,
+   "max_s": 45.704,
+   "cpu_s_median": 41.984,
+   "mem_before_MB": 266.6,
+   "mem_peak_MB": 430.7
+  },
+  {
+   "operation": "BM_HashThroughput/0",
+   "label": "SHA-256 (assets)",
+   "MiB_per_s": 159.1
+  },
+  {
+   "operation": "BM_HashThroughput/1",
+   "label": "CRC-32 (zip)",
+   "MiB_per_s": 287.4
+  }
+ ]
+}

@@ -571,6 +571,14 @@ OCR for search · shape recognition (snap hand-drawn shapes) · audio recording 
 ink · LaTeX/math · QRhi backend (Metal/Vulkan/D3D) · sync between devices (op log) ·
 Qt Quick tablet UI · spaced-repetition flashcards from notes.
 
+**Measured maintenance follow-ups (1.2-PERF-01, V-07; docs/PERFORMANCE.md §3.11)** — recorded,
+not implemented: (1) run Check Workspace, bundle export/open/import and Save a Copy off the
+GUI thread with progress (they freeze the window for 5–21 s per GB of assets); (2) a faster
+SHA-256 and CRC-32 (159 / 287 MiB/s today; every one of those operations is CPU-bound on
+them); (3) bundles over 4 GiB: refuse before writing (today the export fails only after
+the attempt, 24 s at ~5 GB) or write zip64. Backups and the close-time backup need nothing
+(≈ 1 s at 5 GB).
+
 ---
 
 ## Resolved decisions (formerly open questions)
