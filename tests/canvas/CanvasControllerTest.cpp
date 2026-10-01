@@ -1963,6 +1963,35 @@ TEST(CanvasControllerTest, InsertImageFitsTheViewAsOneSelectedElement) {
     EXPECT_FALSE(f.controller.insertImage(asset, {0, 10}).has_value());
 }
 
+TEST(CanvasControllerTest, InsertImageOnAnotherPageUsesTheViewItWasLeftWith) {
+    // 1.2-IMP-01: an import finishing after the user moved on goes to its page, placed as
+    // insertImage places it in that page's remembered view; the shown page, its view and
+    // the selection stay.
+    CanvasFixture f;
+    const core::SectionId section = f.doc.workspace.findPage(f.page)->section;
+    const core::PageId other = f.doc.addPage(section, "Other");
+    const core::AssetId asset{f.doc.ids.next()};
+    const core::DVec2 center = f.controller.camera().center();
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    // Left at (1000, 1000), zoom 2: 400 × 300 world units of the 800 × 600 viewport.
+    ASSERT_OK(f.controller.insertImageOnPage(other, {1000, 1000}, 2.0, asset, {300, 100}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    EXPECT_TRUE(f.elements().empty()); // nothing on the shown page
+    const auto onOther = f.doc.workspace.elementsOf(f.doc.firstLayer(other));
+    ASSERT_EQ(onOther.size(), 1U);
+    const document::Element& image = f.element(onOther[0]);
+    EXPECT_EQ(std::get<document::Image>(image.payload).size, (core::Vec2{240, 80})); // 60 %
+    EXPECT_EQ(image.transform.position, (core::DVec2{880, 960}));                    // centred
+    EXPECT_TRUE(f.controller.selection().empty());
+    EXPECT_EQ(f.controller.camera().center(), center);
+    EXPECT_EQ(f.controller.camera().zoom(), 1.0);
+    // A page that is gone meanwhile, or an empty size: nothing is inserted.
+    ASSERT_OK(f.port.execute(*document::commands::deletePage(f.doc.workspace, other)));
+    EXPECT_FALSE(
+        f.controller.insertImageOnPage(other, {1000, 1000}, 2.0, asset, {300, 100}).has_value());
+    EXPECT_FALSE(f.controller.insertImageOnPage(f.page, {0, 0}, 1.0, asset, {0, 10}).has_value());
+}
+
 // ---------------------------------------------------------------------------- connectors
 
 /// Two rectangles to connect: A at (100, 100)-(200, 160), B at (400, 100)-(500, 160).

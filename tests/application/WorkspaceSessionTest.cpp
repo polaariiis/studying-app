@@ -195,6 +195,16 @@ TEST_F(WorkspaceSessionTest, AssetsStagedOnAnotherThreadAreStoredOnce) {
     ASSERT_OK(third);
     WorkspaceSession::discardStagedAsset(*third);
     EXPECT_FALSE(std::filesystem::exists(third->file));
+    // A failed store removes the staged file too (1.2-IMP-01)...
+    auto failing = session->prepareAssetImport(source)();
+    ASSERT_OK(failing);
+    EXPECT_FALSE(session->finishAssetImport(*failing, "").has_value()); // no media type
+    EXPECT_FALSE(std::filesystem::exists(failing->file));
+    // ...and discarding a staging that was already stored never touches the stored file.
+    WorkspaceSession::discardStagedAsset(*a);
+    const auto storedPath = session->assetPath(*stored);
+    ASSERT_TRUE(storedPath.has_value());
+    EXPECT_TRUE(std::filesystem::exists(*storedPath));
     // Missing sources fail in the job, without touching the session.
     EXPECT_FALSE(session->prepareAssetImport(dir / "missing.png")().has_value());
     // A read-only session refuses to store (and removes the staged file).

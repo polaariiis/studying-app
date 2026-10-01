@@ -178,6 +178,37 @@ bool affectsSearch(const document::Patch& patch) {
     return false;
 }
 
+/// A file an import staged (WorkspaceSession::prepareAssetImport), owned by the import's
+/// finishing step (1.2-IMP-01): take() hands it to finishAssetImport, which stores or
+/// removes it; a step dropped without running (the workspace closed or changed, the window
+/// went away) removes it here instead of leaving it in temporary/ until the next open.
+class StagedImport {
+public:
+    explicit StagedImport(core::Result<application::StagedAssetFile> staged)
+        : staged_(std::move(staged)) {}
+    ~StagedImport() {
+        if (staged_ && !taken_) {
+            application::WorkspaceSession::discardStagedAsset(*staged_);
+        }
+    }
+    StagedImport(const StagedImport&) = delete;
+    StagedImport& operator=(const StagedImport&) = delete;
+    StagedImport(StagedImport&&) = delete;
+    StagedImport& operator=(StagedImport&&) = delete;
+
+    [[nodiscard]] bool ok() const noexcept { return staged_.has_value(); }
+    [[nodiscard]] const core::Error& error() const { return staged_.error(); }
+    /// The staged file, for finishAssetImport (which stores or removes it); once only.
+    [[nodiscard]] const application::StagedAssetFile& take() {
+        taken_ = true;
+        return *staged_;
+    }
+
+private:
+    core::Result<application::StagedAssetFile> staged_;
+    bool taken_ = false;
+};
+
 } // namespace
 
 /// Everything that belongs to one open workspace; recreated when another one is opened.
@@ -2139,27 +2170,46 @@ void MainWindow::insertImage() {
     // stored and inserted here (docs/PERFORMANCE.md).
     runInBackground([this, stage = open_->session->prepareAssetImport(*chosen), mediaType, page,
                      pixels]() -> std::function<void()> {
-        auto staged = std::make_shared<core::Result<application::StagedAssetFile>>(stage());
+        auto staged = std::make_shared<StagedImport>(stage());
         return [this, staged, mediaType, page, pixels] {
             const QString failed = tr("The image could not be inserted.");
-            if (!*staged) {
+            if (!staged->ok()) {
                 dialogs_->showError(this, failed, errorText(staged->error()));
                 return;
             }
             // Content-addressed: importing the same file again reuses the stored copy.
-            auto asset = open_->session->finishAssetImport(**staged, mediaType);
+            auto asset = open_->session->finishAssetImport(staged->take(), mediaType);
             if (!asset) {
                 dialogs_->showError(this, failed, errorText(asset.error()));
                 return;
             }
-            if (activePage() != page && !openPage(page)) {
+            if (activePage() == page) {
+                if (auto inserted = open_->controller->insertImage(*asset, pixels); !inserted) {
+                    dialogs_->showError(this, failed, errorText(inserted.error()));
+                    return;
+                }
+                selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
+                return;
+            }
+            // The user moved on (1.2-IMP-01): the image goes to the page it was started from,
+            // placed in the view that page was left with, and the current page stays.
+            const document::PageInfo* target = open_->session->workspace().findPage(page);
+            if (target == nullptr) {
                 return; // the page is gone meanwhile; the asset stays for garbage collection
             }
-            if (auto inserted = open_->controller->insertImage(*asset, pixels); !inserted) {
+            const auto left = open_->views.find(page);
+            const canvas::Camera& camera = open_->controller->camera();
+            const bool remembered = left != open_->views.end();
+            if (auto inserted = open_->controller->insertImageOnPage(
+                    page, remembered ? left->second.center : camera.center(),
+                    remembered ? left->second.zoom : camera.zoom(), *asset, pixels);
+                !inserted) {
                 dialogs_->showError(this, failed, errorText(inserted.error()));
                 return;
             }
-            selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
+            statusBar()->showMessage(
+                tr("The image was inserted on \u201C%1\u201D.").arg(toQString(target->title)),
+                5000);
         };
     });
 }
@@ -2174,24 +2224,27 @@ void MainWindow::importPdf() {
     }
     // Reading the page sizes and copying the file happen on a pool thread; the section is
     // created here. Only read: the PDF is copied into the workspace and never written.
-    runInBackground([this, stage = open_->session->prepareAssetImport(*chosen),
-                     source = *chosen]() -> std::function<void()> {
+    // The imported document is opened only if the user is still on this page when it is
+    // ready (1.2-IMP-01).
+    const std::optional<core::PageId> startedOn = activePage();
+    runInBackground([this, stage = open_->session->prepareAssetImport(*chosen), source = *chosen,
+                     startedOn]() -> std::function<void()> {
         auto info = std::make_shared<core::Result<PdfInfo>>(inspectPdf(source));
-        auto staged = std::make_shared<core::Result<application::StagedAssetFile>>(
+        auto staged = std::make_shared<StagedImport>(
             *info ? stage()
                   : core::Result<application::StagedAssetFile>(tl::unexpected(info->error())));
-        return [this, info, staged, source] {
+        return [this, info, staged, source, startedOn] {
             const QString file = QString::fromStdU16String(source.u16string());
             const QString failed = tr("The PDF could not be imported.");
             if (!*info) {
                 dialogs_->showError(this, failed, tr("%1: %2").arg(file, errorText(info->error())));
                 return;
             }
-            if (!*staged) {
+            if (!staged->ok()) {
                 dialogs_->showError(this, failed, errorText(staged->error()));
                 return;
             }
-            auto asset = open_->session->finishAssetImport(**staged, "application/pdf");
+            auto asset = open_->session->finishAssetImport(staged->take(), "application/pdf");
             if (!asset) {
                 dialogs_->showError(this, failed, errorText(asset.error()));
                 return;
@@ -2210,10 +2263,17 @@ void MainWindow::importPdf() {
                 dialogs_->showError(this, failed, errorText(imported.error()));
                 return;
             }
-            openPage(imported->firstPage);
             QTreeView* tree = navigation_->tree();
             tree->expand(treeModel_->indexOf(HierarchyItem{imported->notebook}));
             tree->expand(treeModel_->indexOf(HierarchyItem{imported->section}));
+            if (activePage() != startedOn) {
+                // The user moved on meanwhile: the document is shown in the tree, not opened.
+                statusBar()->showMessage(
+                    tr("\u201C%1\u201D was imported.").arg(QFileInfo(file).completeBaseName()),
+                    5000);
+                return;
+            }
+            openPage(imported->firstPage);
             tree->setCurrentIndex(treeModel_->indexOf(HierarchyItem{imported->firstPage}));
         };
     });

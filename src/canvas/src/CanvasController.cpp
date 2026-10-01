@@ -925,6 +925,28 @@ void CanvasController::trimImageTextures(render::Renderer& renderer) {
     }
 }
 
+namespace {
+
+/// The image element insertImage makes for `asset` in `view` on `layer`: fitted within 60 %
+/// of the view (never enlarged), centred in it.
+core::Result<document::commands::Created<core::ElementId>>
+imageInView(const document::Workspace& workspace, core::LayerId layer, const core::DRect& view,
+            core::AssetId asset, const core::Vec2& pixelSize, core::IdGenerator& ids) {
+    const double fit = std::min({1.0, 0.6 * view.width() / static_cast<double>(pixelSize.x),
+                                 0.6 * view.height() / static_cast<double>(pixelSize.y)});
+    const core::Vec2 size{static_cast<float>(pixelSize.x * fit),
+                          static_cast<float>(pixelSize.y * fit)};
+    const core::DVec2 topLeft =
+        view.center() - core::DVec2{static_cast<double>(size.x), static_cast<double>(size.y)} * 0.5;
+    return document::commands::createElement(
+        workspace, layer,
+        {.transform = {.position = topLeft},
+         .payload = document::Image{.asset = asset, .size = size}},
+        ids);
+}
+
+} // namespace
+
 core::Result<void> CanvasController::insertImage(core::AssetId asset, const core::Vec2& pixelSize) {
     const auto page = scene_.page();
     const document::Workspace& workspace = document_->workspace();
@@ -932,18 +954,8 @@ core::Result<void> CanvasController::insertImage(core::AssetId asset, const core
     if (!layer || !(pixelSize.x > 0.0F) || !(pixelSize.y > 0.0F)) {
         return core::makeError(core::ErrorCode::InvalidArgument, "nowhere to insert the image");
     }
-    const core::DRect view = camera_.visibleWorldRect();
-    const double fit = std::min({1.0, 0.6 * view.width() / static_cast<double>(pixelSize.x),
-                                 0.6 * view.height() / static_cast<double>(pixelSize.y)});
-    const core::Vec2 size{static_cast<float>(pixelSize.x * fit),
-                          static_cast<float>(pixelSize.y * fit)};
-    const core::DVec2 topLeft =
-        view.center() - core::DVec2{static_cast<double>(size.x), static_cast<double>(size.y)} * 0.5;
-    auto created = document::commands::createElement(
-        workspace, *layer,
-        {.transform = {.position = topLeft},
-         .payload = document::Image{.asset = asset, .size = size}},
-        *ids_);
+    auto created =
+        imageInView(workspace, *layer, camera_.visibleWorldRect(), asset, pixelSize, *ids_);
     if (!created) {
         return tl::unexpected(created.error());
     }
@@ -955,6 +967,26 @@ core::Result<void> CanvasController::insertImage(core::AssetId asset, const core
     selection_.set({id});
     requestRedraw();
     return {};
+}
+
+core::Result<void> CanvasController::insertImageOnPage(core::PageId page, const core::DVec2& center,
+                                                       double zoom, core::AssetId asset,
+                                                       const core::Vec2& pixelSize) {
+    const document::Workspace& workspace = document_->workspace();
+    const auto layer =
+        workspace.findPage(page) != nullptr ? detail::targetLayer(workspace, page) : std::nullopt;
+    if (!layer || !(pixelSize.x > 0.0F) || !(pixelSize.y > 0.0F)) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "nowhere to insert the image");
+    }
+    Camera left = camera_; // the current viewport, at the view the page was left with
+    left.setZoom(zoom);
+    left.setCenter(center);
+    auto created = imageInView(workspace, *layer, left.visibleWorldRect(), asset, pixelSize, *ids_);
+    if (!created) {
+        return tl::unexpected(created.error());
+    }
+    commit(std::move(created->command));
+    return lastError_ ? core::Result<void>{tl::unexpected(*lastError_)} : core::Result<void>{};
 }
 
 // ---------------------------------------------------------------------------- documents
