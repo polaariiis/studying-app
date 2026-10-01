@@ -56,6 +56,7 @@
 #include <QTreeView>
 #include <QTreeWidget>
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -310,6 +311,9 @@ private:
                 themes, *settings, ui::ShellServices{.clock = clock, .ids = ids, .locker = locker},
                 std::move(scripted));
             window->setTextLayout(&textLayout);
+            // PDF imports inspect in a worker process (D53): the helper runs the real worker.
+            window->setPdfWorker(QString::fromUtf8(STUDYAPP_PDF_WORKER_HELPER),
+                                 {QStringLiteral("real")});
             window->resize(1000, 700);
             window->show();
             // Every workflow runs with the model contract checked (row signals, indexes).
@@ -2420,6 +2424,41 @@ private Q_SLOTS:
         const auto opened = *shell.window->activePage();
         QVERIFY(opened != first && opened != second);
         QVERIFY(shell.ws().findPage(opened)->document.has_value());
+        QCOMPARE(filesIn(path / "temporary"), std::size_t{0});
+    }
+
+    // 1.2-PDF-02 (D53): a PDF worker that crashes or hangs fails only that import. Closing
+    // the workspace stops (kills) a hanging worker instead of waiting for it, and nothing of
+    // either job is left: no job directory, no staged file.
+    void failingPdfWorkersFailOnlyTheImport() {
+        Shell shell(settings(QStringLiteral("pdfworker")));
+        const auto path = freshPath(QStringLiteral("PdfWorker"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const auto jobs = toPath(dir_.filePath(QStringLiteral("pdf-jobs")));
+        std::filesystem::create_directories(jobs);
+        const QString helper = QString::fromUtf8(STUDYAPP_PDF_WORKER_HELPER);
+        shell.dialogs->importDocument = toPath(writePdf(QStringLiteral("worker.pdf")));
+        const auto pages = shell.ws().pageCount();
+
+        shell.window->setPdfWorker(helper, {QStringLiteral("crash")}, jobs);
+        shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
+        QCOMPARE(shell.dialogs->errors.size(), 1);
+        QCOMPARE(shell.ws().pageCount(), pages); // nothing imported, StudyBoard still here
+        QCOMPARE(filesIn(path / "temporary"), std::size_t{0});
+        QVERIFY(std::filesystem::is_empty(jobs));
+
+        shell.window->setPdfWorker(helper, {QStringLiteral("hang")}, jobs);
+        shell.action("actionImportPdf")->trigger();
+        QTRY_VERIFY(!std::filesystem::is_empty(jobs)); // the worker's job is running
+        const auto started = std::chrono::steady_clock::now();
+        shell.action("actionCloseWorkspace")->trigger();
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        QVERIFY(!shell.window->activePage().has_value());
+        QVERIFY(elapsed < std::chrono::seconds(10)); // stopped, not waited for (deadline 30 s)
+        shell.waitForImports();
+        QCOMPARE(shell.dialogs->errors.size(), 1); // no dialog for the stopped import
+        QVERIFY(std::filesystem::is_empty(jobs));
         QCOMPARE(filesIn(path / "temporary"), std::size_t{0});
     }
 
