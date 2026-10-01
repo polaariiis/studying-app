@@ -194,7 +194,7 @@ void ensureFixture(const Spec& spec) {
     const fs::path sources = benchRoot() / "sources";
     fs::create_directories(sources);
     const int imagesPerPage = spec.images / spec.pages;
-    std::uint64_t seed = 1000ULL * static_cast<std::uint64_t>(spec.gigabytes);
+    std::uint64_t seed = std::uint64_t{1000} * static_cast<std::uint64_t>(spec.gigabytes);
     for (int p = 0; p < spec.pages; ++p) {
         const core::PageId page = p == 0 ? created.page : *structure.createPage(created.section);
         const core::LayerId layer = session->workspace().layersOf(page).front();
