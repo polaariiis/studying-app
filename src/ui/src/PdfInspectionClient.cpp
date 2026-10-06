@@ -1,5 +1,7 @@
 #include "PdfInspectionClient.hpp"
 
+#include "PdfText.hpp"
+
 #include <studyapp/core/Log.hpp>
 #include <studyapp/ipc/FileChannel.hpp>
 #include <studyapp/ui/PdfWorker.hpp>
@@ -77,8 +79,8 @@ int toInt(milliseconds value) {
 class PdfJob {
 public:
     PdfJob(const std::filesystem::path& staged, core::JobId job, const std::atomic<bool>& stop,
-           const PdfWorkerOptions& options)
-        : staged_(staged), job_(job), stop_(stop), options_(options) {}
+           const PdfWorkerOptions& options, ipc::pdf::RequestKind kind)
+        : staged_(staged), job_(job), stop_(stop), options_(options), kind_(kind) {}
 
     PdfJob(const PdfJob&) = delete;
     PdfJob& operator=(const PdfJob&) = delete;
@@ -129,6 +131,15 @@ public:
             line += ", status " + std::to_string(static_cast<int>(result_.reply->status)) + ", " +
                     std::to_string(result_.reply->pages.size()) + " pages";
         }
+        if (result_.text) { // sizes only: no PDF content is logged
+            std::size_t bytes = 0;
+            for (const std::string& page : result_.text->pages) {
+                bytes += page.size();
+            }
+            line += ", status " + std::to_string(static_cast<int>(result_.text->status)) +
+                    ", text of " + std::to_string(result_.text->pages.size()) + " pages, " +
+                    std::to_string(bytes) + " bytes";
+        }
         if (result_.state == PdfJobState::Failed && process_) {
             const QByteArray err = process_->readAllStandardError().left(kStderrBytes);
             if (!err.isEmpty()) {
@@ -155,7 +166,9 @@ private:
             options_.tempRoot.empty() ? std::filesystem::path(QDir::tempPath().toStdU16String())
                                       : options_.tempRoot;
         result_.directory = pdfJobDirectory(root, job_);
-        core::logInfo(kLog, "job " + job_.toString() + " started for " +
+        core::logInfo(kLog, "job " + job_.toString() +
+                                (kind_ == ipc::pdf::RequestKind::ExtractText ? " (text)" : "") +
+                                " started for " +
                                 staged_.filename().string()); // an asset id, not a user path
         if (result_.directory.u16string().size() > kMaxDirectoryLength) {
             fail(PdfJobFailure::Setup);
@@ -179,8 +192,8 @@ private:
         replies_.emplace(std::move(*replies));
         // The request waits in its single slot until the worker reads it: no start-up race.
         const std::u8string path = staged_.u8string();
-        const ipc::pdf::InspectRequest request{.job = job_,
-                                               .path = std::string(path.begin(), path.end())};
+        const ipc::pdf::InspectRequest request{
+            .job = job_, .path = std::string(path.begin(), path.end()), .kind = kind_};
         if (!requests_->send(ipc::pdf::encode(request), milliseconds(1000))) {
             fail(PdfJobFailure::Setup);
             return false;
@@ -224,6 +237,16 @@ private:
         }
         if (!*message) {
             return true; // nothing yet
+        }
+        if (kind_ == ipc::pdf::RequestKind::ExtractText) {
+            auto text = ipc::pdf::decodeTextReply(**message);
+            if (!text || text->job != job_) {
+                fail(PdfJobFailure::Protocol); // never partly used, never another job's
+                return false;
+            }
+            result_.text = std::move(*text);
+            answered = true;
+            return true;
         }
         auto reply = ipc::pdf::decodeReply(**message);
         if (!reply || reply->job != job_) {
@@ -277,11 +300,13 @@ private:
         if (process_->state() != QProcess::NotRunning &&
             !process_->waitForFinished(toInt(options_.exitTimeout))) {
             result_.reply.reset();
+            result_.text.reset();
             fail(PdfJobFailure::Exited);
             return;
         }
         if (process_->exitStatus() == QProcess::CrashExit || process_->exitCode() != 0) {
             result_.reply.reset();
+            result_.text.reset();
             fail(process_->exitStatus() == QProcess::CrashExit ? PdfJobFailure::Crashed
                                                                : PdfJobFailure::Exited);
             return;
@@ -294,6 +319,7 @@ private:
     core::JobId job_;
     const std::atomic<bool>& stop_;
     const PdfWorkerOptions& options_;
+    ipc::pdf::RequestKind kind_;
     PdfJobResult result_;
     bool created_ = false;
     Clock::time_point deadline_{};
@@ -301,6 +327,19 @@ private:
     std::optional<ipc::FileChannel> replies_;
     std::optional<QProcess> process_; ///< last: destroyed (after the kill) before the channels
 };
+
+/// What a failed job means for the user (the same wording for imports and searches).
+core::Error jobFailureError(PdfJobFailure failure) {
+    switch (failure) {
+    case PdfJobFailure::Crashed:
+    case PdfJobFailure::Exited:
+        return {core::ErrorCode::IoError, "the PDF could not be read (the reader stopped)"};
+    case PdfJobFailure::Timeout:
+        return {core::ErrorCode::IoError, "the PDF could not be read in time"};
+    default:
+        return {core::ErrorCode::IoError, "the PDF could not be read"};
+    }
+}
 
 } // namespace
 
@@ -312,7 +351,13 @@ std::filesystem::path pdfJobDirectory(const std::filesystem::path& tempRoot, cor
 
 PdfJobResult runPdfInspectionJob(const std::filesystem::path& staged, core::JobId job,
                                  const std::atomic<bool>& stop, const PdfWorkerOptions& options) {
-    PdfJob run(staged, job, stop, options);
+    PdfJob run(staged, job, stop, options, ipc::pdf::RequestKind::Inspect);
+    return run.run();
+}
+
+PdfJobResult runPdfTextJob(const std::filesystem::path& file, core::JobId job,
+                           const std::atomic<bool>& stop, const PdfWorkerOptions& options) {
+    PdfJob run(file, job, stop, options, ipc::pdf::RequestKind::ExtractText);
     return run.run();
 }
 
@@ -328,16 +373,23 @@ core::Result<PdfInfo> inspectPdfInWorker(const std::filesystem::path& staged, co
     default:
         break;
     }
-    switch (result.failure) {
-    case PdfJobFailure::Crashed:
-    case PdfJobFailure::Exited:
-        return core::makeError(core::ErrorCode::IoError,
-                               "the PDF could not be read (the reader stopped)");
-    case PdfJobFailure::Timeout:
-        return core::makeError(core::ErrorCode::IoError, "the PDF could not be read in time");
+    return tl::unexpected(jobFailureError(result.failure));
+}
+
+core::Result<application::PdfDocumentText> extractPdfTextInWorker(const std::filesystem::path& file,
+                                                                  core::JobId job,
+                                                                  const std::atomic<bool>& stop,
+                                                                  const PdfWorkerOptions& options) {
+    const PdfJobResult result = runPdfTextJob(file, job, stop, options);
+    switch (result.state) {
+    case PdfJobState::Succeeded:
+        return pdfTextFrom(*result.text);
+    case PdfJobState::Cancelled:
+        return core::makeError(core::ErrorCode::Conflict, "the search was cancelled");
     default:
-        return core::makeError(core::ErrorCode::IoError, "the PDF could not be read");
+        break;
     }
+    return tl::unexpected(jobFailureError(result.failure));
 }
 
 } // namespace studyapp::ui

@@ -1,12 +1,16 @@
 // The PDF inspection worker and its client (docs/PDF_WORKER.md §19, D53): real processes —
 // the test helper (pdf_worker_helper, the real worker code or one specific misbehaviour)
-// and the built `studyapp --pdf-worker` — real channels, real job directories.
+// and the built `studyapp --pdf-worker` — real channels, real job directories. Since
+// 1.2-CMD-01 also text extraction (§23) with real PDFs whose text is known.
 
 #include "PdfInspectionClient.hpp"
+#include "PdfText.hpp"
 #include "SessionDocumentRasterizer.hpp"
 
+#include <studyapp/application/PdfTextSearch.hpp>
 #include <studyapp/core/Clock.hpp>
 #include <studyapp/core/IdGenerator.hpp>
+#include <studyapp/testing/MinimalPdf.hpp>
 
 #include <QFile>
 #include <QPageSize>
@@ -253,6 +257,155 @@ private Q_SLOTS:
         QVERIFY(b.reply->job == second);
         QCOMPARE(a.reply->pages.size(), std::size_t{2});
         QCOMPARE(b.reply->pages.size(), std::size_t{5});
+        QVERIFY(noJobsLeft());
+    }
+
+    // ---- text extraction (1.2-CMD-01, docs/PDF_WORKER.md §23)
+
+private:
+    /// A PDF whose pages hold these lines (real text in Helvetica, no fonts needed).
+    std::filesystem::path writeTextPdf(const QString& name,
+                                       const std::vector<std::vector<std::string>>& pages) {
+        const std::string bytes = studyapp::testing::minimalPdf(pages);
+        return writeFile(name, QByteArray(bytes.data(), static_cast<qsizetype>(bytes.size())));
+    }
+
+    studyapp::core::Result<studyapp::application::PdfDocumentText>
+    extract(const std::filesystem::path& pdf, const PdfWorkerOptions& options) {
+        return studyapp::ui::extractPdfTextInWorker(pdf, JobId::generate(ids_), noStop_, options);
+    }
+
+    const std::vector<std::vector<std::string>> lecture_{
+        {"Linear Algebra - Lecture 7", "Every square matrix has a characteristic polynomial."},
+        {"The eigenvalue of matrix A is 3.", "Eigenvectors belong to an Eigenvalue."},
+        {"Signals (part 2): the Fourier", "transform maps f(x) to F(k)."},
+    };
+
+private Q_SLOTS:
+    // The built application reads the text of a real PDF: every page, in order.
+    void studyappExtractsTheTextOfARealPdf() {
+        const auto pdf = writeTextPdf(QStringLiteral("Linear Algebra.pdf"), lecture_);
+        PdfWorkerOptions options;
+        options.program = QString::fromUtf8(STUDYAPP_EXECUTABLE);
+        options.tempRoot = tempRoot();
+        const JobId job = JobId::generate(ids_);
+        const PdfJobResult result = studyapp::ui::runPdfTextJob(pdf, job, noStop_, options);
+        QCOMPARE(result.state, PdfJobState::Succeeded);
+        QVERIFY(result.text.has_value());
+        QVERIFY(!result.reply.has_value());
+        QVERIFY(result.text->job == job); // the reply belongs to this job
+        QCOMPARE(result.text->pages.size(), std::size_t{3});
+        QVERIFY(result.text->pages[0].find("characteristic polynomial") != std::string::npos);
+        QVERIFY(result.text->pages[1].find("eigenvalue of matrix A") != std::string::npos);
+        QVERIFY(result.text->pages[2].find("f(x)") != std::string::npos);
+        QCOMPARE(result.text->detail, std::uint32_t{0});
+        QVERIFY(!std::filesystem::exists(result.directory));
+        QVERIFY(noJobsLeft());
+    }
+
+    // What `pdf search` finds in real extracted text: words, phrases across lines, any case,
+    // punctuation, several pages, the right page numbers in order.
+    void extractedTextIsSearchable() {
+        const auto pdf = writeTextPdf(QStringLiteral("search.pdf"), lecture_);
+        auto text = extract(pdf, helper(QStringLiteral("real")));
+        QVERIFY2(text.has_value(), text ? "" : text.error().message.c_str());
+        using studyapp::application::findInPdfText;
+        const auto pages = [](const std::vector<studyapp::application::PdfTextMatch>& found) {
+            std::vector<std::size_t> out;
+            for (const auto& match : found) {
+                out.push_back(match.page);
+            }
+            return out;
+        };
+        QVERIFY(pages(findInPdfText(*text, "eigenvalue")) == (std::vector<std::size_t>{1, 1}));
+        QVERIFY(pages(findInPdfText(*text, "MATRIX")) == (std::vector<std::size_t>{0, 1}));
+        QVERIFY(pages(findInPdfText(*text, "Fourier transform")) == std::vector<std::size_t>{2});
+        QVERIFY(pages(findInPdfText(*text, "f(x)")) == std::vector<std::size_t>{2});
+        QVERIFY(pages(findInPdfText(*text, "(part 2):")) == std::vector<std::size_t>{2});
+        QVERIFY(findInPdfText(*text, "quaternion").empty());
+        const auto first = findInPdfText(*text, "eigenvalue");
+        QVERIFY(first[0].context.find("eigenvalue of matrix A") != std::string::npos);
+        QVERIFY(first[0].context.size() < 120); // context, not the whole page
+        // The same as reading it in this process (the worker adds isolation, not changes).
+        const auto local = studyapp::ui::pdfTextFrom(studyapp::ui::extractPdfTextLocally(pdf));
+        QVERIFY(local.has_value());
+        QVERIFY(local->pages == text->pages);
+        QVERIFY(noJobsLeft());
+    }
+
+    // Unreadable files fail with the import's wording; text over the limits is cut, marked.
+    void textExtractionAppliesTheRules() {
+        const auto options = helper(QStringLiteral("real"));
+        auto notPdf = extract(writeFile(QStringLiteral("plain.pdf"), "just some text"), options);
+        QVERIFY(!notPdf.has_value());
+        QCOMPARE(QString::fromStdString(notPdf.error().message),
+                 QStringLiteral("the file is not a readable PDF document"));
+        auto missing = extract(path(QStringLiteral("does not exist.pdf")), options);
+        QVERIFY(!missing.has_value());
+        QVERIFY(missing.error().code == studyapp::core::ErrorCode::IoError);
+        auto locked = extract(writeFile(QStringLiteral("locked.pdf"), protectedPdf()), options);
+        QVERIFY(!locked.has_value());
+        QVERIFY(locked.error().code == studyapp::core::ErrorCode::Unsupported);
+        // A page without text (a scanned page) is an empty string, not an error.
+        auto blank = extract(writePdf(QStringLiteral("blank.pdf"), 2), options);
+        QVERIFY(blank.has_value());
+        QCOMPARE(blank->pages.size(), std::size_t{2});
+        // More than 64 KiB of text on one page is cut at a character boundary.
+        std::vector<std::string> lines(1200, std::string(80, 'w'));
+        auto big = extract(writeTextPdf(QStringLiteral("big.pdf"), {lines}), options);
+        QVERIFY2(big.has_value(), big ? "" : big.error().message.c_str());
+        QVERIFY(big->truncated);
+        QVERIFY(big->pages[0].size() <= studyapp::ipc::pdf::kMaxPageTextBytes);
+        QVERIFY(noJobsLeft());
+    }
+
+    // Text jobs fail like inspection jobs: crash, hang, cancel, another job's or another
+    // kind's reply, garbage — never using what the worker sent, never leaving files.
+    void failingTextJobsFailCleanly() {
+        const auto pdf = writeTextPdf(QStringLiteral("fail.pdf"), lecture_);
+        const auto runText = [&](const PdfWorkerOptions& options) {
+            return studyapp::ui::runPdfTextJob(pdf, JobId::generate(ids_), noStop_, options);
+        };
+        const PdfJobResult ok = runText(helper(QStringLiteral("ok")));
+        QCOMPARE(ok.state, PdfJobState::Succeeded);
+        QCOMPARE(ok.text->pages.size(), std::size_t{2});
+        const PdfJobResult crashed = runText(helper(QStringLiteral("crash")));
+        QVERIFY(crashed.failure == PdfJobFailure::Crashed ||
+                crashed.failure == PdfJobFailure::Exited);
+        auto stopped = extract(pdf, helper(QStringLiteral("crash")));
+        QCOMPARE(QString::fromStdString(stopped.error().message),
+                 QStringLiteral("the PDF could not be read (the reader stopped)"));
+        const PdfJobResult afterReply = runText(helper(QStringLiteral("replycrash")));
+        QVERIFY(!afterReply.text.has_value());
+        for (const char* mode : {"wrongjob", "otherkind", "garbage", "badstatus"}) {
+            const PdfJobResult bad = runText(helper(QString::fromLatin1(mode)));
+            QCOMPARE(bad.failure, PdfJobFailure::Protocol);
+            QVERIFY(!bad.text.has_value());
+        }
+        // Inspection jobs refuse a text reply in the same way.
+        QCOMPARE(run(pdf, helper(QStringLiteral("otherkind"))).failure, PdfJobFailure::Protocol);
+
+        PdfWorkerOptions hanging = helper(QStringLiteral("hang"));
+        hanging.deadline = 1000ms;
+        hanging.slice = 50ms;
+        auto late = extract(pdf, hanging);
+        QCOMPARE(QString::fromStdString(late.error().message),
+                 QStringLiteral("the PDF could not be read in time"));
+
+        hanging.deadline = 30s;
+        std::atomic<bool> stop{false};
+        std::thread stopper([&] {
+            std::this_thread::sleep_for(300ms);
+            stop.store(true);
+        });
+        const auto started = std::chrono::steady_clock::now();
+        auto cancelled =
+            studyapp::ui::extractPdfTextInWorker(pdf, JobId::generate(ids_), stop, hanging);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        stopper.join();
+        QVERIFY(!cancelled.has_value());
+        QVERIFY(cancelled.error().code == studyapp::core::ErrorCode::Conflict);
+        QVERIFY(elapsed < 3s);
         QVERIFY(noJobsLeft());
     }
 

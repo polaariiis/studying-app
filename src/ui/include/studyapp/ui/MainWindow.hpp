@@ -1,5 +1,6 @@
 #pragma once
 
+#include <studyapp/core/Error.hpp>
 #include <studyapp/core/Ids.hpp>
 #include <studyapp/ui/PanBenchmark.hpp>
 #include <studyapp/ui/ShellDialogs.hpp>
@@ -14,9 +15,12 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
 class QAction;
+class QDockWidget;
 class QTimer;
 class QTreeWidgetItem;
 class QActionGroup;
@@ -29,6 +33,8 @@ class QThreadPool;
 class QToolButton;
 
 namespace studyapp::application {
+class CommandRegistry;
+class ConsoleSink;
 class WorkspaceLocker;
 class WorkspaceSession;
 } // namespace studyapp::application
@@ -54,6 +60,8 @@ class TimeZone;
 namespace studyapp::ui {
 
 class CanvasPlaceholder;
+class CommandConsole;
+enum class ExportFormat;
 struct ExportSources;
 class CanvasWidget;
 class PlannerPanel;
@@ -154,6 +162,14 @@ public:
     /// Shows `page` on the canvas (where the user left it, if it was open before).
     bool openPage(core::PageId page);
 
+    // ---- command console (1.2-CMD-01, docs/COMMAND_CONSOLE.md) ---------------------------
+    /// Shows the console (building it on first use) and focuses its command line.
+    void showCommandConsole();
+    /// The console, or nullptr until it was first shown.
+    [[nodiscard]] CommandConsole* commandConsole() const noexcept { return console_; }
+    /// PDF text searches running on pool threads (tests wait for 0).
+    [[nodiscard]] int pdfSearchCount() const noexcept { return pdfSearches_; }
+
     // ---- diagnostics ---------------------------------------------------------------------
     /// Zooms the canvas by `zoomFactor` (<= 0: zoom to fit), then pans it back and forth for
     /// `frames` frames and reports timings (no-op without a canvas).
@@ -214,11 +230,24 @@ private:
     void setPageFormat(int backgroundPattern, bool bounded);
     void insertImage();
     void importPdf();
+    /// File ▸ Import PDF without the file dialog (also the console's `import pdf`). With
+    /// `done`, the outcome is reported there instead of in dialogs: an error text, or the
+    /// first page and the page count of the imported document.
+    void importPdfFile(const std::filesystem::path& pdf,
+                       std::function<void(const QString& error, std::optional<core::PageId> first,
+                                          std::size_t pages)>
+                           done = {});
     /// Runs `work` on a pool thread; the function it returns runs on the GUI thread if the
     /// same workspace is still open (Phase 9: imports off the GUI thread).
     void runInBackground(std::function<std::function<void()>()> work);
     /// File ▸ Export Page (PDF, PNG, SVG) or, `wholeSection`, Export Section as PDF.
     void exportPages(bool wholeSection);
+    /// Writes `pages` to `target` (outside the workspace) as `format`: the part of
+    /// exportPages after the file dialog, shared with the console's `export` commands.
+    /// Conflict: cancelled by the user.
+    [[nodiscard]] core::Result<void> writePagesTo(const std::vector<core::PageId>& pages,
+                                                  const std::filesystem::path& target,
+                                                  ExportFormat format);
     void printPages();
     /// File ▸ Export Workspace or (`notebookOnly`) Export Notebook: a bundle file.
     void exportBundle(bool notebookOnly);
@@ -250,6 +279,20 @@ private:
     /// The size the Text Size menu shows as checked: the edited box's, else the selected
     /// text boxes' (when they share one), else the size for new boxes.
     [[nodiscard]] float shownTextSize() const;
+
+    // Command console (MainWindowConsole.cpp).
+    void createConsoleAction(); ///< with the other actions (the View menu shows it)
+    void createConsoleDock();
+    /// Builds the console and its commands on first use (nothing exists before).
+    void ensureConsole();
+    void registerConsoleCommands(application::CommandRegistry& registry);
+    void activateConsoleTarget(const std::variant<core::PageId, core::TaskId>& target);
+    /// `pdf search`: extracts the text of the workspace's PDFs in the PDF worker (cached per
+    /// asset) on a pool thread and writes the matches to `out` when done.
+    [[nodiscard]] core::Result<void> startPdfSearch(const std::string& query,
+                                                    std::shared_ptr<application::ConsoleSink> out);
+    /// Stops a running PDF search; false if none was running.
+    bool cancelPdfSearch();
 
     // Chrome.
     void syncThemeActions();
@@ -394,6 +437,14 @@ private:
 
     QLabel* breadcrumbLabel_ = nullptr;
     QLabel* saveStatusLabel_ = nullptr;
+
+    // Command console: the dock exists from the start (its visibility is remembered with
+    // the window state); its content, the registry and the commands only once it is shown.
+    QDockWidget* consoleDock_ = nullptr;
+    QAction* consoleAction_ = nullptr;
+    CommandConsole* console_ = nullptr;
+    std::unique_ptr<application::CommandRegistry> commands_;
+    int pdfSearches_ = 0; ///< PDF text searches running on pool threads
 };
 
 } // namespace studyapp::ui

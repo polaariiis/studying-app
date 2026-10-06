@@ -112,6 +112,15 @@ decoding time for very large images.
 | `BM_PdfTile/-1` | Render a preview tile (worker thread) | 6.4 ms | 5.5 ms |
 | `BM_PdfTile/1` | Render a level-1 tile | 3.9 ms | 3.1 ms |
 
+PDF content search (1.2-CMD-01, D55; `pdf search` in the command console). Measured on a
+4-vCPU Linux container (Release, 3 repetitions, median wall time), **not** the reference
+laptop; on the same machine `BM_PdfInspectInWorker/1` and `/200` took 18.1 and 29.0 ms.
+
+| Benchmark | Workload | Result | Baseline |
+|---|---|---|---|
+| `BM_PdfTextInWorker/1`, `/200`, `/2000` | Read the text of a PDF (≈ 600 bytes per page) through `studyapp --pdf-worker`: job, process start, extraction, text reply, checks, cleanup — once per PDF and workspace session | 19.3 / 70.9 / 475 ms | — (new) |
+| `BM_PdfTextSearch/200`, `/2000` | Match a phrase found nowhere (the full scan) in the cached text of 200 / 2 000 pages | 0.44 / 4.57 ms | — (new) |
+
 Not measured: page navigation through a long document, and documents over 200 pages. The
 worker rows were measured in one run on the reference laptop (Windows, Release, 5
 repetitions, wall time); since 1.2 every PDF import pays the worker's ≈ 42 ms once, on its

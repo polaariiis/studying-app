@@ -3,6 +3,7 @@
 // edits through the session, undo across pages, locks, no save questions. Runs on the
 // offscreen platform (the canvas has no OpenGL there; everything else is real).
 
+#include "CommandConsole.hpp"
 #include "PageExport.hpp"
 #include "PlannerPanel.hpp"
 #include "SessionDocumentRasterizer.hpp"
@@ -19,6 +20,7 @@
 #include <studyapp/platform/QtTextLayout.hpp>
 #include <studyapp/platform/QtWorkspaceLocker.hpp>
 #include <studyapp/testing/ManualClock.hpp>
+#include <studyapp/testing/MinimalPdf.hpp>
 #include <studyapp/testing/SequentialIds.hpp>
 #include <studyapp/ui/MainWindow.hpp>
 #include <studyapp/ui/ShellDialogs.hpp>
@@ -34,6 +36,7 @@
 #include <QCryptographicHash>
 #include <QCursor>
 #include <QDir>
+#include <QDockWidget>
 #include <QFile>
 #include <QImage>
 #include <QLabel>
@@ -50,6 +53,7 @@
 #include <QSvgRenderer>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextBrowser>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
@@ -1454,10 +1458,11 @@ private Q_SLOTS:
     // through the panel as one undoable, persisted command each; Today and Page show them;
     // canvas edits do not rebuild the planner; everything is there after reopening.
     void plannerThroughTheShell() {
+        // Declared before the shell: the window uses the zone until it is destroyed.
+        const study::FixedOffsetZone zone{std::chrono::minutes{120}};
         Shell shell(settings(QStringLiteral("planner")));
         const auto path = freshPath(QStringLiteral("Planner"));
         QVERIFY(shell.window->createWorkspace(path));
-        const study::FixedOffsetZone zone{std::chrono::minutes{120}};
         shell.window->setTimeZone(&zone);
         shell.window->activateWindow();
         QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
@@ -2702,6 +2707,432 @@ private Q_SLOTS:
         shell.tree()->setFocus();
         QTest::keyClick(shell.tree(), Qt::Key_Z, Qt::ControlModifier);
         QCOMPARE(shell.window->session()->history().undoCount(), undo - 1);
+    }
+
+    // ---------------------------------------------------------------- command console
+
+    /// A PDF with real text on three pages (1.2-CMD-01).
+    QString writeTextPdf(const QString& name) {
+        const std::string bytes = testing::minimalPdf({
+            {"Linear Algebra - Lecture 7", "Every square matrix has a characteristic polynomial."},
+            {"The eigenvalue of matrix A is 3.", "Eigenvectors belong to an Eigenvalue."},
+            {"Signals (part 2): the Fourier", "transform maps f(x) to F(k)."},
+        });
+        const QString file = dir_.filePath(name);
+        QFile out(file);
+        if (!out.open(QIODevice::WriteOnly)) {
+            qFatal("cannot write %s", qPrintable(name));
+        }
+        out.write(bytes.data(), static_cast<qint64>(bytes.size()));
+        return file;
+    }
+
+    static ui::CommandConsole* openConsole(const Shell& shell) {
+        shell.action("actionCommandConsole")->trigger();
+        auto* console =
+            shell.window->findChild<ui::CommandConsole*>(QStringLiteral("commandConsole"));
+        if (console == nullptr) {
+            qFatal("no command console");
+        }
+        return console;
+    }
+
+    /// Runs `line` in the console and returns what it wrote.
+    static QString run(ui::CommandConsole* console, const QString& line) {
+        const auto before = console->lines().size();
+        (void)console->run(line);
+        QStringList written;
+        const auto& lines = console->lines();
+        for (std::size_t i = before; i < lines.size(); ++i) {
+            written << QString::fromStdString(lines[i].text);
+        }
+        return written.join(QLatin1Char('\n'));
+    }
+
+    static bool lastIsError(const ui::CommandConsole* console) {
+        return !console->lines().empty() &&
+               console->lines().back().style == application::ConsoleLine::Style::Error;
+    }
+
+    // The console opens from View ▸ Command Console, nothing of it exists before; help,
+    // navigation, search, workspace info and diagnostics work; history, completion and
+    // Escape work from the keyboard; invalid input is answered, never run.
+    void commandConsoleBasics() {
+        Shell shell(settings(QStringLiteral("console")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("Console"))));
+        QVERIFY(shell.window->commandConsole() == nullptr); // zero cost until first used
+        auto* dock = shell.window->findChild<QDockWidget*>(QStringLiteral("commandConsoleDock"));
+        QVERIFY(dock != nullptr && dock->isHidden());
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        // View ▸ Command Console, with its shortcut.
+        auto* view = shell.window->findChild<QMenu*>(QStringLiteral("menuView"));
+        QVERIFY(view->actions().contains(shell.action("actionCommandConsole")));
+        QCOMPARE(shell.action("actionCommandConsole")->shortcut(),
+                 QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
+        ui::CommandConsole* console = openConsole(shell);
+        QVERIFY(dock->isVisible());
+        QVERIFY(shell.action("actionCommandConsole")->isChecked());
+        QTRY_VERIFY(console->input()->hasFocus());
+        QVERIFY(!console->input()->accessibleName().isEmpty());
+        QVERIFY(!console->output()->accessibleName().isEmpty());
+
+        const QString help = run(console, QStringLiteral("help"));
+        for (const char* usage :
+             {"list pages [all]", "open page <title…>", "search <text…>", "pdf search <text…>",
+              "import pdf <path>", "export page pdf [path]", "export page png [path]",
+              "export page svg [path]", "export section pdf [path]", "workspace info",
+              "diagnostics", "go <number>"}) {
+            QVERIFY2(help.contains(QString::fromUtf8(usage)), usage);
+        }
+        QVERIFY(run(console, QStringLiteral("help pdf search")).contains(u"PDF worker"_s));
+
+        // Navigation: list and open pages.
+        const auto section = shell.ws().findPage(*shell.window->activePage())->section;
+        shell.action("actionNewPage")->trigger();
+        const auto second = *shell.window->activePage();
+        QVERIFY(shell.window->session()->execute(
+            *document::commands::renamePage(shell.ws(), second, "Week 3", shell.clock)));
+        const auto first = shell.ws().pagesOf(section).front();
+        QVERIFY(run(console, QStringLiteral("open page \"week 3\"")).contains(u"Opened"_s));
+        QCOMPARE(*shell.window->activePage(), second);
+        const QString pages = run(console, QStringLiteral("list pages"));
+        QVERIFY(pages.contains(u"Week 3"_s));
+        QVERIFY(console->numberedTarget(1).has_value());
+        QVERIFY(std::get<core::PageId>(*console->numberedTarget(1)) == first);
+        QVERIFY(run(console, QStringLiteral("go 1")).isEmpty() || !lastIsError(console));
+        QCOMPARE(*shell.window->activePage(), first);
+        QVERIFY(run(console, QStringLiteral("list notebooks"))
+                    .contains(QString::fromStdString(
+                        shell.ws().findNotebook(shell.ws().notebooks().front())->title)));
+        QVERIFY(!run(console, QStringLiteral("list sections")).isEmpty());
+        run(console, QStringLiteral("open page nothing-like-this"));
+        QVERIFY(lastIsError(console));
+        run(console, QStringLiteral("go 99"));
+        QVERIFY(lastIsError(console));
+
+        // Search (the workspace's own index) links to the page.
+        auto layer = shell.ws().layersOf(second).front();
+        auto box = document::commands::createElement(
+            shell.ws(), layer, {.payload = document::TextBox{.text = "Eigenvalues are due Friday"}},
+            shell.ids);
+        QVERIFY(shell.window->session()->execute(std::move(box->command)));
+        const QString found = run(console, QStringLiteral("search eigenvalues"));
+        QVERIFY(found.contains(u"1 result"_s));
+        QVERIFY(console->activateNumbered(1));
+        QCOMPARE(*shell.window->activePage(), second);
+
+        // Information.
+        QVERIFY(run(console, QStringLiteral("workspace")).contains(u"Folder:"_s));
+        const QString diagnostics = run(console, QStringLiteral("diagnostics"));
+        QVERIFY(diagnostics.contains(u"Qt "_s));
+        QVERIFY(diagnostics.contains(u"PDF worker:"_s));
+        QVERIFY(!lastIsError(console));
+
+        // Invalid input: answered with an error, nothing runs, nothing crashes.
+        const auto undoCount = shell.window->session()->history().undoCount();
+        for (const char* line :
+             {"frobnicate", "pdf search", "import pdf", "export", "import pdf \"unterminated",
+              "rm -rf /", "$(whoami)", "list pages everything", "go zero", "help nothing"}) {
+            run(console, QString::fromUtf8(line));
+            QVERIFY2(lastIsError(console), line);
+        }
+        QCOMPARE(shell.window->session()->history().undoCount(), undoCount);
+
+        // Keyboard: history (Up/Down), Tab completion, Ctrl+L, Escape.
+        QLineEdit* input = console->input();
+        input->setFocus();
+        QTest::keyClick(input, Qt::Key_Up);
+        QCOMPARE(input->text(), u"help nothing"_s);
+        QTest::keyClick(input, Qt::Key_Up);
+        QCOMPARE(input->text(), u"go zero"_s);
+        QTest::keyClick(input, Qt::Key_Down);
+        QTest::keyClick(input, Qt::Key_Down);
+        QCOMPARE(input->text(), QString()); // back to the (empty) line being typed
+        QTest::keyClicks(input, u"pdf s"_s);
+        QVERIFY(console->hint()->text().contains(u"pdf search"_s));
+        QTest::keyClick(input, Qt::Key_Tab);
+        QCOMPARE(input->text(), u"pdf search "_s);
+        QVERIFY(console->hint()->text().contains(u"pdf search <text…>"_s));
+        input->clear();
+        QTest::keyClicks(input, u"exp"_s);
+        QTest::keyClick(input, Qt::Key_Tab);
+        QCOMPARE(input->text(), u"export "_s); // the common part of four commands
+        QVERIFY(console->hint()->text().contains(u"export section pdf"_s));
+        input->clear();
+        QTest::keyClicks(input, u"workspace info"_s);
+        QTest::keyClick(input, Qt::Key_Return);
+        QVERIFY(input->text().isEmpty());
+        QCOMPARE(QString::fromStdString(console->history().entries().back()), u"workspace info"_s);
+        QTest::keyClick(input, Qt::Key_L, Qt::ControlModifier);
+        QVERIFY(console->lines().empty());
+        QTest::keyClick(input, Qt::Key_Escape);
+        QVERIFY(dock->isHidden());
+        QVERIFY(!shell.action("actionCommandConsole")->isChecked());
+
+        // Themes: the output is drawn again in the theme's colours; a small window works.
+        shell.window->showCommandConsole();
+        QVERIFY(dock->isVisible());
+        run(console, QStringLiteral("list pages"));
+        shell.action("actionToggleTheme")->trigger();
+        QVERIFY(console->output()->toPlainText().contains(u"Week 3"_s));
+        shell.action("actionToggleTheme")->trigger();
+        shell.window->resize(480, 360);
+        QApplication::processEvents();
+        QVERIFY(console->input()->isVisible());
+        QVERIFY(console->output()->height() > 0);
+
+        // The console's history and output are not workspace data.
+        QVERIFY(shell.window->closeWorkspace());
+        run(console, QStringLiteral("list pages"));
+        QVERIFY(lastIsError(console)); // no workspace
+        QVERIFY(run(console, QStringLiteral("diagnostics")).contains(u"none open"_s));
+    }
+
+    // import pdf, pdf search, result navigation, undo/redo, export, persistence: the
+    // console reaches the same state as the menus, and PDF text is read by the worker.
+    void commandConsolePdfWorkflow() {
+        Shell shell(settings(QStringLiteral("consolepdf")));
+        const auto path = freshPath(QStringLiteral("ConsolePdf"));
+        QVERIFY(shell.window->createWorkspace(path));
+        ui::CommandConsole* console = openConsole(shell);
+
+        QDir().mkpath(dir_.filePath(QStringLiteral("My Lectures")));
+        const QString pdf = writeTextPdf(QStringLiteral("My Lectures/Linear Algebra.pdf"));
+        // Before any import: nothing to search.
+        QVERIFY(
+            run(console, QStringLiteral("pdf search eigenvalue")).contains(u"No imported PDFs"_s));
+
+        // Import through the console (a quoted path with a space).
+        run(console, QStringLiteral("import pdf \"%1\"").arg(QDir::toNativeSeparators(pdf)));
+        shell.waitForImports();
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QVERIFY(console->plainText().contains(u"Imported “Linear Algebra” — 3 pages"_s));
+        const auto page = *shell.window->activePage();
+        const document::PageInfo& first = *shell.ws().findPage(page);
+        QVERIFY(first.document.has_value());
+        const core::SectionId consoleSection = first.section;
+        const auto span = shell.ws().pagesOf(consoleSection);
+        const std::vector<core::PageId> pdfPages(span.begin(), span.end());
+        QCOMPARE(pdfPages.size(), std::size_t{3});
+        QCOMPARE(QString::fromStdString(shell.window->session()->history().nextUndo()->label),
+                 QStringLiteral("Import PDF"));
+
+        // The same PDF through File ▸ Import PDF: an equivalent section.
+        shell.dialogs->importDocument = toPath(pdf);
+        shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
+        const auto menuSection = shell.ws().findPage(*shell.window->activePage())->section;
+        QVERIFY(menuSection != consoleSection);
+        QCOMPARE(shell.ws().findSection(menuSection)->title,
+                 shell.ws().findSection(consoleSection)->title);
+        const auto menuPages = shell.ws().pagesOf(menuSection);
+        QCOMPARE(menuPages.size(), pdfPages.size());
+        for (std::size_t i = 0; i < pdfPages.size(); ++i) {
+            const auto& a = *shell.ws().findPage(pdfPages[i]);
+            const auto& b = *shell.ws().findPage(menuPages[i]);
+            QCOMPARE(a.title, b.title);
+            QCOMPARE(a.size, b.size);
+            QCOMPARE(a.extent, b.extent);
+            QVERIFY(a.document == b.document); // the same stored asset, the same PDF page
+        }
+        QVERIFY(run(console, QStringLiteral("undo")).contains(u"Undone: Import PDF"_s));
+        QVERIFY(shell.ws().findSection(menuSection) == nullptr);
+
+        // pdf search: real text through the worker; results name the PDF and the page.
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QString out = console->plainText();
+        QVERIFY(out.contains(u"PDF search: “eigenvalue”"_s));
+        QVERIFY(out.contains(u"Linear Algebra"_s));
+        QVERIFY(out.contains(u"Page 2  The eigenvalue of matrix A is 3."_s));
+        QVERIFY(out.contains(u"2 matches in 1 PDF"_s));
+        QVERIFY(std::get<core::PageId>(*console->numberedTarget(1)) == pdfPages[1]);
+        QVERIFY(std::get<core::PageId>(*console->numberedTarget(2)) == pdfPages[1]);
+        QVERIFY(!console->numberedTarget(3));
+        // Activating a result opens the page showing that PDF page: by link and by number.
+        QVERIFY(shell.window->openPage(pdfPages[0]));
+        console->output()->anchorClicked(
+            QUrl(u"page:"_s + QString::fromStdString(pdfPages[1].toString())));
+        QCOMPARE(*shell.window->activePage(), pdfPages[1]);
+        QVERIFY(shell.window->openPage(pdfPages[0]));
+        run(console, QStringLiteral("go 1"));
+        QCOMPARE(*shell.window->activePage(), pdfPages[1]);
+
+        // A phrase across a line break, case, punctuation, nothing found.
+        run(console, QStringLiteral("pdf search \"FOURIER transform\""));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(console->plainText().contains(u"Page 3  "_s));
+        QVERIFY(std::get<core::PageId>(*console->numberedTarget(1)) == pdfPages[2]);
+        run(console, QStringLiteral("pdf search f(x)"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(std::get<core::PageId>(*console->numberedTarget(1)) == pdfPages[2]);
+        run(console, QStringLiteral("pdf search quaternion"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(console->plainText().contains(u"No PDF text matches found for “quaternion”."_s));
+        run(console, QStringLiteral("pdf search \"  \""));
+        QVERIFY(lastIsError(console));
+        // The text was read once and is kept (bounded) for the next searches.
+        QVERIFY(run(console, QStringLiteral("diagnostics")).contains(u"1 PDF cached"_s));
+        // StudyBoard's own search does not look inside PDFs.
+        QVERIFY(run(console, QStringLiteral("search eigenvalue")).contains(u"No results"_s));
+
+        // Undo and redo the console's import, like any other edit.
+        QVERIFY(run(console, QStringLiteral("undo")).contains(u"Undone: Import PDF"_s));
+        QVERIFY(shell.ws().findSection(consoleSection) == nullptr);
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(console->plainText().endsWith(u"(File › Import PDF, or import pdf \"<path>\")."_s));
+        QVERIFY(run(console, QStringLiteral("redo")).contains(u"Redone: Import PDF"_s));
+        QVERIFY(shell.ws().findSection(consoleSection) != nullptr);
+        QVERIFY(shell.window->openPage(pdfPages[1]));
+
+        // Export through the console: the page and the section, the dialog when no path.
+        const QString target = dir_.filePath(QStringLiteral("My Exports"));
+        QDir().mkpath(target);
+        const QString pagePdf = target + QStringLiteral("/page one.pdf");
+        QVERIFY(run(console, QStringLiteral("export page pdf \"%1\"").arg(pagePdf))
+                    .contains(u"Exported 1 page"_s));
+        QPdfDocument exported;
+        QCOMPARE(exported.load(pagePdf), QPdfDocument::Error::None);
+        QCOMPARE(exported.pageCount(), 1);
+        run(console, QStringLiteral("export page pdf \"%1\"").arg(pagePdf));
+        QVERIFY(lastIsError(console)); // never overwritten without asking
+        QVERIFY(run(console, QStringLiteral("export page png \"%1/page\"").arg(target))
+                    .contains(u"page.png"_s));
+        QVERIFY(QImage(target + QStringLiteral("/page.png")).width() > 0);
+        QVERIFY(run(console, QStringLiteral("export page svg \"%1/page.svg\"").arg(target))
+                    .contains(u"Exported"_s));
+        QVERIFY(QFile::exists(target + QStringLiteral("/page.svg")));
+        const QString sectionPdf = target + QStringLiteral("/section.pdf");
+        QVERIFY(run(console, QStringLiteral("export section pdf \"%1\"").arg(sectionPdf))
+                    .contains(u"Exported 3 pages"_s));
+        QCOMPARE(exported.load(sectionPdf), QPdfDocument::Error::None);
+        QCOMPARE(exported.pageCount(), 3);
+        shell.dialogs->exportTarget = toPath(target + QStringLiteral("/chosen.pdf"));
+        QVERIFY(run(console, QStringLiteral("export page pdf")).contains(u"chosen.pdf"_s));
+        QVERIFY(shell.dialogs->exportPdfOnly);
+        // The dialog's file replaced (it asked), but never another file renamed from it.
+        QVERIFY(run(console, QStringLiteral("export page pdf")).contains(u"chosen.pdf"_s));
+        shell.dialogs->exportTarget = toPath(target + QStringLiteral("/page.pdf"));
+        run(console, QStringLiteral("export page png")); // page.png exists already
+        QVERIFY(lastIsError(console));
+        shell.dialogs->exportTarget = toPath(target + QStringLiteral("/fresh.pdf"));
+        QVERIFY(run(console, QStringLiteral("export page png")).contains(u"fresh.png"_s));
+        QVERIFY(!shell.dialogs->exportPdfOnly);
+        for (const QString& bad :
+             {QStringLiteral("export page pdf relative.pdf"),
+              QStringLiteral("export page png \"%1/x.pdf\"").arg(target),
+              QStringLiteral("export page pdf \"%1/no/such/dir/x.pdf\"").arg(target),
+              QStringLiteral("export page pdf \"%1/inside.pdf\"")
+                  .arg(QString::fromStdU16String(path.u16string())),
+              QStringLiteral("import pdf relative.pdf"),
+              QStringLiteral("import pdf \"%1/missing.pdf\"").arg(target)}) {
+            run(console, bad);
+            QVERIFY2(lastIsError(console), qPrintable(bad));
+        }
+
+        // Saved like any edit: after reopening the section is there and searchable.
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        QVERIFY(shell.ws().findSection(consoleSection) != nullptr);
+        QCOMPARE(shell.ws().pagesOf(consoleSection).size(), std::size_t{3});
+        run(console, QStringLiteral("pdf search characteristic polynomial"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(std::get<core::PageId>(*console->numberedTarget(1)) == pdfPages[0]);
+        QVERIFY(run(console, QStringLiteral("diagnostics")).contains(u"1 PDF cached"_s));
+    }
+
+    // PDF search failures: a crashing or hanging worker, a missing asset, cancel, a new search
+    // replacing a running one, closing the workspace during a search. Errors are reported in
+    // the console; StudyBoard keeps running; no worker or job directory is left.
+    void commandConsolePdfSearchFailures() {
+        Shell shell(settings(QStringLiteral("consolefail")));
+        const auto path = freshPath(QStringLiteral("ConsoleFail"));
+        QVERIFY(shell.window->createWorkspace(path));
+        ui::CommandConsole* console = openConsole(shell);
+        shell.dialogs->importDocument = toPath(writeTextPdf(QStringLiteral("Fail.pdf")));
+        shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
+        const QString helper = QString::fromUtf8(STUDYAPP_PDF_WORKER_HELPER);
+        const auto jobs = toPath(dir_.filePath(QStringLiteral("console-jobs")));
+        std::filesystem::create_directories(jobs);
+        const auto noJobsLeft = [&] {
+            std::error_code ec;
+            return std::filesystem::is_empty(jobs, ec);
+        };
+
+        shell.window->setPdfWorker(helper, {QStringLiteral("crash")}, jobs);
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(console->plainText().contains(
+            u"PDF search failed: the PDF could not be read (the reader stopped)."_s));
+        QVERIFY(noJobsLeft());
+
+        shell.window->setPdfWorker(helper, {QStringLiteral("garbage")}, jobs);
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(console->plainText().endsWith(u"No PDF text matches found for “eigenvalue”."_s) ||
+                console->plainText().contains(u"PDF search failed: the PDF could not be read."_s));
+
+        // A hanging worker: cancel stops it at once.
+        shell.window->setPdfWorker(helper, {QStringLiteral("hang")}, jobs);
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QCOMPARE(shell.window->pdfSearchCount(), 1);
+        QVERIFY(shell.window->findChild<QLabel*>(QStringLiteral("saveStatusLabel"))->text() ==
+                u"Searching PDFs…"_s);
+        QTest::qWait(200);
+        run(console, QStringLiteral("cancel"));
+        QTRY_COMPARE_WITH_TIMEOUT(shell.window->pdfSearchCount(), 0, 3000);
+        QVERIFY(console->plainText().contains(u"PDF search for “eigenvalue” was cancelled."_s));
+        QVERIFY(run(console, QStringLiteral("cancel")).contains(u"No PDF search is running."_s));
+        QVERIFY(noJobsLeft());
+
+        // A new search replaces a running one.
+        run(console, QStringLiteral("pdf search first"));
+        QTest::qWait(100);
+        shell.window->setPdfWorker(helper, {QStringLiteral("real")}, jobs);
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QTRY_COMPARE_WITH_TIMEOUT(shell.window->pdfSearchCount(), 0, 5000);
+        QVERIFY(console->plainText().contains(u"PDF search for “first” was cancelled."_s));
+        QVERIFY(console->plainText().contains(u"2 matches in 1 PDF"_s));
+
+        // Closing the workspace while a worker hangs: closes promptly, nothing left.
+        shell.window->setPdfWorker(helper, {QStringLiteral("hang")}, jobs);
+        const auto reopen = [&] {
+            QVERIFY(shell.window->openWorkspace(path));
+        };
+        QVERIFY(shell.window->closeWorkspace()); // a new session: the text cache is empty
+        reopen();
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QTest::qWait(200);
+        const auto started = std::chrono::steady_clock::now();
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(std::chrono::steady_clock::now() - started < std::chrono::seconds(3));
+        QCOMPARE(shell.window->pdfSearchCount(), 0);
+        QTRY_VERIFY(noJobsLeft());
+
+        // The stored PDF has gone missing: the search says so.
+        reopen();
+        std::optional<core::AssetId> asset;
+        for (const core::NotebookId notebook : shell.ws().notebooks()) {
+            for (const core::SectionId section : shell.ws().sectionsOf(notebook)) {
+                for (const core::PageId page : shell.ws().pagesOf(section)) {
+                    if (const auto& shown = shell.ws().findPage(page)->document) {
+                        asset = shown->asset;
+                    }
+                }
+            }
+        }
+        QVERIFY(asset.has_value());
+        const auto stored = shell.window->session()->assetPath(*asset);
+        QVERIFY(stored.has_value());
+        std::filesystem::remove(*stored);
+        shell.window->setPdfWorker(helper, {QStringLiteral("real")}, jobs);
+        run(console, QStringLiteral("pdf search eigenvalue"));
+        QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
+        QVERIFY(console->plainText().contains(u"the PDF file is missing from the workspace"_s));
+        QCOMPARE(shell.dialogs->errors.size(), 0); // all of it in the console, no dialogs
     }
 
     void navigationCanBeHidden() {

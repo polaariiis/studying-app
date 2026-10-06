@@ -53,6 +53,7 @@ Labels used in this document:
 | Copying and hashing an imported image or PDF | A thread pool; the GUI thread only stores the result (≈ 2 ms) | Phase 9 (D48) |
 | Decoding images | Up to two worker threads | Phase 6 |
 | Rendering PDF tiles (PDFium) | One worker thread | Phase 8 |
+| Reading the text of PDFs for `pdf search` | The PDF worker process, started from the window's thread pool; matching on that pool thread | 1.2 (D55) |
 | Export (PDF, PNG, SVG) | GUI thread with a progress dialog and Cancel | Phase 8–9 |
 
 Writing to SQLite happens on the GUI thread, one transaction per edit, as part of the edit
@@ -275,6 +276,25 @@ step. Costs are measured on the reference laptop.
   a planner list with thousands of entries is **not measured**.
 * **Design:** the planner panel is built when first shown, and planner edits cost no canvas
   frame.
+
+### 3.14 PDF content search
+
+* **Workload:** `pdf search` in the command console over the text of imported PDFs
+  (1.2-CMD-01; docs/COMMAND_CONSOLE.md §6).
+* **Observed (measured, Release, a 4-vCPU Linux container):** the first search of a PDF
+  reads its text in the PDF worker: 19 ms (1 page), 71 ms (200 pages), 0.48 s
+  (2 000 pages); later searches use the cached text: 0.44 ms (200 pages) and 4.6 ms
+  (2 000 pages) for a full scan (`BM_PdfTextInWorker`, `BM_PdfTextSearch`; BENCHMARKS.md).
+* **Design:** nothing of it runs on the GUI thread except collecting what to search and
+  writing the results; PDFs are read one after another in worker processes (one at a
+  time, so a large library does not start many processes at once); the text is cached per
+  workspace session with a byte budget (32 MiB, 64 PDFs, least recently used dropped), so
+  memory stays bounded however many PDFs are searched; results are capped (50 per PDF,
+  200 in all) and the console's output keeps at most 1 000 lines. The console itself
+  costs nothing until it is opened: no timers, no polling, no canvas work.
+* **Limitation:** with more PDF text than the cache holds, every search reads the PDFs
+  that fell out again (≈ 0.25 ms per page on this machine); a persisted text index would
+  remove that (follow-up 1.2-PDF-03). Very large libraries were not measured.
 
 ## 4. How to measure
 

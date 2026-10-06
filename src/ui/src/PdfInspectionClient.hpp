@@ -2,6 +2,7 @@
 
 #include "SessionDocumentRasterizer.hpp"
 
+#include <studyapp/application/PdfTextSearch.hpp>
 #include <studyapp/core/Error.hpp>
 #include <studyapp/core/Ids.hpp>
 #include <studyapp/ipc/PdfInspection.hpp>
@@ -18,8 +19,8 @@ namespace studyapp::ui {
 
 // The StudyBoard side of the PDF inspection worker (docs/PDF_WORKER.md, D53). One call
 // runs one job to its end on the calling thread with blocking calls only — never call it
-// on the GUI thread. It owns the job directory and the worker process; the staged PDF
-// belongs to the caller (StagedImport).
+// on the GUI thread. It owns the job directory and the worker process; the PDF belongs to
+// the caller (an import's StagedImport, or a stored asset for text extraction, §23).
 
 struct PdfWorkerOptions {
     /// The executable started with `--pdf-worker <dir>`; empty: this application
@@ -60,7 +61,8 @@ struct PdfJobResult {
     PdfJobState state = PdfJobState::Failed;
     PdfJobFailure failure = PdfJobFailure::Setup;
     PdfJobState reached = PdfJobState::Preparing; ///< the last non-terminal state
-    std::optional<ipc::pdf::InspectReply> reply;  ///< with Succeeded, already decoded
+    std::optional<ipc::pdf::InspectReply> reply;  ///< inspection: with Succeeded, decoded
+    std::optional<ipc::pdf::TextReply> text;      ///< text extraction: with Succeeded, decoded
     std::filesystem::path directory;              ///< the job directory (removed by now)
 };
 
@@ -82,5 +84,19 @@ struct PdfJobResult {
                                                        core::JobId job,
                                                        const std::atomic<bool>& stop,
                                                        const PdfWorkerOptions& options = {});
+
+/// Runs one text extraction job (docs/PDF_WORKER.md §23) for the PDF `file` (absolute; a
+/// stored asset): the same process, channels, deadline, stop and cleanup as an inspection;
+/// a reply is accepted only as a text reply of this job.
+[[nodiscard]] PdfJobResult runPdfTextJob(const std::filesystem::path& file, core::JobId job,
+                                         const std::atomic<bool>& stop,
+                                         const PdfWorkerOptions& options = {});
+
+/// runPdfTextJob, and what it means for a search: the text (pdfTextFrom) when the worker
+/// answered; IoError "the PDF could not be read…" when the job failed; Conflict when it
+/// was cancelled.
+[[nodiscard]] core::Result<application::PdfDocumentText>
+extractPdfTextInWorker(const std::filesystem::path& file, core::JobId job,
+                       const std::atomic<bool>& stop, const PdfWorkerOptions& options = {});
 
 } // namespace studyapp::ui

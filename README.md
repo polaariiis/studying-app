@@ -52,6 +52,11 @@ else. Checksums (`SHA256SUMS.txt`) are attached to the release.
   Save a Copy when a disk keeps failing.
 * **Accessibility** — every control is named for screen readers; F6 moves between panes.
 
+In development for 1.2 (branch `dev/1.2`): a **command console** (View ▸ Command Console,
+Ctrl+Shift+C) for typing StudyBoard commands — open pages, search, import, export,
+diagnostics — and for **searching the text inside imported PDFs** (`pdf search "…"`); see
+[docs/COMMAND_CONSOLE.md](docs/COMMAND_CONSOLE.md).
+
 ## System requirements
 
 | | Requirement |
@@ -114,7 +119,8 @@ More in [docs/ROADMAP.md](docs/ROADMAP.md) (Phase 9, "Not in Phase 9").
 | Database schema | [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) |
 | Canvas | [docs/CANVAS.md](docs/CANVAS.md) |
 | Rendering | [docs/RENDERING.md](docs/RENDERING.md) |
-| PDF inspection worker (design, D53) | [docs/PDF_WORKER.md](docs/PDF_WORKER.md) |
+| PDF inspection worker (D53) and PDF text extraction (D55) | [docs/PDF_WORKER.md](docs/PDF_WORKER.md) |
+| Command console and PDF content search (1.2) | [docs/COMMAND_CONSOLE.md](docs/COMMAND_CONSOLE.md) |
 | Testing | [docs/TESTING.md](docs/TESTING.md) |
 | Performance, bottlenecks | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
 | Benchmarks | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) |

@@ -17,14 +17,20 @@ studyapp_add_module(ui
         src/CanvasPlaceholder.cpp
         src/CanvasWidget.cpp
         src/CanvasWidget.hpp
+        src/CommandConsole.cpp
+        src/CommandConsole.hpp
         src/DesignTokens.cpp
         src/MainWindow.cpp
+        src/MainWindowConsole.cpp
+        src/MainWindowWorkspace.hpp
         src/NavigationPanel.cpp
         src/NavigationPanel.hpp
         src/PageExport.cpp
         src/PageExport.hpp
         src/PdfInspectionClient.cpp
         src/PdfInspectionClient.hpp
+        src/PdfText.cpp
+        src/PdfText.hpp
         src/PdfWorker.cpp
         src/PlannerPanel.cpp
         src/PlannerPanel.hpp

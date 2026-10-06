@@ -116,6 +116,45 @@ goes through the worker (helper in real mode); a crashing worker fails only that
 closing the workspace stops a hanging worker promptly, leaving neither a job directory nor a
 staged file. Packages: `studyapp --self-test` inspects a PDF in the worker process.
 
+**1.2 additions (command console, 1.2-CMD-01, D54/D55).** `application_tests`
+(`CommandConsoleTest`, Qt-free, also in ci-core and the sanitizer build): the tokenizer
+(empty and blank lines, spaces and tabs, quoted words with spaces, Windows and POSIX paths
+with spaces and backslashes, `\"` and `\\` escapes, unterminated quotes, quotes inside a
+word, control characters, the 4 096-byte limit, non-ASCII text, quoting round trips); the
+registry (registration, lookup by name and alias in any case, refused specs — no name,
+invalid or taken names and aliases, misplaced text or required arguments, no handler — the
+longest name wins, argument binding, quoted words never being command names, messages for
+empty, unknown and incomplete commands and missing or extra arguments, usage, help for all
+and for one command, completion); running lines (echo, a failing and a throwing handler are
+reported, unknown lines run nothing, shell syntax such as `$(whoami)` or `a | sh` is plain
+text); the history (shell-like navigation with the draft, blanks and consecutive duplicates
+skipped, the capacity bound). `PdfTextSearchTest`: words on the right pages, case folding
+beyond ASCII, phrases across line breaks, punctuation, typographic quotes, ligatures, no
+matches and empty queries, order by page then position, the limit, non-overlapping matches,
+one-line context cut at word boundaries, broken UTF-8; `pdfSourcesOf` (sections showing a
+PDF, a PDF imported twice, deleted pages); `PdfTextCache` (hits and misses, the byte and
+entry bounds with least-recently-used eviction, a document larger than the budget, threads).
+`ipc_tests` (`PdfTextReplyTest`): text requests and replies (docs/PDF_WORKER.md §23).
+`ui.PdfWorkerTest`: text extraction by the built `studyapp --pdf-worker` from real PDFs
+(`testing::minimalPdf`: standard Helvetica, deterministic, no fonts needed), searchable as
+expected and equal to in-process extraction; unreadable, missing and protected PDFs; text
+cut at 64 KiB per page; crash, hang (timeout), cancel, another job's reply, another kind's
+reply, garbage — each a clean failure with no job directory left. `ui.ShellTest`
+(`commandConsoleBasics`, `commandConsolePdfWorkflow`, `commandConsolePdfSearchFailures`):
+the console is not built before it is opened; View ▸ Command Console and its shortcut;
+`help`, `list …`, `open page`, `go`, `search`, `workspace`, `diagnostics`; invalid input
+answered and nothing run; ↑/↓ history, Tab completion, Ctrl+L, Esc; theme switch and a
+small window; `import pdf` with a quoted path containing a space gives the same section as
+File ▸ Import PDF; `pdf search` through the real worker code: page numbers, links and `go`
+open the right page, phrase across a line break, punctuation, no match, empty query, the
+cache; StudyBoard's own `search` does not find PDF text; `undo`/`redo` of the console import;
+`export page pdf|png|svg` and `export section pdf` (files checked; no overwrite; relative,
+wrong-extension, missing-folder and inside-workspace paths refused; the dialog without a
+path); close and reopen; a crashing or garbage worker, `cancel`, a newer search replacing a
+running one, closing the workspace during a search (prompt, no job left), a missing stored
+PDF — all reported in the console, never as dialogs. Packages: `studyapp --self-test` also
+reads the text of a PDF in the worker process and finds a phrase on the right page.
+
 ## 1. Principles
 
 * **Most logic is testable without a GUI, a GPU or a display.** That is the payoff of the
