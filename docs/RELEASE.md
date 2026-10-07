@@ -155,3 +155,30 @@ OpenGL offers only 3.0). The same source was also built locally on the reference
 its ZIP unpacked from a path with a space, with no Qt or compiler on `PATH`, reported
 1.0.0 and passed `--self-test` including OpenGL rendering on the Radeon 760M
 ([HARDWARE_MATRIX.md](HARDWARE_MATRIX.md)).
+
+### 1.2.0-dev (development build — not a release)
+
+Tag `v1.2.0-dev` on commit `2418261` (branch `dev/1.2`), built by the
+[release workflow run](https://github.com/polaariiis/studying-app/actions/runs/37562701698)
+on 2026-10-07 into a **draft pre-release** (not Latest; [notes](releases/v1.2.0-dev.md)).
+All packages **unsigned**. The same commit passed CI (all jobs; 559–560 tests in the full
+suites, 553 in the Qt-free suites and under ASan + UBSan) and the package workflow on
+`dev/1.2` before it was tagged.
+
+| File | Platform | Architecture | Size (bytes) | SHA-256 | Validation |
+|---|---|---|---:|---|---|
+| `StudyBoard-1.2.0-dev-windows-AMD64.exe` | Windows 10 22H2+ | x64 | 50 518 743 | `e2ba426198b9ceb27780e727bd6731c0c92fdc1aa744d63f779c5435fb472209` | Silent install, `--self-test`, uninstall — clean `windows-2022` runner; on a Windows 11 PC with an Intel UHD 730: installed (Apps & Features "StudyBoard 1.2.0-dev"), version, `--self-test` 25/25 with OpenGL 3.3, and the manual console and PDF search checks below |
+| `StudyBoard-1.2.0-dev-windows-AMD64.zip` | Windows 10 22H2+ | x64 | 60 475 514 | `ebb4581e7074d226c160a28cb66fa55c2fac25802796aca43f27b0f0e5062f76` | `--self-test`, version 1.2.0-dev — clean runner; on the same PC with no Qt or compiler on `PATH`: `--self-test` 25/25 with OpenGL 3.3, every Qt and MSVC DLL loaded from the package |
+| `StudyBoard-1.2.0-dev-linux-x86_64.AppImage` | Ubuntu 22.04+ | x86_64 | 41 830 904 | `348ff1fd230c7e8930cf317c78ec9df774d04fc0fb6fb257b53565d6c4b5b356` | `--self-test` with OpenGL rendering (Mesa) through the launcher — clean Ubuntu 22.04 and 24.04 runners |
+| `StudyBoard-1.2.0-dev-linux-x86_64.tar.gz` | Ubuntu 22.04+ | x86_64 | 45 943 995 | `db22c9530c8b5343d9c95c54bbb59c1aea07e773d67f6d3a3a2f8fa3d952ad9a` | As the AppImage; version 1.2.0-dev; the launcher chose the bundled C++ runtime on 22.04 and the system's on 24.04 |
+| `StudyBoard-1.2.0-dev-macos-arm64.dmg` | macOS 13+ | arm64 | 33 430 895 | `6aab8ddb84ac7ba930690718a72c221086ef59a0ffaf83642aaf84230f3fd0b1` | Mounted, `--self-test` with OpenGL rendering (Apple software renderer), version 1.2.0-dev — clean `macos-14` runner only |
+
+Manual checks of the installed Windows package (all passed): the version in the status bar,
+Help ▸ About and `diagnostics`; the command console (shortcut and menu, `help`,
+autocomplete, history); `import pdf` of a 120-page PDF from a path with a space and Cyrillic
+letters; `list`, `open page`, `go`, `search`; `pdf search` with results on the right pages
+and their context, a phrase across a line break, no match, `go <n>` and a click opening the
+page; `export page pdf` and the refusal to overwrite; six shell-like inputs answered
+"Unknown command" with no process started; a damaged PDF reported by the worker with the
+application still running; a closed and reopened workspace keeping the import, with the
+PDF text read again by a short-lived worker and no temporary job folders left.
