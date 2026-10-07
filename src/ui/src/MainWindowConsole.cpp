@@ -400,7 +400,7 @@ void MainWindow::registerConsoleCommands(application::CommandRegistry& registry)
         }
         return open_->session;
     };
-    const auto writable = [this, session]() -> core::Result<application::WorkspaceSession*> {
+    const auto writable = [session]() -> core::Result<application::WorkspaceSession*> {
         auto s = session();
         if (s && (*s)->isReadOnly()) {
             return core::makeError(core::ErrorCode::Unsupported,
@@ -434,7 +434,7 @@ void MainWindow::registerConsoleCommands(application::CommandRegistry& registry)
          .summary = "List the notebooks (each opens its first page)",
          .details = {},
          .examples = {},
-         .handler = [this, session](const CommandCall&, ConsoleSink& out) -> core::Result<void> {
+         .handler = [session](const CommandCall&, ConsoleSink& out) -> core::Result<void> {
              auto s = session();
              if (!s) {
                  return tl::unexpected(s.error());
