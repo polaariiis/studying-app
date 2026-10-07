@@ -155,6 +155,12 @@ running one, closing the workspace during a search (prompt, no job left), a miss
 PDF — all reported in the console, never as dialogs. Packages: `studyapp --self-test` also
 reads the text of a PDF in the worker process and finds a phrase on the right page.
 
+**1.2 additions (development version, 1.2.0-dev).** `core_tests` (`BuildInfoTest`): the
+version shown to users is the numeric version, optionally followed by `-<label>`
+(`1.2.0-dev`), which package names depend on. Packages: the smoke tests compare
+`--version` with the version in the package's file name, label included
+(docs/RELEASE.md, "Development builds").
+
 ## 1. Principles
 
 * **Most logic is testable without a GUI, a GPU or a display.** That is the payoff of the

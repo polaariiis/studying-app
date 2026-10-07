@@ -571,6 +571,12 @@ Not released. The detailed history is on `dev/1.2`; `main` receives its state as
 "Integrate …" commits (branch model: [RELEASE.md](RELEASE.md#branches-and-tags)). The latest
 stable release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`).
 
+**Development build 1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`): a packaged snapshot of the
+tasks below that are marked done, for testing and demonstration — not a release
+([releases/v1.2.0-dev.md](releases/v1.2.0-dev.md)). The 1.2 release itself still needs the
+open follow-ups to be decided and the version label removed (RELEASE.md, "Development
+builds").
+
 Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-CI-01,
 1.2-REL-01, 1.2-TXT-01, 1.2-TXT-02, 1.2-IMP-01, 1.2-PDF-01, 1.2-PDF-02, 1.2-PERF-01,
 1.2-REL-02); this section tracks tasks from 1.2-CMD-01 on.

@@ -14,15 +14,41 @@ each release's packages. Building the packages locally is described in
 | Signing | **Unsigned / signing-ready** — see [Signing](#signing) |
 | Downloads | [GitHub releases](https://github.com/polaariiis/studying-app/releases) |
 
-The next version, 1.2, is in development and **not released**: no `v1.2.0` tag or package
-exists yet. Builds of `main` and `dev/1.2` still report 1.0.0 until step 2 below sets the
-1.2 version.
+The next version, 1.2, is in development and **not released**: there is no `v1.2.0` tag or
+release. `dev/1.2` builds report **1.2.0-dev**, a development version (see
+[Development builds](#development-builds)).
+
+## Development builds
+
+A development build is a tagged, packaged snapshot of a development branch for testing and
+demonstration. It is **not a release**: no support, no upgrade promise, and it is never the
+"Latest" release on GitHub.
+
+| | |
+|---|---|
+| Current development build | **1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`) |
+| Release notes | [releases/v1.2.0-dev.md](releases/v1.2.0-dev.md) |
+| Packages | `StudyBoard-1.2.0-dev-…` (the names of [Packages](#packages) with version `1.2.0-dev`) |
+| Workspaces | Compatible both ways with 1.0.0 (1.2 has no schema migration) |
+
+The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION 1.2.0)` and
+`STUDYAPP_VERSION_LABEL` (`dev`; empty for a release). Together they give
+`STUDYAPP_VERSION` = `1.2.0-dev`, the one value shown by `--version`, About, the status bar
+and `diagnostics`, recorded in workspaces, and used for the package and installer names.
+Only the macOS bundle version stays numeric (`1.2.0`), because macOS requires digits there.
+
+A development build is made like a release (below), with these differences: the tag is made
+on the development branch (`v1.2.0-dev` on `dev/1.2`), never on `main`; `release.yml` marks
+the draft as a **pre-release** and never as Latest for any tag that contains a `-`; and its
+notes say *development / test build — not an official release*. A development tag is not
+moved once pushed; a later snapshot gets a new tag (`v1.2.0-dev.2`).
 
 ## Branches and tags
 
 | Reference | Role | Rules |
 |---|---|---|
 | `v<version>` tags (`v1.0.0`) | The released source of each version | Immutable: never moved, deleted or recreated; the GitHub release and its packages belong to the tag |
+| `v<version>-dev[.<n>]` tags (`v1.2.0-dev`) | A [development build](#development-builds) of a development branch | Immutable like release tags; a GitHub *pre-release* at most, never Latest |
 | `release/<major>.<minor>` (`release/1.0`) | Maintenance line of a released version, created at its tag | Fixes for that version only; a fix release is tagged here |
 | `main` | Integration line, the default branch | Receives the state of the development branch as one "Integrate …" commit (squash merge), so its history stays short; never force-pushed |
 | `dev/<major>.<minor>` (`dev/1.2`) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; then the feature branch is deleted |
@@ -56,8 +82,9 @@ never touches them.
    a clean runner without Qt or a compiler (`studyapp --self-test`: Qt plugins, OpenGL 3.3
    rendering, fonts, workspaces, search, Qt PDF, export, printing; on Windows the installer
    is installed and uninstalled; on Linux the launcher's runtime choice is checked).
-2. The version is set in the top-level `CMakeLists.txt` (`project(VERSION …)`); the
-   packages, the application's About box and the workspace metadata take it from there.
+2. The version is set in the top-level `CMakeLists.txt` (`project(VERSION …)`, and
+   `STUDYAPP_VERSION_LABEL` emptied for a release); the packages, the application's About
+   box and the workspace metadata take it from there.
 3. Pushing a tag `v<version>` on `main` runs `release.yml`: the same package and
    smoke-test jobs, the optional signing jobs, then a **draft** GitHub release with every
    package, its `.sha256` file and `SHA256SUMS.txt`. Every package's size and SHA-256, and

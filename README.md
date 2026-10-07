@@ -26,15 +26,23 @@ else. Checksums (`SHA256SUMS.txt`) are attached to the release.
 > your PC" (choose *More info* ▸ *Run anyway*) and macOS blocks the app (right-click it ▸
 > *Open*). See [docs/RELEASE.md](docs/RELEASE.md) for details and checksum verification.
 
+### Development / test build (not a release)
+
+**StudyBoard 1.2.0-dev** is a development snapshot of `dev/1.2` for testing and
+demonstrating the 1.2 work (command console, PDF content search, …). It is **not an official
+release** and never replaces 1.0.0 above. What it contains, its limitations and its packages
+(`StudyBoard-1.2.0-dev-…`): [docs/releases/v1.2.0-dev.md](docs/releases/v1.2.0-dev.md). On
+GitHub it can only appear as a *pre-release*, never as the latest release.
+
 ## Current release
 
 | | |
 |---|---|
-| Version | 1.0.0 |
+| Latest stable release | **1.0.0** (tag `v1.0.0`) |
 | Status | First stable release |
 | Platforms | Windows x64 · Linux x86_64 · macOS arm64 |
 | Signing | Unsigned; signing and notarisation are prepared for when certificates exist |
-| In development | 1.2 — **not released yet** (see [Versions and branches](#versions-and-branches)) |
+| Development / test build | **1.2.0-dev** (tag `v1.2.0-dev`) — not a release (see [Versions and branches](#versions-and-branches)) |
 
 ## Versions and branches
 
@@ -43,11 +51,12 @@ else. Checksums (`SHA256SUMS.txt`) are attached to the release.
 | Tag `v1.0.0` | The **latest stable release**, 1.0.0. The packages above are built from it; it never moves. |
 | Branch `release/1.0` | The 1.0 release line, starting exactly at `v1.0.0`. It receives 1.0 fixes only, never 1.2 features. |
 | Branch `main` | The integration line. It holds the current 1.2 development state, integrated from `dev/1.2` in single "Integrate …" commits. It is **not** a release: build from `v1.0.0` (or download the packages) for the stable version. |
-| Branch `dev/1.2` | Active 1.2 development with the detailed history: every feature branch is merged here first. |
+| Branch `dev/1.2` | Active 1.2 development with the detailed history: every feature branch is merged here first. Builds report version **1.2.0-dev**. |
+| Tag `v1.2.0-dev` | A **development / test build** of `dev/1.2` — not a release ([notes](docs/releases/v1.2.0-dev.md)). It never moves; a later snapshot gets a new tag. |
 
 Short-lived `feature/…` branches exist only while a feature is in progress and are deleted
-once merged into `dev/1.2`. Development builds still report version 1.0.0 until the 1.2
-release sets its version ([docs/RELEASE.md](docs/RELEASE.md)).
+once merged into `dev/1.2`. Versions, tags and development builds are described in
+[docs/RELEASE.md](docs/RELEASE.md).
 
 ## Features
 
@@ -128,6 +137,7 @@ More in [docs/ROADMAP.md](docs/ROADMAP.md) (Phase 9, "Not in Phase 9").
 |---|---|
 | Building from source | [docs/BUILDING.md](docs/BUILDING.md) |
 | Releases, packages, signing | [docs/RELEASE.md](docs/RELEASE.md) |
+| Development build 1.2.0-dev (not a release) | [docs/releases/v1.2.0-dev.md](docs/releases/v1.2.0-dev.md) |
 | Architecture and decisions | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Data model | [docs/DATA_MODEL.md](docs/DATA_MODEL.md) |
 | Database schema | [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) |
@@ -147,8 +157,8 @@ More in [docs/ROADMAP.md](docs/ROADMAP.md) (Phase 9, "Not in Phase 9").
 ## Building from source
 
 C++20, CMake 3.25+ with Ninja, Qt 6.8 LTS (with the Qt PDF add-on). Tested toolchains: MSVC
-2022, GCC 13, AppleClang 15. Check out `v1.0.0` to build the stable release; `main` and
-`dev/1.2` build the 1.2 development state.
+2022, GCC 13, AppleClang 15. Check out `v1.0.0` to build the stable release; `dev/1.2` (or
+`v1.2.0-dev`) builds the 1.2 development state, version 1.2.0-dev.
 
 ```sh
 cmake --preset release

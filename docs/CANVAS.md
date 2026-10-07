@@ -15,7 +15,7 @@ flowchart LR
     adapter -->|"canvas::PointerEvent / WheelEvent /<br/>GestureEvent / KeyEvent"| ctrl[CanvasController]
     ctrl --> tool["active Tool<br/>(state machine)"]
     tool -->|queries| scene[CanvasScene]
-    tool -->|preview state| overlay[Preview & overlays]
+    tool -->|preview state| overlay["Preview and overlays"]
     tool -->|commit Patch| editor["document::Editor"]
     editor --> doc[PageDocument]
     doc -->|"changed(Patch)"| scene
