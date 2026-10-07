@@ -2,7 +2,8 @@ name: Release
 
 # A tag `v<version>` builds, smoke-tests and publishes the packages as a draft GitHub
 # release (docs/BUILDING.md §8). Nothing is published automatically: the draft is reviewed
-# and published by hand.
+# and published by hand. A development tag (`v1.2.0-dev`) gives a pre-release draft that is
+# never marked "Latest" (docs/RELEASE.md).
 #
 # Signing is optional and happens only when these repository secrets exist:
 #   WINDOWS_SIGN_PFX_BASE64, WINDOWS_SIGN_PASSWORD      Authenticode (signtool, via CPack)
@@ -168,5 +169,9 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
+          # A tag with a pre-release label (v1.2.0-dev) is a development build: marked as a
+          # pre-release and never "Latest", so the stable release stays the default download.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}
           generate_release_notes: true
           files: release/*

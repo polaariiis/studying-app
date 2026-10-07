@@ -202,7 +202,8 @@ jobs:
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { throw "self-test of the ZIP failed" }
           if ($out -notmatch 'OpenGL 3\.3 core rendering') { throw "no OpenGL check ran" }
-          $expected = ($installer.Name -replace '^StudyBoard-([^-]+)-.*$', '$1')
+          # The version is everything between "StudyBoard-" and the platform (1.2.0-dev too).
+          $expected = ($installer.Name -replace '^StudyBoard-(.+)-windows-.*$', '$1')
           # A GUI program may show --version in a message box; print it instead, and never wait
           # on a window.
           $env:QT_COMMAND_LINE_PARSER_NO_GUI_MESSAGE_BOXES = '1'
@@ -255,7 +256,7 @@ jobs:
           xvfb-run -a "$launcher" --no-such-option > /dev/null 2>&1 || status=$?
           echo "exit status for an unknown option: $status" | tee -a smoke.log
           test "$status" -eq 1
-          expected=$(basename packages/StudyBoard-*.tar.gz | sed -E 's/^StudyBoard-([^-]+)-.*$/\1/')
+          expected=$(basename packages/StudyBoard-*.tar.gz | sed -E 's/^StudyBoard-(.+)-linux-.*$/\1/')
           version=$(xvfb-run -a "$launcher" --version 2>/dev/null | tail -1)
           echo "version reported: $version (package $expected)" | tee -a smoke.log
           test "$version" = "StudyBoard $expected"
@@ -267,7 +268,7 @@ jobs:
           set -euo pipefail
           hdiutil attach packages/StudyBoard-*.dmg -mountpoint /Volumes/StudyBoard -nobrowse
           /Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --self-test 2>&1 | tee smoke.log
-          expected=$(basename packages/StudyBoard-*.dmg | sed -E 's/^StudyBoard-([^-]+)-.*$/\1/')
+          expected=$(basename packages/StudyBoard-*.dmg | sed -E 's/^StudyBoard-(.+)-macos-.*$/\1/')
           version=$(/Volumes/StudyBoard/studyapp.app/Contents/MacOS/studyapp --version 2>/dev/null | tail -1)
           echo "version reported: $version (package $expected)" | tee -a smoke.log
           hdiutil detach /Volumes/StudyBoard

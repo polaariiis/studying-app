@@ -1,11 +1,21 @@
 cmake_minimum_required(VERSION 3.25...3.31)
 
 project(studyapp
-    VERSION 1.0.0
+    VERSION 1.2.0
     DESCRIPTION "StudyBoard - local-first notes, drawing and study planning"
     HOMEPAGE_URL "https://github.com/polaariiis/studying-app"
     LANGUAGES C CXX # C is needed for the vendored SQLite amalgamation
 )
+
+# Pre-release label of this version: empty for a release, "dev" for a development build.
+# STUDYAPP_VERSION (1.2.0-dev) is what the application shows and what packages are named
+# after; PROJECT_VERSION stays numeric where a platform requires it (docs/RELEASE.md).
+set(STUDYAPP_VERSION_LABEL "dev")
+if(STUDYAPP_VERSION_LABEL)
+    set(STUDYAPP_VERSION "${PROJECT_VERSION}-${STUDYAPP_VERSION_LABEL}")
+else()
+    set(STUDYAPP_VERSION "${PROJECT_VERSION}")
+endif()
 
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
     message(FATAL_ERROR
@@ -81,6 +91,6 @@ if(STUDYAPP_BUILD_APP)
     include(Packaging) # CPack: installers, DMG, archives (Phase 9)
 endif()
 
-message(STATUS "StudyBoard ${PROJECT_VERSION}: app=${STUDYAPP_BUILD_APP} tests=${STUDYAPP_BUILD_TESTS} "
+message(STATUS "StudyBoard ${STUDYAPP_VERSION}: app=${STUDYAPP_BUILD_APP} tests=${STUDYAPP_BUILD_TESTS} "
                "werror=${STUDYAPP_WARNINGS_AS_ERRORS} sanitizers='${STUDYAPP_SANITIZERS}' "
                "system-sqlite=${STUDYAPP_USE_SYSTEM_SQLITE}")
