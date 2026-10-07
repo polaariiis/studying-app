@@ -88,8 +88,48 @@ core::Error malformed(const std::string& what) {
     return core::Error{ErrorCode::ParseError, "PDF worker message: " + what};
 }
 
-/// Well-formed UTF-8 (no overlong forms, no surrogates, at most U+10FFFF) without NUL.
-bool validUtf8(std::string_view text) {
+bool knownStatus(std::uint16_t value) {
+    return value <= static_cast<std::uint16_t>(InspectStatus::Internal);
+}
+
+/// The detail values each status allows (§8.2).
+bool validDetail(InspectStatus status, std::uint32_t detail) {
+    switch (status) {
+    case InspectStatus::Unreadable:
+    case InspectStatus::Protected:
+        return detail <= 1;
+    case InspectStatus::TooManyPages:
+        return detail > kMaxPages;
+    case InspectStatus::BadPageSize:
+        return detail >= 1 && detail <= kMaxPages;
+    case InspectStatus::Ok:
+    case InspectStatus::InvalidRequest:
+    case InspectStatus::UnsupportedRequest:
+    case InspectStatus::NoPages:
+    case InspectStatus::Internal:
+        return detail == 0;
+    }
+    return false;
+}
+
+/// The detail values a text reply's status allows (§23): Ok 0 or 1 (truncated), others as
+/// for an inspection reply; BadPageSize is not a text reply status.
+bool validTextDetail(InspectStatus status, std::uint32_t detail) {
+    switch (status) {
+    case InspectStatus::Ok:
+        return detail <= 1;
+    case InspectStatus::BadPageSize:
+        return false;
+    default:
+        return validDetail(status, detail);
+    }
+}
+
+constexpr std::size_t kTextLengthSize = 4; ///< bytes per page text length in a text reply
+
+} // namespace
+
+bool validUtf8(std::string_view text) noexcept {
     std::size_t i = 0;
     while (i < text.size()) {
         const auto lead = static_cast<unsigned char>(text[i]);
@@ -133,32 +173,6 @@ bool validUtf8(std::string_view text) {
     return true;
 }
 
-bool knownStatus(std::uint16_t value) {
-    return value <= static_cast<std::uint16_t>(InspectStatus::Internal);
-}
-
-/// The detail values each status allows (§8.2).
-bool validDetail(InspectStatus status, std::uint32_t detail) {
-    switch (status) {
-    case InspectStatus::Unreadable:
-    case InspectStatus::Protected:
-        return detail <= 1;
-    case InspectStatus::TooManyPages:
-        return detail > kMaxPages;
-    case InspectStatus::BadPageSize:
-        return detail >= 1 && detail <= kMaxPages;
-    case InspectStatus::Ok:
-    case InspectStatus::InvalidRequest:
-    case InspectStatus::UnsupportedRequest:
-    case InspectStatus::NoPages:
-    case InspectStatus::Internal:
-        return detail == 0;
-    }
-    return false;
-}
-
-} // namespace
-
 bool validPageSize(double widthPt, double heightPt) noexcept {
     return std::isfinite(widthPt) && std::isfinite(heightPt) && widthPt > 0.0 && heightPt > 0.0 &&
            widthPt <= kMaxPagePoints && heightPt <= kMaxPagePoints;
@@ -166,7 +180,7 @@ bool validPageSize(double widthPt, double heightPt) noexcept {
 
 std::vector<std::byte> encode(const InspectRequest& request) {
     std::vector<std::byte> out(kHeaderSize + request.path.size());
-    putHeader(out, kRequestMagic, kKindInspect, request.job);
+    putHeader(out, kRequestMagic, static_cast<std::uint16_t>(request.kind), request.job);
     put32(out, kWordAt, static_cast<std::uint32_t>(request.path.size()));
     put32(out, kLastWordAt, 0);
     std::memcpy(out.data() + kHeaderSize, request.path.data(), request.path.size());
@@ -187,6 +201,29 @@ std::vector<std::byte> encode(const InspectReply& reply) {
     return out;
 }
 
+std::vector<std::byte> encode(const TextReply& reply) {
+    std::size_t text = 0;
+    for (const std::string& page : reply.pages) {
+        text += page.size();
+    }
+    std::vector<std::byte> out(kHeaderSize + kTextLengthSize * reply.pages.size() + text);
+    putHeader(out, kTextReplyMagic, static_cast<std::uint16_t>(reply.status), reply.job);
+    put32(out, kWordAt, reply.detail);
+    put32(out, kLastWordAt, static_cast<std::uint32_t>(reply.pages.size()));
+    std::size_t at = kHeaderSize;
+    for (const std::string& page : reply.pages) {
+        put32(out, at, static_cast<std::uint32_t>(page.size()));
+        at += kTextLengthSize;
+    }
+    for (const std::string& page : reply.pages) {
+        if (!page.empty()) {
+            std::memcpy(out.data() + at, page.data(), page.size());
+        }
+        at += page.size();
+    }
+    return out;
+}
+
 core::JobId requestJob(std::span<const std::byte> message) noexcept {
     if (message.size() < kHeaderSize || !hasMagic(message, kRequestMagic)) {
         return {};
@@ -201,11 +238,14 @@ core::Result<InspectRequest> decodeRequest(std::span<const std::byte> message) {
     if (!hasMagic(message, kRequestMagic)) {
         return tl::unexpected(malformed("not a request (magic)"));
     }
-    if (get16(message, kVersionAt) != kVersion || get16(message, kKindAt) != kKindInspect) {
+    const std::uint16_t kind = get16(message, kKindAt);
+    if (get16(message, kVersionAt) != kVersion ||
+        (kind != kKindInspect && kind != kKindExtractText)) {
         return core::makeError(ErrorCode::Unsupported,
                                "PDF worker message: unsupported request version or kind");
     }
-    InspectRequest request{.job = jobAt(message), .path = {}};
+    InspectRequest request{
+        .job = jobAt(message), .path = {}, .kind = static_cast<RequestKind>(kind)};
     if (request.job.isNull()) {
         return tl::unexpected(malformed("request without a job id"));
     }
@@ -264,6 +304,66 @@ core::Result<InspectReply> decodeReply(std::span<const std::byte> message) {
                 malformed("reply page " + std::to_string(i + 1) + " has no supported size"));
         }
         reply.pages.push_back(page);
+    }
+    return reply;
+}
+
+core::Result<TextReply> decodeTextReply(std::span<const std::byte> message) {
+    if (message.size() < kHeaderSize) {
+        return tl::unexpected(malformed("text reply shorter than its header"));
+    }
+    if (!hasMagic(message, kTextReplyMagic)) {
+        return tl::unexpected(malformed("not a text reply (magic)"));
+    }
+    if (get16(message, kVersionAt) != kVersion) {
+        return tl::unexpected(malformed("unsupported text reply version"));
+    }
+    const std::uint16_t status = get16(message, kKindAt);
+    if (!knownStatus(status)) {
+        return tl::unexpected(malformed("unknown text reply status"));
+    }
+    TextReply reply{.job = jobAt(message),
+                    .status = static_cast<InspectStatus>(status),
+                    .detail = get32(message, kWordAt),
+                    .pages = {}};
+    if (reply.job.isNull()) {
+        return tl::unexpected(malformed("text reply without a job id"));
+    }
+    if (!validTextDetail(reply.status, reply.detail)) {
+        return tl::unexpected(malformed("text reply detail does not fit its status"));
+    }
+    const std::uint32_t count = get32(message, kLastWordAt);
+    const bool ok = reply.status == InspectStatus::Ok;
+    if ((ok && (count == 0 || count > kMaxPages)) || (!ok && count != 0)) {
+        return tl::unexpected(malformed("text reply page count"));
+    }
+    const std::size_t lengths = kTextLengthSize * count;
+    if (message.size() < kHeaderSize + lengths) {
+        return tl::unexpected(malformed("text reply shorter than its page table"));
+    }
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::uint32_t length = get32(message, kHeaderSize + kTextLengthSize * i);
+        if (length > kMaxPageTextBytes) {
+            return tl::unexpected(
+                malformed("text reply page " + std::to_string(i + 1) + " is too long"));
+        }
+        total += length;
+    }
+    if (total > kMaxTextBytes || message.size() != kHeaderSize + lengths + total) {
+        return tl::unexpected(malformed("text reply size"));
+    }
+    reply.pages.reserve(count);
+    std::size_t at = kHeaderSize + lengths;
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::uint32_t length = get32(message, kHeaderSize + kTextLengthSize * i);
+        std::string text(reinterpret_cast<const char*>(message.data() + at), length);
+        if (!validUtf8(text)) {
+            return tl::unexpected(
+                malformed("text reply page " + std::to_string(i + 1) + " is not UTF-8"));
+        }
+        reply.pages.push_back(std::move(text));
+        at += length;
     }
     return reply;
 }

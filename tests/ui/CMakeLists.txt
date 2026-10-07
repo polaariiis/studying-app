@@ -108,6 +108,7 @@ target_link_libraries(pdf_worker_tests PRIVATE
     studyapp::application
     studyapp::canvas
     studyapp::ipc
+    studyapp::test_support
     Qt6::Pdf
     Qt6::Test
     studyapp_project_options

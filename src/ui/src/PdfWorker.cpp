@@ -1,5 +1,6 @@
 #include <studyapp/ui/PdfWorker.hpp>
 
+#include "PdfText.hpp"
 #include "SessionDocumentRasterizer.hpp"
 
 #include <studyapp/ipc/FileChannel.hpp>
@@ -90,8 +91,14 @@ int runPdfWorker(const QString& jobDirectory) {
         }
         return 2;
     }
-    // Read only: QtPdf opens the staged copy for reading; nothing else is touched.
+    // Read only: QtPdf opens the file (a staged import or a stored asset) for reading;
+    // nothing else is touched.
     const std::u8string path(request->path.begin(), request->path.end());
+    if (request->kind == ipc::pdf::RequestKind::ExtractText) {
+        ipc::pdf::TextReply reply = extractPdfTextLocally(std::filesystem::path(path));
+        reply.job = request->job;
+        return replies->send(ipc::pdf::encode(reply), kReplySendWait) ? 0 : 1;
+    }
     ipc::pdf::InspectReply reply = inspectPdfLocally(std::filesystem::path(path));
     reply.job = request->job;
     return replies->send(ipc::pdf::encode(reply), kReplySendWait) ? 0 : 1;

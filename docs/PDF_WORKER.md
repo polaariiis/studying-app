@@ -4,6 +4,8 @@
 > task 1.2-PDF-02, roadmap S7; backlog V-05/V-06). Decision record:
 > [ARCHITECTURE.md §18, D53](ARCHITECTURE.md#18-decision-log). §1 describes the state before
 > 1.2; §22 lists what the implementation settled or corrected, and the measured costs.
+> **Since 1.2-CMD-01** the worker also extracts the text of a stored PDF for the command
+> console's `pdf search` (§23, D55); everything below applies to those jobs as well.
 
 This document specifies the first production use of the `ipc` module (D52): reading the
 page count and page sizes of an imported PDF in a separate process, so that a PDF that
@@ -567,3 +569,89 @@ The worker adds about 42 ms per import, nearly independent of the PDF: process c
 Qt and QtPdf start-up, the two channel exchanges and the directory cleanup. It is paid on
 the import's pool thread, next to copying the file (≈ 0.4 s per 50 MB), never on the GUI
 thread. Tile rendering is unchanged and stays in-process (§17).
+
+## 23. Text extraction
+
+Added by task 1.2-CMD-01 for the command console's `pdf search`
+([COMMAND_CONSOLE.md §6](COMMAND_CONSOLE.md#6-pdf-content-search), D55). Reading the text of
+an imported PDF means parsing it with PDFium, so it runs in the same worker, through the
+same client, with the same job lifecycle as inspection (§5–§14) — no second worker, no
+second job system, no PDF parsing in StudyBoard's own process.
+
+**What differs from inspection:**
+
+| | Inspection (§8) | Text extraction |
+|---|---|---|
+| Request kind | `1` | `2` — the same 32-byte request layout (§8.1) |
+| File | the staged copy of an import | the stored asset (`WorkspaceSession::assetPath`, content-addressed, read only) |
+| Reply | `SBPR`, page sizes | `SBPT`, page text (below) |
+| Started from | the import's pool-thread job | the `pdf search` pool-thread job, one PDF after the other |
+| Stop flag | the workspace's import flag | the search's own flag: set by `cancel`, a newer search, closing the workspace or the window |
+| Result | page sizes → `importDocument` | `application::PdfDocumentText`, kept in the workspace's bounded text cache |
+
+The client (`runPdfTextJob`, `extractPdfTextInWorker` in `ui/src/PdfInspectionClient.*`)
+is the inspection client with the request kind as a parameter: the same job directory, two
+channels, `JobId`, 30 s deadline, 200 ms slices, kill and cleanup on every path. A reply is
+accepted only if it is a valid **text** reply with the job's id; an inspection reply to a
+text request (or the other way round) is a protocol error. The worker's malformed-request
+answer is an inspection reply, so a text job that gets one fails as a protocol error too.
+
+### 23.1 Text reply
+
+Little-endian, like §8.2:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | magic | ASCII `SBPT` |
+| 4 | 2 | version | `1` |
+| 6 | 2 | status | the statuses of §8.2 except `BadPageSize` |
+| 8 | 16 | job | the request's JobId |
+| 24 | 4 | detail | `Ok`: `1` if text was cut at the limits below, else `0`; other statuses as in §8.2 |
+| 28 | 4 | page count *n* | `0` unless `Ok`; 1 ≤ *n* ≤ 5000 when `Ok` |
+| 32 | 4 × *n* | lengths | the byte length of each page's text, ≤ 65 536 (`kMaxPageTextBytes`) |
+| 32 + 4*n* | Σ lengths | text | each page's text, UTF-8, in page order; Σ lengths ≤ 8 MiB (`kMaxTextBytes`) |
+
+Total size must be exactly 32 + 4*n* + Σ lengths. `decodeTextReply` rejects anything else
+— sizes, limits, an unknown status, a nil job — and text that is not well-formed UTF-8 or
+contains NUL; `pdfTextFrom` checks the limits again before the text is used.
+
+**Free text, as data.** Unlike every other reply, a text reply carries text taken from the
+PDF. It is never shown as a message: StudyBoard builds every error text itself from the
+status (the import's wording, §8.2); the page text is only searched, and only the few
+dozen bytes around a match are shown in the console as plain text (escaped, never
+interpreted as markup or as a command).
+
+### 23.2 In the worker
+
+`ui::extractPdfTextLocally` opens the file with `QPdfDocument` (read only), applies the
+page-count rule of inspection, and reads each page's text with
+`QPdfDocument::getAllText(page)`. Control characters other than line breaks and tabs become
+spaces. Each page is cut to 64 KiB, the whole document to 8 MiB, always at a UTF-8
+character boundary; once the budget is spent, later pages are sent empty, and `detail` is
+`1`. A page without text (a scanned page) is an empty string, not an error. Nothing is
+logged about the content; the client's log line names the job, the page count and the
+number of bytes.
+
+Largest message: 32 + 4 × 5000 + 8 MiB ≈ 8.02 MiB — below IPCFileLab's 16 MiB limit.
+
+### 23.3 Measured
+
+`BM_PdfTextInWorker` (Release, a 4-vCPU Linux container; docs/BENCHMARKS.md): 19 ms for a
+1-page PDF, 71 ms for 200 pages, 0.48 s for 2 000 pages of about 600 bytes of text each —
+paid once per PDF and workspace session on a pool thread, never on the GUI thread. For
+comparison, `BM_PdfInspectInWorker` on the same machine: 18 ms (1 page), 29 ms (200 pages).
+
+### 23.4 Tests
+
+`ipc_tests` (`PdfTextReplyTest`): text requests and replies round trip with the documented
+layout; every malformed reply (size, version, status, nil job, detail, page count, a page
+or the total over its limit, invalid UTF-8, NUL, surrogates) is rejected; an inspection
+reply is not a text reply and vice versa. `pdf_worker_tests`: the built `studyapp
+--pdf-worker` extracts the text of real PDFs (`testing::minimalPdf`, standard Helvetica,
+no fonts needed) page by page; the text is searchable (word, phrase across a line break,
+case, punctuation, several pages, page numbers); unreadable, missing and protected files
+fail with the import's messages; over-long page text is cut and marked; a crashing,
+hanging, cancelled, wrong-job, wrong-kind or garbage worker fails the job without using
+anything and without leaving files. `shell_tests`: `pdf search` end to end (docs/TESTING.md,
+"1.2 additions (command console)"). `studyapp --self-test` ("search the text of a PDF in the
+worker process") checks the extraction in every package's smoke test.

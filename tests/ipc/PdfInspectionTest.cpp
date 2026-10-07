@@ -114,7 +114,7 @@ TEST(PdfInspectionTest, OtherVersionsAndKindsAreUnsupported) {
     EXPECT_EQ(requestError(bytes), ErrorCode::Unsupported);
     EXPECT_EQ(requestJob(bytes), someJob()); // still answerable
     bytes = encode(InspectRequest{.job = someJob(), .path = kAbsolute});
-    bytes[6] = std::byte{2};
+    bytes[6] = std::byte{3}; // 1 inspect and 2 extract text are the known kinds
     EXPECT_EQ(requestError(bytes), ErrorCode::Unsupported);
 }
 
@@ -199,6 +199,141 @@ TEST(PdfInspectionTest, PageSizesMustBeFinitePositiveAndSupported) {
         reply.pages[0].height = value;
         EXPECT_TRUE(replyRejected(encode(reply))) << value;
     }
+}
+
+} // namespace
+} // namespace studyapp::ipc::pdf
+
+// ---------------------------------------------------------------------------- text (§23)
+
+namespace studyapp::ipc::pdf {
+namespace {
+
+TextReply okText() {
+    return {.job = someJob(),
+            .status = InspectStatus::Ok,
+            .detail = 0,
+            .pages = {"Chapter 1\r\nEigenvalues", "", "\xCE\xBB = 2 \xE2\x9C\x93"}};
+}
+
+bool textRejected(const std::vector<std::byte>& bytes) {
+    auto decoded = decodeTextReply(bytes);
+    return !decoded && decoded.error().code == ErrorCode::ParseError;
+}
+
+TEST(PdfTextReplyTest, ExtractTextRequestsRoundTrip) {
+    const InspectRequest request{
+        .job = someJob(), .path = kAbsolute, .kind = RequestKind::ExtractText};
+    const auto bytes = encode(request);
+    EXPECT_EQ(bytes[6], std::byte{2});
+    auto decoded = decodeRequest(bytes);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+    EXPECT_EQ(*decoded, request);
+    EXPECT_EQ(decodeRequest(encode(InspectRequest{.job = someJob(), .path = kAbsolute}))->kind,
+              RequestKind::Inspect);
+}
+
+TEST(PdfTextReplyTest, RoundTripsWithTheDocumentedLayout) {
+    const TextReply ok = okText();
+    const auto bytes = encode(ok);
+    std::size_t text = 0;
+    for (const std::string& page : ok.pages) {
+        text += page.size();
+    }
+    ASSERT_EQ(bytes.size(), kHeaderSize + 4 * ok.pages.size() + text);
+    EXPECT_EQ(std::memcmp(bytes.data(), "SBPT", 4), 0);
+    auto decoded = decodeTextReply(bytes);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+    EXPECT_EQ(*decoded, ok);
+
+    TextReply truncated = okText();
+    truncated.detail = 1;
+    EXPECT_EQ(*decodeTextReply(encode(truncated)), truncated);
+    const std::vector<TextReply> errors{
+        {.job = someJob(), .status = InspectStatus::Unreadable, .detail = 1, .pages = {}},
+        {.job = someJob(), .status = InspectStatus::Protected, .detail = 0, .pages = {}},
+        {.job = someJob(), .status = InspectStatus::NoPages, .detail = 0, .pages = {}},
+        {.job = someJob(), .status = InspectStatus::TooManyPages, .detail = 6000, .pages = {}},
+        {.job = someJob(), .status = InspectStatus::Internal, .detail = 0, .pages = {}},
+    };
+    for (const TextReply& error : errors) {
+        auto round = decodeTextReply(encode(error));
+        ASSERT_TRUE(round.has_value()) << round.error().message;
+        EXPECT_EQ(*round, error);
+    }
+}
+
+TEST(PdfTextReplyTest, AnInspectionReplyIsNotATextReplyNorTheOtherWay) {
+    EXPECT_TRUE(textRejected(encode(okReply())));
+    EXPECT_TRUE(replyRejected(encode(okText())));
+}
+
+TEST(PdfTextReplyTest, MalformedRepliesAreRejected) {
+    const auto good = encode(okText());
+    EXPECT_TRUE(textRejected({}));
+    EXPECT_TRUE(textRejected({good.begin(), good.begin() + 31}));
+    auto bytes = good;
+    bytes.push_back(std::byte{'x'}); // longer than its page table says
+    EXPECT_TRUE(textRejected(bytes));
+    bytes = good;
+    bytes.pop_back();
+    EXPECT_TRUE(textRejected(bytes));
+    bytes = good;
+    bytes[4] = std::byte{2}; // version
+    EXPECT_TRUE(textRejected(bytes));
+    bytes = good;
+    bytes[6] = std::byte{99}; // status
+    EXPECT_TRUE(textRejected(bytes));
+    bytes = good;
+    for (std::size_t i = 8; i < 24; ++i) {
+        bytes[i] = std::byte{0}; // nil job
+    }
+    EXPECT_TRUE(textRejected(bytes));
+    bytes = good;
+    put32(bytes, 24, 2); // Ok allows detail 0 or 1 only
+    EXPECT_TRUE(textRejected(bytes));
+    bytes = encode(TextReply{
+        .job = someJob(), .status = InspectStatus::BadPageSize, .detail = 1, .pages = {}});
+    EXPECT_TRUE(textRejected(bytes)); // not a text reply status
+    bytes = good;
+    put32(bytes, 28, 0); // Ok without pages
+    EXPECT_TRUE(textRejected(bytes));
+    bytes = encode(
+        TextReply{.job = someJob(), .status = InspectStatus::NoPages, .detail = 0, .pages = {"x"}});
+    EXPECT_TRUE(textRejected(bytes)); // an error status with pages
+    bytes = good;
+    put32(bytes, 28, kMaxPages + 1);
+    EXPECT_TRUE(textRejected(bytes));
+    // Text that is not UTF-8, or contains NUL.
+    TextReply broken = okText();
+    broken.pages[0] = std::string("ok\xFF");
+    EXPECT_TRUE(textRejected(encode(broken)));
+    broken.pages[0] = std::string("a\0b", 3);
+    EXPECT_TRUE(textRejected(encode(broken)));
+    broken.pages[0] = "\xED\xA0\x80"; // a surrogate
+    EXPECT_TRUE(textRejected(encode(broken)));
+}
+
+TEST(PdfTextReplyTest, TextLimitsAreEnforced) {
+    TextReply big = okText();
+    big.pages = {std::string(kMaxPageTextBytes, 'a')};
+    EXPECT_TRUE(decodeTextReply(encode(big)).has_value());
+    big.pages = {std::string(kMaxPageTextBytes + 1, 'a')};
+    EXPECT_TRUE(textRejected(encode(big)));
+    // In all: 8 MiB across pages.
+    big.pages.assign(kMaxTextBytes / kMaxPageTextBytes, std::string(kMaxPageTextBytes, 'a'));
+    EXPECT_TRUE(decodeTextReply(encode(big)).has_value());
+    big.pages.emplace_back("a");
+    EXPECT_TRUE(textRejected(encode(big)));
+}
+
+TEST(PdfTextReplyTest, Utf8Validation) {
+    EXPECT_TRUE(validUtf8(""));
+    EXPECT_TRUE(validUtf8("plain \xC3\xBC \xE2\x9C\x93 \xF0\x9F\x98\x80"));
+    EXPECT_FALSE(validUtf8(std::string("\0", 1)));
+    EXPECT_FALSE(validUtf8("\xC0\xAF"));         // overlong
+    EXPECT_FALSE(validUtf8("\xF4\x90\x80\x80")); // above U+10FFFF
+    EXPECT_FALSE(validUtf8("\xE2\x9C"));         // cut short
 }
 
 } // namespace

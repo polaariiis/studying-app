@@ -4,6 +4,7 @@
 #include "PdfInspectionClient.hpp"
 #include "SessionDocumentRasterizer.hpp"
 
+#include <studyapp/application/PdfTextSearch.hpp>
 #include <studyapp/application/Search.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/application/WorkspaceStructure.hpp>
@@ -152,6 +153,7 @@ std::vector<std::string> runSelfTest(const ShellServices& services, canvas::Text
         QPainter painter(&writer);
         painter.fillRect(QRect(0, 0, 400, 400), Qt::black);
         writer.newPage();
+        painter.drawText(QPointF(100, 200), QStringLiteral("StudyBoard self-test eigenvalue"));
     }
     auto info = inspectPdf(pdf);
     checks.check(info.has_value() && info->pageSizes.size() == 2, "read a PDF (Qt PDF)",
@@ -165,6 +167,14 @@ std::vector<std::string> runSelfTest(const ShellServices& services, canvas::Text
                          inWorker->pageSizes == info->pageSizes,
                      "inspect a PDF in the worker process",
                      inWorker ? std::string{} : inWorker.error().message);
+        // `pdf search` (1.2-CMD-01, D55): the text of a PDF, read by the worker, found.
+        const auto text = extractPdfTextInWorker(pdf, core::JobId::generate(services.ids), stop);
+        const bool found =
+            text && text->pages.size() == 2 &&
+            application::findInPdfText(*text, "self-test EIGENVALUE").size() == 1 &&
+            application::findInPdfText(*text, "self-test EIGENVALUE").front().page == 1;
+        checks.check(found, "search the text of a PDF in the worker process",
+                     text ? std::string{} : text.error().message);
     }
     if (info) {
         auto asset = session->importAsset(pdf, "application/pdf");

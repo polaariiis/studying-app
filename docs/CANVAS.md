@@ -18,7 +18,7 @@ flowchart LR
     tool -->|preview state| overlay[Preview & overlays]
     tool -->|commit Patch| editor["document::Editor"]
     editor --> doc[PageDocument]
-    doc -->|changed(Patch)| scene
+    doc -->|"changed(Patch)"| scene
     ctrl -->|buildFrame| frame["render::RenderFrame"]
     scene --> frame
     overlay --> frame

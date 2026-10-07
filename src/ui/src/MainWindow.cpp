@@ -1,6 +1,8 @@
 #include <studyapp/ui/MainWindow.hpp>
 
 #include "CanvasWidget.hpp"
+#include "CommandConsole.hpp"
+#include "MainWindowWorkspace.hpp"
 #include "NavigationPanel.hpp"
 #include "PageExport.hpp"
 #include "PdfInspectionClient.hpp"
@@ -13,6 +15,7 @@
 
 #include <studyapp/application/ComponentVersions.hpp>
 #include <studyapp/application/PageNavigator.hpp>
+#include <studyapp/application/PdfTextSearch.hpp>
 #include <studyapp/application/Search.hpp>
 #include <studyapp/application/StartPage.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
@@ -32,6 +35,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDockWidget>
 #include <QFileInfo>
 #include <QImageReader>
 #include <QKeyEvent>
@@ -215,43 +219,6 @@ private:
 
 } // namespace
 
-/// Everything that belongs to one open workspace; recreated when another one is opened.
-struct MainWindow::OpenWorkspace {
-    struct View {
-        core::DVec2 center;
-        double zoom = 1.0;
-    };
-
-    OpenWorkspace(application::WorkspaceSession& shown,
-                  std::unique_ptr<application::WorkspaceSession> ownedSession,
-                  const core::Clock& shellClock, core::IdGenerator& shellIds)
-        : owned(std::move(ownedSession)), session(&shown), clock(&shellClock), ids(&shellIds),
-          port(std::make_unique<SessionDocumentPort>(shown)),
-          images(std::make_unique<SessionImageSource>(shown)),
-          documents(std::make_unique<SessionDocumentRasterizer>(shown)),
-          controller(std::make_unique<canvas::CanvasController>(*port, shellIds)),
-          navigator(shown.workspace()), structure(shown, shellClock, shellIds),
-          planner(shown, shellClock, shellIds) {}
-
-    std::unique_ptr<application::WorkspaceSession> owned; ///< null when borrowed
-    application::WorkspaceSession* session;
-    const core::Clock* clock;
-    core::IdGenerator* ids;
-    std::unique_ptr<SessionDocumentPort> port;
-    std::unique_ptr<SessionImageSource> images;
-    std::unique_ptr<SessionDocumentRasterizer> documents; ///< PDF pages (Phase 8)
-    std::unique_ptr<canvas::CanvasController> controller;
-    application::PageNavigator navigator;
-    WorkspaceStructure structure;
-    application::Planner planner;
-    /// Where the user left each page in this session (not persisted).
-    std::unordered_map<core::PageId, View> views;
-    /// Expires when this workspace is closed: background results for it are dropped.
-    std::shared_ptr<void> alive = std::make_shared<int>(0);
-    /// Set when this workspace is released: running PDF worker jobs end at once (D53 §10).
-    std::shared_ptr<std::atomic<bool>> importStop = std::make_shared<std::atomic<bool>>(false);
-};
-
 // ---------------------------------------------------------------------------- construction
 
 MainWindow::MainWindow(ThemeManager& themes, QSettings& settings, QWidget* parent)
@@ -276,8 +243,12 @@ MainWindow::MainWindow(ThemeManager& themes, QSettings& settings, const Workspac
 }
 
 MainWindow::~MainWindow() {
+    if (open_ && open_->pdfSearchStop) {
+        open_->pdfSearchStop->store(true); // a PDF search is not waited for (its worker is killed)
+    }
     jobs_->waitForDone(); // their file work writes into the workspace, which is still locked
     detach(true);         // best effort: pending writes are flushed; failures are logged
+    delete consoleDock_;  // the console refers to the command registry, a member
 }
 
 void MainWindow::setUp() {
@@ -291,6 +262,7 @@ void MainWindow::setUp() {
     createToolBar();
     createCentralWidget();
     createStatusBar();
+    createConsoleDock();
     readSettings();
 
     connect(themes_, &ThemeManager::themeChanged, this, &MainWindow::syncThemeActions);
@@ -632,6 +604,7 @@ void MainWindow::createActions() {
             planner_->setVisible(visible);
         }
     });
+    createConsoleAction();
 
     themeGroup_ = new QActionGroup(this);
     themeGroup_->setExclusive(true);
@@ -814,6 +787,7 @@ void MainWindow::createMenus() {
     viewMenu->setObjectName(QStringLiteral("menuView"));
     viewMenu->addAction(navigationAction_);
     viewMenu->addAction(plannerAction_);
+    viewMenu->addAction(consoleAction_);
     viewMenu->addSeparator();
     QMenu* themeMenu = viewMenu->addMenu(tr("&Theme"));
     themeMenu->setObjectName(QStringLiteral("menuTheme"));
@@ -1290,6 +1264,9 @@ bool MainWindow::releaseWorkspace(std::optional<std::filesystem::path>& rescued)
     // PDF inspections in a worker process are stopped (the worker is killed) instead of
     // being waited for (D53 §10); the decision to close is final at this point.
     open_->importStop->store(true);
+    if (open_->pdfSearchStop) {
+        open_->pdfSearchStop->store(true); // a PDF search's worker is killed the same way
+    }
     if (backgroundJobs_ > 0) {
         // Imports still copying write into this workspace's temporary/: finish them while
         // it is locked (a copy takes about 0.4 s per 50 MB); their results are dropped.
@@ -1370,6 +1347,7 @@ void MainWindow::detach(bool closeSession) {
         }
     }
     open_.reset();
+    pdfSearches_ = 0; // their finishing steps belong to the closed workspace: dropped
     revealedPage_.reset();
     revealedSection_.reset();
     if (stack_ != nullptr) {
@@ -2234,8 +2212,16 @@ void MainWindow::importPdf() {
     if (!open_ || open_->session->isReadOnly()) {
         return;
     }
-    const auto chosen = dialogs_->chooseDocumentToImport(this);
-    if (!chosen) {
+    if (const auto chosen = dialogs_->chooseDocumentToImport(this)) {
+        importPdfFile(*chosen);
+    }
+}
+
+void MainWindow::importPdfFile(
+    const std::filesystem::path& pdf,
+    std::function<void(const QString& error, std::optional<core::PageId> first, std::size_t pages)>
+        done) {
+    if (!open_ || open_->session->isReadOnly()) {
         return;
     }
     // Copying the file and reading its page sizes happen off the GUI thread; the section is
@@ -2250,30 +2236,38 @@ void MainWindow::importPdf() {
     worker.program = pdfWorkerProgram_;
     worker.arguments = pdfWorkerArguments_;
     worker.tempRoot = pdfWorkerTempRoot_;
-    runInBackground([this, stage = open_->session->prepareAssetImport(*chosen), source = *chosen,
-                     startedOn, job, stop = open_->importStop,
-                     worker = std::move(worker)]() -> std::function<void()> {
+    runInBackground([this, stage = open_->session->prepareAssetImport(pdf), source = pdf, startedOn,
+                     job, stop = open_->importStop, worker = std::move(worker),
+                     done = std::move(done)]() -> std::function<void()> {
         auto staged = std::make_shared<StagedImport>(stage());
         auto info = std::make_shared<core::Result<PdfInfo>>(
             staged->ok() ? inspectPdfInWorker(staged->file(), job, *stop, worker)
                          : core::Result<PdfInfo>(tl::unexpected(staged->error())));
-        return [this, info, staged, source, startedOn] {
+        return [this, info, staged, source, startedOn, done] {
             const QString file = QString::fromStdU16String(source.u16string());
             const QString failed = tr("The PDF could not be imported.");
+            // The console reports in its output; the menu command in a dialog.
+            const auto report = [&](const QString& details) {
+                if (done) {
+                    done(details, std::nullopt, 0);
+                } else {
+                    dialogs_->showError(this, failed, details);
+                }
+            };
             if (!*info) {
                 if (info->error().code == core::ErrorCode::Conflict) {
                     return; // stopped: the workspace is being closed
                 }
-                dialogs_->showError(this, failed, tr("%1: %2").arg(file, errorText(info->error())));
+                report(tr("%1: %2").arg(file, errorText(info->error())));
                 return;
             }
             if (!staged->ok()) {
-                dialogs_->showError(this, failed, errorText(staged->error()));
+                report(errorText(staged->error()));
                 return;
             }
             auto asset = open_->session->finishAssetImport(staged->take(), "application/pdf");
             if (!asset) {
-                dialogs_->showError(this, failed, errorText(asset.error()));
+                report(errorText(asset.error()));
                 return;
             }
             // Into the current notebook, else the first one; with none, a new notebook
@@ -2287,8 +2281,11 @@ void MainWindow::importPdf() {
                 notebook, QFileInfo(file).completeBaseName().toStdString(), *asset,
                 (*info)->pageSizes);
             if (!imported) {
-                dialogs_->showError(this, failed, errorText(imported.error()));
+                report(errorText(imported.error()));
                 return;
+            }
+            if (done) {
+                done({}, imported->firstPage, (*info)->pageSizes.size());
             }
             QTreeView* tree = navigation_->tree();
             tree->expand(treeModel_->indexOf(HierarchyItem{imported->notebook}));
@@ -2371,28 +2368,40 @@ void MainWindow::exportPages(bool wholeSection) {
     if (!target) {
         return;
     }
-    const QString failed = tr("The export could not be written.");
-    // The workspace directory belongs to StudyBoard: never write into it.
-    if (open_->session->isInsideWorkspace(*target)) {
-        dialogs_->showError(this, failed, tr("Choose a location outside the workspace folder."));
-        return;
-    }
     const QString suffix =
         QFileInfo(QString::fromStdU16String(target->u16string())).suffix().toLower();
     const ExportFormat format = suffix == QStringLiteral("png")   ? ExportFormat::Png
                                 : suffix == QStringLiteral("svg") ? ExportFormat::Svg
                                                                   : ExportFormat::Pdf;
+    if (auto written = writePagesTo(pages, *target, format);
+        !written && written.error().code != core::ErrorCode::Conflict) { // Conflict: cancelled
+        dialogs_->showError(this, tr("The export could not be written."),
+                            errorText(written.error()));
+    }
+}
+
+core::Result<void> MainWindow::writePagesTo(const std::vector<core::PageId>& pages,
+                                            const std::filesystem::path& target,
+                                            ExportFormat format) {
+    if (!open_ || pages.empty()) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "there is no page to export");
+    }
+    // The workspace directory belongs to StudyBoard: never write into it.
+    if (open_->session->isInsideWorkspace(target)) {
+        return core::makeError(core::ErrorCode::InvalidArgument,
+                               tr("Choose a location outside the workspace folder.").toStdString());
+    }
+    finishTextEditing(); // what is typed is part of the page
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    auto written = ui::exportPages(ws, pages, *target, format, exportSources(pages.size()));
+    auto written = ui::exportPages(open_->session->workspace(), pages, target, format,
+                                   exportSources(pages.size()));
     QApplication::restoreOverrideCursor();
     if (!written) {
-        if (written.error().code != core::ErrorCode::Conflict) { // Conflict: cancelled
-            dialogs_->showError(this, failed, errorText(written.error()));
-        }
-        return;
+        return written;
     }
     statusBar()->showMessage(
-        tr("Exported to %1").arg(QString::fromStdU16String(target->u16string())), 5000);
+        tr("Exported to %1").arg(QString::fromStdU16String(target.u16string())), 5000);
+    return {};
 }
 
 void MainWindow::printPages() {
@@ -2793,8 +2802,10 @@ void MainWindow::updateStatus() {
                     static_cast<int>(session.pendingWriteCount()));
         tip = tr("Saving failed; StudyBoard tries again with the next change.\n%1")
                   .arg(errorText(*error));
-    } else if (backgroundJobs_ > 0) {
+    } else if (backgroundJobs_ > pdfSearches_) {
         status = tr("Importing…");
+    } else if (pdfSearches_ > 0) {
+        status = tr("Searching PDFs…");
     } else {
         status = tr("All changes saved");
     }
