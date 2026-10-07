@@ -1242,13 +1242,18 @@ TEST(CanvasControllerTest, ShapeStyleIsSanitizedAndDecidesNewShapesOnly) {
 struct FakeTextLayout final : TextLayout {
     int rasterized = 0;
     float lastPixelsPerUnit = 0.0F;
-    float heightFor(std::string_view text, float /*width*/) override {
-        return 20.0F * static_cast<float>(std::count(text.begin(), text.end(), '\n') + 1) + 8.0F;
+    float lastFontSize = 0.0F;
+    /// One line per line break, (font size + 4) high (20 at the default size), plus padding.
+    float heightFor(std::string_view text, float /*width*/, float fontSize) override {
+        return (fontSize + 4.0F) *
+                   static_cast<float>(std::count(text.begin(), text.end(), '\n') + 1) +
+               8.0F;
     }
-    render::ImageData rasterize(std::string_view /*text*/, const core::Vec2& size,
+    render::ImageData rasterize(std::string_view /*text*/, const core::Vec2& size, float fontSize,
                                 float pixelsPerUnit) override {
         ++rasterized;
         lastPixelsPerUnit = pixelsPerUnit;
+        lastFontSize = fontSize;
         render::ImageData image{
             .width = std::max(1, static_cast<int>(std::ceil(size.x * pixelsPerUnit))),
             .height = std::max(1, static_cast<int>(std::ceil(size.y * pixelsPerUnit))),
@@ -1400,6 +1405,201 @@ TEST(CanvasControllerTest, TextRastersFollowTheZoomWithinABudget) {
     f.controller.setPage(std::nullopt);
     (void)f.frame();
     EXPECT_TRUE(f.renderer.textures.empty());
+}
+
+TEST(CanvasControllerTest, TextResizePreviewIsLaidOutForItsNewWidthNotStretched) {
+    // 1.2-TXT-01: dragging a text box's width handle shows the text laid out for the new
+    // width; the element's cached raster (same content version) is not stretched into it.
+    CanvasFixture f;
+    FakeTextLayout layout;
+    f.controller.setTextLayout(&layout);
+    auto created = document::commands::createElement(
+        f.doc.workspace, f.layer,
+        {.transform = {.position = {100, 100}},
+         .payload = document::TextBox{.size = {200, 28}, .text = "hello world"}},
+        f.doc.ids);
+    ASSERT_OK(created);
+    const core::ElementId id = created->id;
+    ASSERT_OK(f.port.execute(std::move(created->command)));
+    // The size of the one text texture drawn in the last frame.
+    const auto drawnTextSize = [&]() -> std::pair<int, int> {
+        for (const render::DrawItem& item : f.renderer.lastContent) {
+            if (item.texture.isValid()) {
+                return f.renderer.textures.at(item.texture.index);
+            }
+        }
+        return {0, 0};
+    };
+    (void)f.frame();
+    ASSERT_EQ(layout.rasterized, 1);
+    ASSERT_FLOAT_EQ(layout.lastPixelsPerUnit, 1.0F);
+    EXPECT_EQ(drawnTextSize(), (std::pair{200, 28}));
+
+    f.controller.setTool(ToolKind::Select);
+    const Camera& camera = f.controller.camera();
+    f.click(camera.worldToView({150, 110}));
+    ASSERT_TRUE(f.controller.selection().contains(id));
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    int redraws = 0;
+    f.controller.setRedrawCallback([&] { ++redraws; });
+
+    // Drag the right handle (300, 114): each new width is laid out once, for this box only.
+    f.pointer(PointerPhase::Down, camera.worldToView({300, 114}));
+    f.pointer(PointerPhase::Move, camera.worldToView({380, 114}));
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 2);
+    EXPECT_EQ(drawnTextSize(), (std::pair{280, 28}));
+    f.pointer(PointerPhase::Move, camera.worldToView({340, 114}));
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 3);
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+    EXPECT_EQ(f.renderer.textures.size(), 1U); // the previous raster is released
+    // A frame without pointer movement rasterises nothing and asks for no further frame.
+    redraws = 0;
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 3);
+    EXPECT_EQ(redraws, 0);
+    // The preview writes nothing: the element and its text are unchanged until release.
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{200, 28}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps);
+
+    // Release: one resize command; text unchanged.
+    f.pointer(PointerPhase::Up, camera.worldToView({340, 114}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    const auto& resized = std::get<document::TextBox>(f.element(id).payload);
+    EXPECT_EQ(resized.size, (core::Vec2{240, 28}));
+    EXPECT_EQ(resized.text, "hello world");
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+
+    // Undo and redo restore the geometry, and the raster follows.
+    ASSERT_OK(f.port.undo());
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{200, 28}));
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{200, 28}));
+    ASSERT_OK(f.port.redo());
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{240, 28}));
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+
+    // A cancelled drag writes nothing and shows the box at its own size again.
+    const std::size_t afterRedo = f.doc.editor.history().undoCount();
+    f.pointer(PointerPhase::Down, camera.worldToView({340, 114}));
+    f.pointer(PointerPhase::Move, camera.worldToView({420, 114}));
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{320, 28}));
+    f.controller.onKey({.key = Key::Escape});
+    (void)f.frame();
+    EXPECT_EQ(drawnTextSize(), (std::pair{240, 28}));
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload).size, (core::Vec2{240, 28}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), afterRedo);
+    EXPECT_EQ(f.renderer.textures.size(), 1U);
+}
+
+TEST(CanvasControllerTest, TextFontSizeAppliesToTheSelectedTextBoxesAsOneCommand) {
+    // 1.2-TXT-02: the selected text boxes get the size and the height laid out for it; only
+    // their rasters are made again, at that size.
+    CanvasFixture f;
+    FakeTextLayout layout;
+    f.controller.setTextLayout(&layout);
+    const auto addText = [&](core::DVec2 at, const char* text) {
+        auto created = document::commands::createElement(
+            f.doc.workspace, f.layer,
+            {.transform = {.position = at},
+             .payload = document::TextBox{.size = {200, 28}, .text = text}},
+            f.doc.ids);
+        EXPECT_TRUE(created.has_value());
+        const core::ElementId id = created->id;
+        EXPECT_TRUE(f.port.execute(std::move(created->command)).has_value());
+        return id;
+    };
+    const core::ElementId first = addText({100, 100}, "first");
+    const core::ElementId other = addText({100, 300}, "other");
+    (void)f.frame();
+    ASSERT_EQ(layout.rasterized, 2);
+    const auto boxOf = [&](core::ElementId id) {
+        return std::get<document::TextBox>(f.element(id).payload);
+    };
+
+    // Nothing selected: nothing changes.
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    ASSERT_OK(f.controller.applyTextFontSize(32));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps);
+
+    f.controller.setTool(ToolKind::Select);
+    f.click(f.controller.camera().worldToView({150, 110}));
+    ASSERT_TRUE(f.controller.selection().contains(first));
+    ASSERT_OK(f.controller.applyTextFontSize(32));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    EXPECT_EQ(boxOf(first),
+              (document::TextBox{.size = {200, 44}, .text = "first", .fontSize = 32}));
+    EXPECT_EQ(boxOf(other).fontSize, document::kDefaultTextFontSize);
+    (void)f.frame();
+    EXPECT_EQ(layout.rasterized, 3); // only the changed box
+    EXPECT_EQ(layout.lastFontSize, 32.0F);
+    // The same size again writes nothing; sizes are made valid (whole, within range).
+    ASSERT_OK(f.controller.applyTextFontSize(32));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    ASSERT_OK(f.controller.applyTextFontSize(1000));
+    EXPECT_EQ(boxOf(first).fontSize, document::kMaxTextFontSize);
+    ASSERT_OK(f.port.undo());
+    ASSERT_OK(f.port.undo());
+    EXPECT_EQ(boxOf(first), (document::TextBox{.size = {200, 28}, .text = "first"}));
+    (void)f.frame();
+    EXPECT_EQ(layout.lastFontSize, document::kDefaultTextFontSize);
+    ASSERT_OK(f.port.redo());
+    EXPECT_EQ(boxOf(first).fontSize, 32.0F);
+
+    // Resizing afterwards lays the box out at its own size (44 high for one line at 32).
+    const Camera& camera = f.controller.camera();
+    f.pointer(PointerPhase::Down, camera.worldToView({300, 122}));
+    f.pointer(PointerPhase::Move, camera.worldToView({260, 122}));
+    (void)f.frame();
+    EXPECT_EQ(layout.lastFontSize, 32.0F);
+    f.pointer(PointerPhase::Up, camera.worldToView({260, 122}));
+    EXPECT_EQ(boxOf(first),
+              (document::TextBox{.size = {160, 44}, .text = "first", .fontSize = 32}));
+}
+
+TEST(CanvasControllerTest, TextFontSizeWhileEditingIsWrittenWithTheText) {
+    // 1.2-TXT-02: new boxes start at the tool's size; a size chosen while editing changes the
+    // edit only, and finishing writes it with the text in one command.
+    CanvasFixture f;
+    FakeTextLayout layout;
+    f.controller.setTextLayout(&layout);
+    ToolSettings settings = f.controller.toolSettings();
+    settings.textSize = 24;
+    f.controller.setToolSettings(settings);
+    f.controller.setTool(ToolKind::Text);
+    f.click(f.controller.camera().worldToView({100, 100}));
+    ASSERT_TRUE(f.controller.textEdit().has_value());
+    EXPECT_EQ(f.controller.textEdit()->fontSize, 24.0F);
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    ASSERT_OK(f.controller.applyTextFontSize(48));
+    EXPECT_EQ(f.controller.textEdit()->fontSize, 48.0F);
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps); // nothing written yet
+    EXPECT_FLOAT_EQ(f.controller.textHeightFor("hi", 240, 48), 60.0F);
+    ASSERT_OK(f.controller.finishTextEdit("hi"));
+    ASSERT_EQ(f.elements().size(), 1U);
+    const core::ElementId id = f.elements().front();
+    EXPECT_EQ(std::get<document::TextBox>(f.element(id).payload),
+              (document::TextBox{.size = {kDefaultTextWidth, 60}, .text = "hi", .fontSize = 48}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+
+    // Editing it again starts at its size and keeps it.
+    f.click(f.controller.camera().worldToView({110, 110}));
+    ASSERT_TRUE(f.controller.textEdit().has_value());
+    EXPECT_EQ(f.controller.textEdit()->fontSize, 48.0F);
+    ASSERT_OK(f.controller.finishTextEdit("hi\nthere"));
+    EXPECT_EQ(
+        std::get<document::TextBox>(f.element(id).payload),
+        (document::TextBox{.size = {kDefaultTextWidth, 112}, .text = "hi\nthere", .fontSize = 48}));
+    // The tool's size is made valid like the other tool settings.
+    settings.textSize = 3.4F;
+    f.controller.setToolSettings(settings);
+    EXPECT_EQ(f.controller.toolSettings().textSize, document::kMinTextFontSize);
+    EXPECT_EQ(sanitizedTextFontSize(20.4F), 20.0F);
+    EXPECT_EQ(sanitizedTextFontSize(std::numeric_limits<float>::quiet_NaN()), kTextSize);
 }
 
 TEST(CanvasControllerTest, TextBoxesKeepPaintersOrderInBatches) {
@@ -1761,6 +1961,35 @@ TEST(CanvasControllerTest, InsertImageFitsTheViewAsOneSelectedElement) {
     ASSERT_OK(f.port.undo());
     EXPECT_EQ(f.elements().size(), 1U);
     EXPECT_FALSE(f.controller.insertImage(asset, {0, 10}).has_value());
+}
+
+TEST(CanvasControllerTest, InsertImageOnAnotherPageUsesTheViewItWasLeftWith) {
+    // 1.2-IMP-01: an import finishing after the user moved on goes to its page, placed as
+    // insertImage places it in that page's remembered view; the shown page, its view and
+    // the selection stay.
+    CanvasFixture f;
+    const core::SectionId section = f.doc.workspace.findPage(f.page)->section;
+    const core::PageId other = f.doc.addPage(section, "Other");
+    const core::AssetId asset{f.doc.ids.next()};
+    const core::DVec2 center = f.controller.camera().center();
+    const std::size_t steps = f.doc.editor.history().undoCount();
+    // Left at (1000, 1000), zoom 2: 400 × 300 world units of the 800 × 600 viewport.
+    ASSERT_OK(f.controller.insertImageOnPage(other, {1000, 1000}, 2.0, asset, {300, 100}));
+    EXPECT_EQ(f.doc.editor.history().undoCount(), steps + 1);
+    EXPECT_TRUE(f.elements().empty()); // nothing on the shown page
+    const auto onOther = f.doc.workspace.elementsOf(f.doc.firstLayer(other));
+    ASSERT_EQ(onOther.size(), 1U);
+    const document::Element& image = f.element(onOther[0]);
+    EXPECT_EQ(std::get<document::Image>(image.payload).size, (core::Vec2{240, 80})); // 60 %
+    EXPECT_EQ(image.transform.position, (core::DVec2{880, 960}));                    // centred
+    EXPECT_TRUE(f.controller.selection().empty());
+    EXPECT_EQ(f.controller.camera().center(), center);
+    EXPECT_EQ(f.controller.camera().zoom(), 1.0);
+    // A page that is gone meanwhile, or an empty size: nothing is inserted.
+    ASSERT_OK(f.port.execute(*document::commands::deletePage(f.doc.workspace, other)));
+    EXPECT_FALSE(
+        f.controller.insertImageOnPage(other, {1000, 1000}, 2.0, asset, {300, 100}).has_value());
+    EXPECT_FALSE(f.controller.insertImageOnPage(f.page, {0, 0}, 1.0, asset, {0, 10}).has_value());
 }
 
 // ---------------------------------------------------------------------------- connectors

@@ -243,6 +243,9 @@ How the boundaries are enforced (implemented in Phase 1):
 * Defines the ports it needs from the outside world: `Executor` / `MainThreadDispatcher`,
   `PageExporter`, `ImageDecoder`, `DocumentInspector` (PDF page count/size).
 * This is where threading lives (see §10).
+* Command console language (1.2, D54): `CommandRegistry`, `tokenizeCommandLine`,
+  `CommandHistory`; PDF text matching and its bounded cache (D55): `findInPdfText`,
+  `pdfSourcesOf`, `PdfTextCache` — all Qt-free, tested in every CI configuration (§3.6).
 
 ### `platform` — Qt and OS adapters
 * Implements ports with Qt: `QtExecutor` (QThreadPool), `QtMainThreadDispatcher`,
@@ -427,6 +430,49 @@ MainWindow (ui)                      owns the open workspace; recreated per work
   repaint the canvas (focus changes no longer repaint the `QOpenGLWidget`); opening a
   page is one frame. Measured in ROADMAP.md, Phase 5.
 
+### 3.6 Command console *(1.2, D54/D55)*
+
+A dock panel in which StudyBoard commands are typed ([COMMAND_CONSOLE.md](COMMAND_CONSOLE.md)).
+It is one more UI layer over the operations the window already has; it adds no mutation
+path, no persistence and no process of its own.
+
+```mermaid
+flowchart TD
+    console["CommandConsole (ui)<br/>output, command line, history"] --> registry["CommandRegistry (application, Qt-free)<br/>tokenizer, lookup, arguments, help, completion"]
+    registry --> handlers["command handlers<br/>MainWindowConsole.cpp (ui)"]
+    handlers --> services["application services<br/>search, WorkspaceStructure, PageNavigator"]
+    handlers --> window["window operations<br/>importPdfFile, writePagesTo, undo, redo, openPage"]
+    services --> session["WorkspaceSession"]
+    window --> session
+    session --> patches["Command → Patch → Workspace → persistence"]
+```
+
+* **Language.** `application::tokenizeCommandLine` splits a line into words and quoted
+  words; `CommandRegistry::match` finds the longest registered name made of the leading
+  unquoted words and binds typed arguments (required, optional, rest-of-line text).
+  Nothing else exists: no variables, pipes, substitutions or OS commands (D54).
+* **Commands are thin.** Each handler calls what the menus call: `application::search`,
+  `MainWindow::importPdfFile` (File ▸ Import PDF without the dialog), `writePagesTo` (File ▸
+  Export after the dialog), `undo`/`redo`, `openPage`. A console import and a menu import
+  produce the same section (tested). Read-only workspaces refuse edits as the menus do.
+* **State.** The registry, the panel, its bounded output (1 000 lines) and in-session
+  history (100 commands) belong to the window and are built on first use; nothing is
+  persisted.
+* **PDF content search** (`pdf search`, D55) reads PDF text only through the PDF worker:
+
+```mermaid
+flowchart TD
+    console["Command console"] --> service["PDF search<br/>MainWindow::startPdfSearch"]
+    service -->|"GUI thread: sections, stored files, job ids"| pool["window pool thread"]
+    pool -->|"cache miss"| client["PDF client<br/>extractPdfTextInWorker"]
+    client --> worker["PDF worker process<br/>studyapp --pdf-worker"]
+    worker -->|"text reply, checked"| cache["PdfTextCache<br/>per workspace, 32 MiB"]
+    pool -->|"cache hit"| cache
+    cache --> match["application::findInPdfText"]
+    match -->|"GUI thread"| results["results in the console"]
+    results --> navigation["go n or a click<br/>openPage"]
+```
+
 ## 4. Directory structure
 
 ```
@@ -588,6 +634,8 @@ Worker threads were added only where a measurement showed a stall, each owning p
 | PDF tile rendering | `SessionDocumentRasterizer`: one long-lived thread that keeps the open documents | Phase 8 (D44) |
 | Mesh building and batch merging | Short-lived `std::thread`s for one frame's work, joined before the frame continues | Phase 9 (D47) |
 | Import copy + hash (staging) | The window's `QThreadPool`; closing a workspace waits for it | Phase 9 (D48) |
+| PDF inspection at import | A separate process, `studyapp --pdf-worker`, one per import, supervised from the import's pool thread; killed on timeout, crash or workspace close | 1.2 (D53) |
+| PDF text for `pdf search` | The same worker process, one per PDF not yet in the workspace's text cache, started one after another from a thread of the window's pool; matching on that thread; killed on timeout, crash, `cancel`, a newer search or workspace close | 1.2 (D55) |
 
 The persistence writer thread and reader pool below were not needed for 1.0. `core`, `document` and `study` contain no threading
 primitives and no locks. The only process-wide state, the log sink, is installed once at
@@ -854,7 +902,7 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D23 | Neutral design tokens (black/white/grays, functional status colours only) as `core::Color`, stylesheet generated from one template | Hand-written light/dark QSS with a blue accent (Phase 1) | Product direction: calm, canvas-first UI; one source of truth; reusable by the Qt-free canvas later |
 | D24 | App icon assets generated from a committed master by a dev-only script; Windows `.rc` only on WIN32 | Loading the source image at runtime; generating icons at build time | No build dependency on Pillow or on paths outside the repo; exact artwork preserved |
 | D25 | Phase 3 keeps the single in-memory `Workspace` (whole workspace loaded at open, one undo stack); the catalog/page split and per-page undo scoping are deferred until page-load cost is measured (with the canvas, Phase 4+) | Split in Phase 3 as the roadmap planned | The split changes ownership and undo semantics without a consumer that needs it yet; the persistence API is already per page (`PageStore::load(PageId)`, patch writes per record) so the split stays local to `document`/`application` |
-| D26 | `text_box.content` JSON is built and read with SQLite's built-in JSON functions; content v1 = `{"v":1,"text":…}` (plain text); rich text will be v2 | nlohmann/json now | Phase 2 text is plain; no new dependency until the rich-text model (Phase 6) needs structured parsing in C++ |
+| D26 | `text_box.content` JSON is built and read with SQLite's built-in JSON functions; content v1 = `{"v":1,"text":…}` (plain text; since 1.2 an optional `"size"` font size, still v1); rich text will be v2 | nlohmann/json now | Phase 2 text is plain; no new dependency until the rich-text model (Phase 6) needs structured parsing in C++ |
 | D27 | Load = decode rows strictly, then apply one creating `Patch` to an empty `Workspace` + `validate()` | A separate persistence-side validator; constructing `Workspace` internals from rows | Reuses every document invariant unchanged; SQL code never mutates `Workspace` internals |
 | D28 | Search index tables are created by schema v1 but maintained only from Phase 8 (`rebuildSearchIndex()` on first use) | Maintain FTS rows from Phase 3 | No consumer yet; the rebuild path is needed anyway |
 | D29 | Workspace lock = `QLockFile` in `platform` behind the `application::WorkspaceLocker` port; `QLockFile`'s metadata format | OS locks in `persistence` (`LockFileEx`/`flock`); custom metadata file | Keeps OS/Qt code out of `persistence`; `QLockFile` holds a real OS-level lock and records pid/host/app; version and session UUID were not worth a second file |
@@ -879,7 +927,10 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D49 | Automatic backups on close (at most daily, after changes) with 7 daily + 4 weekly retention; the application never collects asset garbage, so snapshots stay complete; Save a Copy writes the in-memory workspace to a new one when writes fail | Scheduled backups while editing; GC honouring backups; backups including assets | A snapshot at close costs one `VACUUM INTO` when nobody waits for the window; keeping assets is simpler and safer than tracking references from backups. Closes the Phase 3 audit item P3-01 |
 | D50 | Packaging (Phase 9): CPack (NSIS + ZIP, DragNDrop DMG, TGZ) plus an AppImage via linuxdeploy, built on the oldest supported Linux (Ubuntu 22.04) with GCC's runtime bundled; every package is smoke-tested on a clean runner with `studyapp --self-test`; signing and notarisation are CPack hooks and workflow steps that run only when certificates are configured | Per-platform installer scripts; Flatpak; signing required for every build | One CMake description for all platforms; the self-test checks exactly what a clean machine lacks (plugins, fonts, Qt PDF, printing) instead of only "it starts"; builds stay reproducible without secrets |
 | D51 | Export draws ink as stroked polylines (Phase 9): runs of points whose width varies by ≤ 5 % become one round-capped, round-joined polyline at the run's mean width; translucent ink of varying width keeps the triangle union so overlaps are not darker; dotted paper is one dashed line per row | Triangles for everything (D45, Phase 8); outlines computed by path union | PDF 4× faster and 3× smaller on a 10 000-stroke page (a 1 000-stroke A4 page: 0.29 s, 1.1 MB); tested against the canvas's own tessellation pixel by pixel (≤ 0.5 % of ink pixels off by more than one pixel) |
-| D52 | Messages between processes go through IPCFileLab, the author's file-backed single-slot channel, ported from Windows-only C++ to portable C11 for this purpose (fetched pinned by commit and SHA-256). A Qt-free module `ipc` wraps its C API in `ipc::FileChannel` (RAII, `std::span`, `core::Result`; a receive timeout is `std::nullopt`, a send timeout `Conflict`); paths are passed as UTF-8. No module depends on `ipc` yet | Qt local sockets (`QLocalSocket`) in `platform`; shared memory; pipes managed per platform | StudyBoard is one process today, so there is no production consumer. The intended first one is a helper process that parses untrusted imported files (PDFs) in isolation; the channel's at-most-once, crash-recovering single slot fits one request at a time. Keeping it Qt-free and outside the document, canvas, rendering and persistence paths keeps it replaceable |
+| D52 | Messages between processes go through IPCFileLab, the author's file-backed single-slot channel, ported from Windows-only C++ to portable C11 for this purpose (fetched pinned by commit and SHA-256). A Qt-free module `ipc` wraps its C API in `ipc::FileChannel` (RAII, `std::span`, `core::Result`; a receive timeout is `std::nullopt`, a send timeout `Conflict`); paths are passed as UTF-8. First consumer (1.2): the PDF inspection worker, D53 | Qt local sockets (`QLocalSocket`) in `platform`; shared memory; pipes managed per platform | StudyBoard is one process today, so there is no production consumer. The intended first one is a helper process that parses untrusted imported files (PDFs) in isolation; the channel's at-most-once, crash-recovering single slot fits one request at a time. Keeping it Qt-free and outside the document, canvas, rendering and persistence paths keeps it replaceable |
+| D53 | Isolated PDF inspection (1.2; [PDF_WORKER.md](PDF_WORKER.md)): an imported PDF is staged first, then its page count and sizes are read by `studyapp --pdf-worker <job-directory>` — the same executable in a window-less mode — one process per import, supervised from the import's pool thread with blocking calls (the GUI thread never waits); each job has its own directory in the system temp with two one-way `ipc::FileChannel`s (request, reply), a `core::JobId` (UUIDv7, never persisted) in both messages, a fixed binary protocol without free text, a 30 s wall-clock deadline, kill on timeout, crash, protocol error or workspace close (a per-workspace stop flag), no retry, and cleanup of the job directory on every terminal path; StudyBoard re-validates the reply with the existing limits. Tile rendering stays in-process | A second worker executable; a persistent worker or pool; one shared or bidirectional channel; PDF bytes over IPC; automatic retries; a generic job framework; out-of-process tile rendering | A PDF that crashes or hangs PDFium during import fails that import instead of ending StudyBoard, without a new binary, signature or package change. Per-job channels make correlation and cleanup trivial; the deadline and kill bound waits that IPCFileLab's timeouts do not (lock waits). Not a sandbox: same user, same rights; rendering imported PDFs is not isolated until a measurement justifies it |
+| D54 | Command console (1.2-CMD-01; [COMMAND_CONSOLE.md](COMMAND_CONSOLE.md)): a dock panel whose lines are matched against a registry of named commands with typed arguments (`application::CommandRegistry`, Qt-free: tokenizer, lookup, aliases, help, completion, bounded history). Handlers call the window's existing operations and application services, so edits keep the one mutation path and stay undoable; output and history are bounded and never persisted; nothing is built until the console is first opened | A scripting language (Lua, JS); a shell or terminal widget; QProcess for commands; a giant if/else parser; a command palette over QActions only | Power users get a typed, keyboard-only way to reach existing operations and PDF content search without a second mutation path or any way to run programs. A registry keeps commands declarative (help, usage and completion come from the same entry) and makes future batch commands one entry each |
+| D55 | PDF content search through the PDF worker (1.2-CMD-01; [PDF_WORKER.md §23](PDF_WORKER.md#23-text-extraction)): a second request kind (`2`, extract text) and a text reply (`SBPT`: per-page UTF-8, ≤ 64 KiB per page, ≤ 8 MiB in all, validated) in the D53 protocol, run by the same client and worker; the text is cached per open workspace by asset id (assets are content-addressed, so entries never go stale) in a bounded LRU (32 MiB, 64 PDFs) and matched in-process by Qt-free code (case-folded, whitespace runs as one space) on a pool thread | Reading text with QtPdf in StudyBoard's process; a persistent text index in the database (FTS5); searching inside the worker per query; an unbounded cache; QPdfSearchModel | Searching PDF text parses untrusted PDFs, which D53 keeps out of the main process; one extraction per PDF and session keeps searches fast (a 2 000-page PDF: 0.48 s once, then 5 ms per search) without new schema, migration or persistence; a persisted index is a possible follow-up (1.2-PDF-03) once measurements on large libraries call for it |
 | D41 | Copy/paste of canvas elements uses a clipboard inside the workspace's `CanvasController` (copies of the `Element` values); paste is one `commands::pasteElements` patch with new ids | The system clipboard with a serialized element format | Elements reference workspace-local assets and elements; a per-workspace clipboard guarantees every pasted image's asset exists in the target (the `image.asset_id` foreign key) and needs no format or import path yet. Pasting into another workspace or application is deferred (it needs asset import alongside the elements) |
 
 New significant decisions should be appended here (or moved to `docs/adr/` once the list

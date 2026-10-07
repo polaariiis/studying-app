@@ -244,8 +244,9 @@ void CanvasController::dispatch(detail::Tool& tool, const PointerEvent& event) {
         .ids = *ids_,
         .commit = [this](core::Result<document::Command> command) { commit(std::move(command)); },
         .beginTextEdit = [this](TextEdit edit) { beginTextEdit(std::move(edit)); },
-        .textHeight = [this](std::string_view text,
-                             float width) { return textHeightFor(text, width); },
+        .textHeight = [this](std::string_view text, float width,
+                             float fontSize) { return textHeightFor(text, width, fontSize); },
+        .textSize = toolSettings_.textSize,
     };
     tool.onPointer(event, context);
 }
@@ -385,7 +386,9 @@ void CanvasController::cancelGesture() {
             .ids = *ids_,
             .commit = [](core::Result<document::Command>) {},
             .beginTextEdit = [](TextEdit) {},
-            .textHeight = [](std::string_view text, float) { return fallbackTextHeight(text); },
+            .textHeight = [](std::string_view text, float,
+                             float fontSize) { return fallbackTextHeight(text, fontSize); },
+            .textSize = toolSettings_.textSize,
         };
         gestureTool_->cancel(context);
         gestureTool_ = nullptr;
@@ -682,8 +685,39 @@ void CanvasController::cancelTextEdit() {
     endTextEdit();
 }
 
-float CanvasController::textHeightFor(std::string_view text, float width) const {
-    return textLayout_ != nullptr ? textLayout_->heightFor(text, width) : fallbackTextHeight(text);
+float CanvasController::textHeightFor(std::string_view text, float width, float fontSize) const {
+    return textLayout_ != nullptr ? textLayout_->heightFor(text, width, fontSize)
+                                  : fallbackTextHeight(text, fontSize);
+}
+
+core::Result<void> CanvasController::applyTextFontSize(float fontSize) {
+    const float size = sanitizedTextFontSize(fontSize);
+    if (textEdit_) {
+        if (textEdit_->fontSize != size) {
+            textEdit_->fontSize = size; // the UI's editor follows it (CanvasWidget)
+            requestRedraw();
+        }
+        return {};
+    }
+    const document::Workspace& workspace = document_->workspace();
+    std::vector<document::commands::TextFontSizeChange> changes;
+    for (const core::ElementId id : selection_.ids()) {
+        const document::Element* element = workspace.findElement(id);
+        const auto* box =
+            element != nullptr ? std::get_if<document::TextBox>(&element->payload) : nullptr;
+        if (box == nullptr || box->fontSize == size) {
+            continue;
+        }
+        changes.push_back({.element = id,
+                           .fontSize = size,
+                           .size = {box->size.x, textHeightFor(box->text, box->size.x, size)}});
+    }
+    if (changes.empty()) {
+        return {};
+    }
+    lastError_.reset();
+    commit(document::commands::setTextFontSize(workspace, changes));
+    return lastError_ ? core::Result<void>{tl::unexpected(*lastError_)} : core::Result<void>{};
 }
 
 core::Result<void> CanvasController::finishTextEdit(std::string text) {
@@ -701,10 +735,11 @@ core::Result<void> CanvasController::finishTextEdit(std::string text) {
         if (workspace.findElement(*edit.element) == nullptr) {
             return {};
         }
-        command = blank
-                      ? document::commands::deleteElement(workspace, *edit.element)
-                      : document::commands::editText(workspace, *edit.element, text,
-                                                     {edit.width, textHeightFor(text, edit.width)});
+        command = blank ? document::commands::deleteElement(workspace, *edit.element)
+                        : document::commands::editText(
+                              workspace, *edit.element, text,
+                              {edit.width, textHeightFor(text, edit.width, edit.fontSize)},
+                              edit.fontSize);
     } else {
         if (blank) {
             return {}; // an empty new box is not created
@@ -714,11 +749,13 @@ core::Result<void> CanvasController::finishTextEdit(std::string text) {
         if (!layer) {
             return {};
         }
-        const core::Vec2 size{edit.width, textHeightFor(text, edit.width)};
+        const core::Vec2 size{edit.width, textHeightFor(text, edit.width, edit.fontSize)};
         auto created = document::commands::createElement(
             workspace, *layer,
             {.transform = {.position = edit.position},
-             .payload = document::TextBox{.size = size, .text = std::move(text)}},
+             .payload = document::TextBox{.size = size,
+                                          .text = std::move(text),
+                                          .fontSize = edit.fontSize}},
             *ids_);
         if (!created) {
             return tl::unexpected(created.error());
@@ -744,7 +781,10 @@ render::TextureHandle CanvasController::textTexture(const document::Element& ele
     const float ppu = std::min(pixelsPerUnit, cap);
     auto [it, inserted] = textTextures_.try_emplace(element.id);
     TextTexture& cached = it->second;
-    const bool changed = inserted || cached.version != version || !cached.texture.isValid();
+    // The size is compared too: a resize preview has the element's content version but
+    // another size, and its text wraps differently.
+    const bool changed = inserted || cached.version != version || cached.size != box.size ||
+                         cached.fontSize != box.fontSize || !cached.texture.isValid();
     bool refine = !changed && cached.pixelsPerUnit < ppu * 0.999F;
     const double cost = static_cast<double>(box.size.x) * static_cast<double>(box.size.y) *
                         static_cast<double>(ppu) * static_cast<double>(ppu);
@@ -756,8 +796,11 @@ render::TextureHandle CanvasController::textTexture(const document::Element& ele
         if (cached.texture.isValid()) {
             renderer.destroyTexture(cached.texture);
         }
-        cached.texture = renderer.createTexture(textLayout_->rasterize(box.text, box.size, ppu));
+        cached.texture =
+            renderer.createTexture(textLayout_->rasterize(box.text, box.size, box.fontSize, ppu));
         cached.version = version;
+        cached.size = box.size;
+        cached.fontSize = box.fontSize;
         cached.pixelsPerUnit = ppu;
         ++textRasterized_;
         if (refine) {
@@ -882,6 +925,28 @@ void CanvasController::trimImageTextures(render::Renderer& renderer) {
     }
 }
 
+namespace {
+
+/// The image element insertImage makes for `asset` in `view` on `layer`: fitted within 60 %
+/// of the view (never enlarged), centred in it.
+core::Result<document::commands::Created<core::ElementId>>
+imageInView(const document::Workspace& workspace, core::LayerId layer, const core::DRect& view,
+            core::AssetId asset, const core::Vec2& pixelSize, core::IdGenerator& ids) {
+    const double fit = std::min({1.0, 0.6 * view.width() / static_cast<double>(pixelSize.x),
+                                 0.6 * view.height() / static_cast<double>(pixelSize.y)});
+    const core::Vec2 size{static_cast<float>(pixelSize.x * fit),
+                          static_cast<float>(pixelSize.y * fit)};
+    const core::DVec2 topLeft =
+        view.center() - core::DVec2{static_cast<double>(size.x), static_cast<double>(size.y)} * 0.5;
+    return document::commands::createElement(
+        workspace, layer,
+        {.transform = {.position = topLeft},
+         .payload = document::Image{.asset = asset, .size = size}},
+        ids);
+}
+
+} // namespace
+
 core::Result<void> CanvasController::insertImage(core::AssetId asset, const core::Vec2& pixelSize) {
     const auto page = scene_.page();
     const document::Workspace& workspace = document_->workspace();
@@ -889,18 +954,8 @@ core::Result<void> CanvasController::insertImage(core::AssetId asset, const core
     if (!layer || !(pixelSize.x > 0.0F) || !(pixelSize.y > 0.0F)) {
         return core::makeError(core::ErrorCode::InvalidArgument, "nowhere to insert the image");
     }
-    const core::DRect view = camera_.visibleWorldRect();
-    const double fit = std::min({1.0, 0.6 * view.width() / static_cast<double>(pixelSize.x),
-                                 0.6 * view.height() / static_cast<double>(pixelSize.y)});
-    const core::Vec2 size{static_cast<float>(pixelSize.x * fit),
-                          static_cast<float>(pixelSize.y * fit)};
-    const core::DVec2 topLeft =
-        view.center() - core::DVec2{static_cast<double>(size.x), static_cast<double>(size.y)} * 0.5;
-    auto created = document::commands::createElement(
-        workspace, *layer,
-        {.transform = {.position = topLeft},
-         .payload = document::Image{.asset = asset, .size = size}},
-        *ids_);
+    auto created =
+        imageInView(workspace, *layer, camera_.visibleWorldRect(), asset, pixelSize, *ids_);
     if (!created) {
         return tl::unexpected(created.error());
     }
@@ -912,6 +967,26 @@ core::Result<void> CanvasController::insertImage(core::AssetId asset, const core
     selection_.set({id});
     requestRedraw();
     return {};
+}
+
+core::Result<void> CanvasController::insertImageOnPage(core::PageId page, const core::DVec2& center,
+                                                       double zoom, core::AssetId asset,
+                                                       const core::Vec2& pixelSize) {
+    const document::Workspace& workspace = document_->workspace();
+    const auto layer =
+        workspace.findPage(page) != nullptr ? detail::targetLayer(workspace, page) : std::nullopt;
+    if (!layer || !(pixelSize.x > 0.0F) || !(pixelSize.y > 0.0F)) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "nowhere to insert the image");
+    }
+    Camera left = camera_; // the current viewport, at the view the page was left with
+    left.setZoom(zoom);
+    left.setCenter(center);
+    auto created = imageInView(workspace, *layer, left.visibleWorldRect(), asset, pixelSize, *ids_);
+    if (!created) {
+        return tl::unexpected(created.error());
+    }
+    commit(std::move(created->command));
+    return lastError_ ? core::Result<void>{tl::unexpected(*lastError_)} : core::Result<void>{};
 }
 
 // ---------------------------------------------------------------------------- documents
@@ -1171,8 +1246,9 @@ render::RenderFrame CanvasController::buildFrame(render::Renderer& renderer) {
             return;
         }
         if (preview_->resized && preview_->resized->id == id) {
-            // Being resized: drawn at its new geometry. Text boxes and images stretch their
-            // texture (below); other kinds are tessellated for this frame.
+            // Being resized: drawn at its new geometry. Images stretch their texture and text
+            // boxes are laid out for their new size (below); other kinds are tessellated for
+            // this frame.
             element = &*preview_->resized;
             if (!std::holds_alternative<document::TextBox>(element->payload) &&
                 !std::holds_alternative<document::Image>(element->payload)) {

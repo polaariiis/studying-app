@@ -500,7 +500,8 @@ Status: **implemented** (see the Phase 8 report; decisions D43–D46).
 6. ✅ Bundles (D46): Export Workspace / Export Notebook (`.studybundle`), Import Notebook (one
    undo step, ids remapped on conflict), Open Bundle as Workspace; hostile bundles refused.
 
-Not in Phase 8: PDF text extraction/search inside PDFs, PDF outlines/links, rotated PDF
+Not in Phase 8: PDF text extraction/search inside PDFs (added in 1.2: `pdf search`,
+1.2-CMD-01, below), PDF outlines/links, rotated PDF
 pages (`/Rotate` is rendered as QtPdf reports the page), vector PDF pages in exports (drawn
 as 200 dpi images), zip64 bundles (> 4 GiB), importing a bundle's planner data (tasks,
 courses) — notebook bundles carry notebooks and their tags only.
@@ -564,12 +565,70 @@ shown — `--self-test` reports it; the Linux launcher compares `GLIBCXX` versio
 `CXXABI`/`GCC_` versions, which rise with them); the AppImage's `AppRun` is the launcher,
 so linuxdeploy-plugin-qt's optional GTK theme hint is not applied.
 
+## Version 1.2 (in development, `dev/1.2`)
+
+Not released. The detailed history is on `dev/1.2`; `main` receives its state as single
+"Integrate …" commits (branch model: [RELEASE.md](RELEASE.md#branches-and-tags)). The latest
+stable release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`).
+
+Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-CI-01,
+1.2-REL-01, 1.2-TXT-01, 1.2-TXT-02, 1.2-IMP-01, 1.2-PDF-01, 1.2-PDF-02, 1.2-PERF-01,
+1.2-REL-02); this section tracks tasks from 1.2-CMD-01 on.
+
+### 1.2-CMD-01 — Command console and PDF content search ✅
+
+* **Status:** done (feature branch `feature/1.2-CMD-01-command-console`, merged into
+  `dev/1.2`).
+* **Scope:** a compact command console panel (View ▸ Command Console, Ctrl+Shift+C) with a
+  registry of typed commands, help, autocomplete and in-session history; navigation,
+  StudyBoard search, workspace information, PDF import, page/section export, undo/redo and
+  diagnostics as commands; `pdf search "<text>"` over the text inside imported PDFs, with
+  results linking to their pages. No scripting, no OS commands.
+* **Implementation:** `application::CommandRegistry` and friends (Qt-free language, D54);
+  `ui::CommandConsole` (the panel) and `MainWindowConsole.cpp` (the dock and the commands,
+  calling the window's existing operations); PDF text through the D53 worker — request kind
+  2 and the `SBPT` text reply (PDF_WORKER.md §23), `runPdfTextJob` /
+  `extractPdfTextInWorker` in the existing client — matched by `application::findInPdfText`
+  with a bounded per-workspace `PdfTextCache` (D55). File ▸ Import PDF and File ▸ Export
+  share their code with the console (`importPdfFile`, `writePagesTo`).
+* **Tests:** docs/TESTING.md, "1.2 additions (command console)": tokenizer, registry,
+  running lines, history; PDF text matching, sources, cache; the text protocol; text
+  extraction by the real `studyapp --pdf-worker` from real PDFs, and every worker failure;
+  the console end to end in the shell (console and menu imports equal, undo/redo,
+  persistence across reopen, exports, failures reported in the console).
+* **Documentation:** [COMMAND_CONSOLE.md](COMMAND_CONSOLE.md) (new); PDF_WORKER.md §23;
+  ARCHITECTURE.md §3.6, §10.1, D54, D55; TESTING.md; PERFORMANCE.md §3.14; BENCHMARKS.md;
+  README.
+* **Measured:** reading PDF text through the worker 71 ms for 200 pages, 0.48 s for 2 000;
+  a search of cached text ≤ 5 ms for 2 000 pages (BENCHMARKS.md).
+* **Known limitations:** matches are not highlighted on the page (PDF pages are drawn as
+  images); no OCR for scanned PDFs; the text cache lives for the workspace session only;
+  arguments (paths, titles) are not autocompleted; the history is not kept between
+  sessions; PDF text beyond 64 KiB per page or 8 MiB per PDF is not searched.
+* **Follow-ups:** 1.2-CMD-02, 1.2-CMD-03, 1.2-PDF-03 (below).
+
+### Follow-ups recorded by 1.2-CMD-01 (not started)
+
+| Task | What | Why not now |
+|---|---|---|
+| 1.2-CMD-02 | Highlight PDF search matches on the page (character boxes from the worker, drawn as an overlay) | Needs per-character geometry in the protocol and a canvas overlay; navigation to the page already works |
+| 1.2-CMD-03 | First batch commands (e.g. `export notebook pdf <folder>`) with progress and `cancel`, off the GUI thread | Exports run on the GUI thread today (with a progress dialog); a batch command should not block the window for many sections |
+| 1.2-PDF-03 | Persisted PDF text index (e.g. FTS5 rows per PDF page, filled through the worker) so the first search of a session is instant for large libraries | Needs a schema migration and an indexing strategy; the session cache is enough at the measured sizes |
+
 ## Later / candidate features
 
 Recurrence & reminders · study session timer & statistics · handwriting recognition and
 OCR for search · shape recognition (snap hand-drawn shapes) · audio recording synced to
 ink · LaTeX/math · QRhi backend (Metal/Vulkan/D3D) · sync between devices (op log) ·
 Qt Quick tablet UI · spaced-repetition flashcards from notes.
+
+**Measured maintenance follow-ups (1.2-PERF-01, V-07; docs/PERFORMANCE.md §3.11)** — recorded,
+not implemented: (1) run Check Workspace, bundle export/open/import and Save a Copy off the
+GUI thread with progress (they freeze the window for 5–21 s per GB of assets); (2) a faster
+SHA-256 and CRC-32 (159 / 287 MiB/s today; every one of those operations is CPU-bound on
+them); (3) bundles over 4 GiB: refuse before writing (today the export fails only after
+the attempt, 24 s at ~5 GB) or write zip64. Backups and the close-time backup need nothing
+(≈ 1 s at 5 GB).
 
 ---
 

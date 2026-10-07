@@ -10,6 +10,7 @@
 #include <studyapp/document/Workspace.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -201,11 +202,28 @@ pasteElements(const Workspace& workspace, core::LayerId layer, std::span<const E
                                                      core::ElementId connector, ConnectorEnd start,
                                                      ConnectorEnd end);
 
-/// Replaces a text box's text and size as one undoable edit (the text tool, docs/CANVAS.md
-/// §9). Unchanged text and size give an empty (no-op) command. Errors: NotFound for an
-/// unknown id, InvalidArgument for an element that is not a text box.
+/// Replaces a text box's text and size — and its font size, when `fontSize` is given (a size
+/// chosen while the box was edited) — as one undoable edit (the text tool, docs/CANVAS.md
+/// §9). Unchanged values give an empty (no-op) command. Errors: NotFound for an unknown id,
+/// InvalidArgument for an element that is not a text box (the workspace checks the values).
 [[nodiscard]] core::Result<Command> editText(const Workspace& workspace, core::ElementId element,
-                                             std::string text, core::Vec2 size);
+                                             std::string text, core::Vec2 size,
+                                             std::optional<float> fontSize = std::nullopt);
+
+/// A text box's new font size and the box size laid out for it (the caller measures the
+/// height; the width normally stays).
+struct TextFontSizeChange {
+    core::ElementId element;
+    float fontSize = kDefaultTextFontSize;
+    core::Vec2 size{};
+};
+
+/// Sets the font size of text boxes as one undoable edit ("Change text size", 1.2); their
+/// text and position stay. Boxes already at their values are left out; none left gives an
+/// empty command. Errors: NotFound for an unknown id, InvalidArgument for an element that is
+/// not a text box (the workspace checks the values when the patch is applied).
+[[nodiscard]] core::Result<Command> setTextFontSize(const Workspace& workspace,
+                                                    std::span<const TextFontSizeChange> changes);
 
 /// What is left of a stroke after partial erasing: runs of its points (element-local, as
 /// stored). No pieces: the stroke is erased completely.

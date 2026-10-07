@@ -379,6 +379,59 @@ TEST_F(CanvasSessionTest, ResizedElementsSurviveReopen) {
     EXPECT_TRUE(session->workspace() == before);
 }
 
+TEST_F(CanvasSessionTest, ResizedTextBoxesSurviveReopen) {
+    // 1.2-TXT-01: a text box resized by its width handle keeps its size and text.
+    controller->setTool(canvas::ToolKind::Text);
+    pointer(canvas::PointerPhase::Down, {100, 250});
+    pointer(canvas::PointerPhase::Up, {100, 250});
+    ASSERT_OK(controller->finishTextEdit("a note that wraps over several lines"));
+    ASSERT_EQ(inkIds().size(), 1U);
+    const document::Element before = *session->workspace().findElement(inkIds()[0]);
+    const auto& box = std::get<document::TextBox>(before.payload);
+    const core::DVec2 handle =
+        before.transform.position +
+        core::DVec2{static_cast<double>(box.size.x), static_cast<double>(box.size.y) / 2.0};
+    controller->setTool(canvas::ToolKind::Select);
+    pointer(canvas::PointerPhase::Down, before.transform.position + core::DVec2{10, 10});
+    pointer(canvas::PointerPhase::Up, before.transform.position + core::DVec2{10, 10});
+    drag(handle, handle + core::DVec2{-80, 0}); // the right handle, narrower
+    const auto& resized =
+        std::get<document::TextBox>(session->workspace().findElement(inkIds()[0])->payload);
+    EXPECT_FLOAT_EQ(resized.size.x, box.size.x - 80.0F);
+    EXPECT_EQ(resized.text, "a note that wraps over several lines");
+    const document::Workspace saved = session->workspace();
+    reopen();
+    EXPECT_TRUE(session->workspace() == saved);
+}
+
+TEST_F(CanvasSessionTest, TextFontSizesSurviveReopen) {
+    // 1.2-TXT-02: a size chosen for new text, and a size change of an existing box.
+    controller->setTool(canvas::ToolKind::Text);
+    pointer(canvas::PointerPhase::Down, {100, 250});
+    pointer(canvas::PointerPhase::Up, {100, 250});
+    ASSERT_OK(controller->applyTextFontSize(40)); // while editing
+    ASSERT_OK(controller->finishTextEdit("large heading"));
+    pointer(canvas::PointerPhase::Down, {100, 500});
+    pointer(canvas::PointerPhase::Up, {100, 500});
+    ASSERT_OK(controller->finishTextEdit("default size"));
+    ASSERT_EQ(inkIds().size(), 2U);
+    const auto sizeOf = [&](core::ElementId id) {
+        return std::get<document::TextBox>(session->workspace().findElement(id)->payload).fontSize;
+    };
+    EXPECT_EQ(sizeOf(inkIds()[0]), 40.0F);
+    EXPECT_EQ(sizeOf(inkIds()[1]), canvas::kTextSize);
+    controller->setTool(canvas::ToolKind::Select);
+    pointer(canvas::PointerPhase::Down, {110, 510});
+    pointer(canvas::PointerPhase::Up, {110, 510});
+    ASSERT_OK(controller->applyTextFontSize(12));
+    EXPECT_EQ(sizeOf(inkIds()[1]), 12.0F);
+    const document::Workspace saved = session->workspace();
+    reopen();
+    EXPECT_TRUE(session->workspace() == saved);
+    EXPECT_EQ(sizeOf(inkIds()[0]), 40.0F);
+    EXPECT_EQ(sizeOf(inkIds()[1]), 12.0F);
+}
+
 TEST_F(CanvasSessionTest, PastedMixedSelectionSurvivesReopen) {
     // Phase 6, step 9: stroke, shape, text, image and a connector between the shape and the
     // image, copied and pasted as one command; the copies reference the same stored asset.

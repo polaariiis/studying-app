@@ -914,7 +914,7 @@ Result<Command> splitStrokes(const Workspace& workspace, std::span<const StrokeP
 }
 
 Result<Command> editText(const Workspace& workspace, core::ElementId element, std::string text,
-                         core::Vec2 size) {
+                         core::Vec2 size, std::optional<float> fontSize) {
     const Element* current = workspace.findElement(element);
     if (current == nullptr) {
         return tl::unexpected(notFound("element", element));
@@ -924,12 +924,43 @@ Result<Command> editText(const Workspace& workspace, core::ElementId element, st
         return makeError(ErrorCode::InvalidArgument,
                          "element " + element.toString() + " is not a text box");
     }
-    if (box->text == text && box->size == size) {
+    const TextBox edited{
+        .size = size, .text = std::move(text), .fontSize = fontSize.value_or(box->fontSize)};
+    if (edited == *box) {
         return Command{"Edit text", Patch{}};
     }
     Element after = *current;
-    after.payload = TextBox{.size = size, .text = std::move(text)};
+    after.payload = edited;
     return makeCommand("Edit text", {updated(*current, std::move(after))});
+}
+
+Result<Command> setTextFontSize(const Workspace& workspace,
+                                std::span<const TextFontSizeChange> changes) {
+    std::vector<AnyChange> out;
+    out.reserve(changes.size());
+    for (const TextFontSizeChange& change : changes) {
+        const Element* current = workspace.findElement(change.element);
+        if (current == nullptr) {
+            return tl::unexpected(notFound("element", change.element));
+        }
+        const auto* box = std::get_if<TextBox>(&current->payload);
+        if (box == nullptr) {
+            return makeError(ErrorCode::InvalidArgument,
+                             "element " + change.element.toString() + " is not a text box");
+        }
+        if (box->fontSize == change.fontSize && box->size == change.size) {
+            continue;
+        }
+        Element after = *current;
+        auto& resized = std::get<TextBox>(after.payload);
+        resized.fontSize = change.fontSize;
+        resized.size = change.size;
+        out.push_back(updated(*current, std::move(after)));
+    }
+    if (out.empty()) {
+        return Command{"Change text size", Patch{}};
+    }
+    return makeCommand("Change text size", std::move(out));
 }
 
 Result<Command> setConnectorEnds(const Workspace& workspace, core::ElementId connector,

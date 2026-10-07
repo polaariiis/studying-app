@@ -4,7 +4,9 @@ studyapp_add_gtest(application_tests
     SOURCES
         BundleTest.cpp
         CanvasSessionTest.cpp
+        CommandConsoleTest.cpp
         ComponentVersionsTest.cpp
+        PdfTextSearchTest.cpp
         PlannerTest.cpp
         SearchTest.cpp
         ShellWorkflowTest.cpp

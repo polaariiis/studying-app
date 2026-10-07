@@ -1,8 +1,11 @@
 #include <studyapp/ui/MainWindow.hpp>
 
 #include "CanvasWidget.hpp"
+#include "CommandConsole.hpp"
+#include "MainWindowWorkspace.hpp"
 #include "NavigationPanel.hpp"
 #include "PageExport.hpp"
+#include "PdfInspectionClient.hpp"
 #include "PlannerPanel.hpp"
 #include "SessionDocumentPort.hpp"
 #include "SessionDocumentRasterizer.hpp"
@@ -12,6 +15,7 @@
 
 #include <studyapp/application/ComponentVersions.hpp>
 #include <studyapp/application/PageNavigator.hpp>
+#include <studyapp/application/PdfTextSearch.hpp>
 #include <studyapp/application/Search.hpp>
 #include <studyapp/application/StartPage.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
@@ -31,6 +35,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDockWidget>
 #include <QFileInfo>
 #include <QImageReader>
 #include <QKeyEvent>
@@ -56,6 +61,9 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <array>
+#include <atomic>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -83,6 +91,10 @@ const QString kShapeKindKey = QStringLiteral("tools/shapeKind");
 const QString kShapeColorKey = QStringLiteral("tools/shapeColor");
 const QString kShapeWidthKey = QStringLiteral("tools/shapeWidth");
 const QString kShapeFillKey = QStringLiteral("tools/shapeFill");
+const QString kTextSizeKey = QStringLiteral("tools/textSize");
+
+/// Tools ▸ Text Size presets (font pixel sizes, world units; 16 is the default).
+constexpr std::array<int, 7> kTextSizePresets{12, 16, 20, 24, 32, 48, 72};
 
 struct ShapeKindName {
     document::ShapeKind kind;
@@ -172,42 +184,40 @@ bool affectsSearch(const document::Patch& patch) {
     return false;
 }
 
-} // namespace
+/// A file an import staged (WorkspaceSession::prepareAssetImport), owned by the import's
+/// finishing step (1.2-IMP-01): take() hands it to finishAssetImport, which stores or
+/// removes it; a step dropped without running (the workspace closed or changed, the window
+/// went away) removes it here instead of leaving it in temporary/ until the next open.
+class StagedImport {
+public:
+    explicit StagedImport(core::Result<application::StagedAssetFile> staged)
+        : staged_(std::move(staged)) {}
+    ~StagedImport() {
+        if (staged_ && !taken_) {
+            application::WorkspaceSession::discardStagedAsset(*staged_);
+        }
+    }
+    StagedImport(const StagedImport&) = delete;
+    StagedImport& operator=(const StagedImport&) = delete;
+    StagedImport(StagedImport&&) = delete;
+    StagedImport& operator=(StagedImport&&) = delete;
 
-/// Everything that belongs to one open workspace; recreated when another one is opened.
-struct MainWindow::OpenWorkspace {
-    struct View {
-        core::DVec2 center;
-        double zoom = 1.0;
-    };
+    [[nodiscard]] bool ok() const noexcept { return staged_.has_value(); }
+    [[nodiscard]] const core::Error& error() const { return staged_.error(); }
+    /// The staged file (still owned here), e.g. for the PDF worker to read.
+    [[nodiscard]] const std::filesystem::path& file() const { return staged_->file; }
+    /// The staged file, for finishAssetImport (which stores or removes it); once only.
+    [[nodiscard]] const application::StagedAssetFile& take() {
+        taken_ = true;
+        return *staged_;
+    }
 
-    OpenWorkspace(application::WorkspaceSession& shown,
-                  std::unique_ptr<application::WorkspaceSession> ownedSession,
-                  const core::Clock& shellClock, core::IdGenerator& shellIds)
-        : owned(std::move(ownedSession)), session(&shown), clock(&shellClock), ids(&shellIds),
-          port(std::make_unique<SessionDocumentPort>(shown)),
-          images(std::make_unique<SessionImageSource>(shown)),
-          documents(std::make_unique<SessionDocumentRasterizer>(shown)),
-          controller(std::make_unique<canvas::CanvasController>(*port, shellIds)),
-          navigator(shown.workspace()), structure(shown, shellClock, shellIds),
-          planner(shown, shellClock, shellIds) {}
-
-    std::unique_ptr<application::WorkspaceSession> owned; ///< null when borrowed
-    application::WorkspaceSession* session;
-    const core::Clock* clock;
-    core::IdGenerator* ids;
-    std::unique_ptr<SessionDocumentPort> port;
-    std::unique_ptr<SessionImageSource> images;
-    std::unique_ptr<SessionDocumentRasterizer> documents; ///< PDF pages (Phase 8)
-    std::unique_ptr<canvas::CanvasController> controller;
-    application::PageNavigator navigator;
-    WorkspaceStructure structure;
-    application::Planner planner;
-    /// Where the user left each page in this session (not persisted).
-    std::unordered_map<core::PageId, View> views;
-    /// Expires when this workspace is closed: background results for it are dropped.
-    std::shared_ptr<void> alive = std::make_shared<int>(0);
+private:
+    core::Result<application::StagedAssetFile> staged_;
+    bool taken_ = false;
 };
+
+} // namespace
 
 // ---------------------------------------------------------------------------- construction
 
@@ -233,8 +243,12 @@ MainWindow::MainWindow(ThemeManager& themes, QSettings& settings, const Workspac
 }
 
 MainWindow::~MainWindow() {
+    if (open_ && open_->pdfSearchStop) {
+        open_->pdfSearchStop->store(true); // a PDF search is not waited for (its worker is killed)
+    }
     jobs_->waitForDone(); // their file work writes into the workspace, which is still locked
     detach(true);         // best effort: pending writes are flushed; failures are logged
+    delete consoleDock_;  // the console refers to the command registry, a member
 }
 
 void MainWindow::setUp() {
@@ -248,6 +262,7 @@ void MainWindow::setUp() {
     createToolBar();
     createCentralWidget();
     createStatusBar();
+    createConsoleDock();
     readSettings();
 
     connect(themes_, &ThemeManager::themeChanged, this, &MainWindow::syncThemeActions);
@@ -451,7 +466,8 @@ void MainWindow::createActions() {
         action->setActionGroup(toolGroup_);
         connect(action, &QAction::triggered, this, [this, tool] {
             if (tool == canvas::ToolKind::Pen || tool == canvas::ToolKind::Highlighter ||
-                tool == canvas::ToolKind::Shape || tool == canvas::ToolKind::Connector) {
+                tool == canvas::ToolKind::Shape || tool == canvas::ToolKind::Connector ||
+                tool == canvas::ToolKind::Text) {
                 // Connectors are drawn in the shape style's colour and width.
                 styleShown_ = static_cast<int>(
                     tool == canvas::ToolKind::Connector ? canvas::ToolKind::Shape : tool);
@@ -548,6 +564,27 @@ void MainWindow::createActions() {
     }
     eraserMenu_->addActions(eraserModeGroup_->actions());
 
+    // Text size (1.2): for new text boxes, and applied to the edited or selected ones.
+    textSize_ = canvas::kTextSize;
+    textSizeMenu_ = new QMenu(tr("Te&xt Size"), this);
+    textSizeMenu_->setObjectName(QStringLiteral("menuTextSize"));
+    textSizeGroup_ = new QActionGroup(this);
+    textSizeGroup_->setExclusive(true);
+    for (const int size : kTextSizePresets) {
+        auto* action =
+            new QAction(size == static_cast<int>(canvas::kTextSize) ? tr("%1 (default)").arg(size)
+                                                                    : QString::number(size),
+                        textSizeGroup_);
+        action->setObjectName(QStringLiteral("actionTextSize_%1").arg(size));
+        action->setCheckable(true);
+        action->setData(size);
+        connect(action, &QAction::triggered, this,
+                [this, size] { chooseTextSize(static_cast<float>(size)); });
+    }
+    textSizeMenu_->addActions(textSizeGroup_->actions());
+    // The checked size follows the edited or selected text box when the menu opens.
+    connect(textSizeMenu_, &QMenu::aboutToShow, this, &MainWindow::syncInkActions);
+
     // ---- View
     navigationAction_ = make(tr("&Navigation"), QStringLiteral("actionNavigation"),
                              QKeySequence(Qt::CTRL | Qt::Key_Backslash));
@@ -567,6 +604,7 @@ void MainWindow::createActions() {
             planner_->setVisible(visible);
         }
     });
+    createConsoleAction();
 
     themeGroup_ = new QActionGroup(this);
     themeGroup_->setExclusive(true);
@@ -742,12 +780,14 @@ void MainWindow::createMenus() {
     toolsMenu->addMenu(pen_.menu);
     toolsMenu->addMenu(highlighter_.menu);
     toolsMenu->addMenu(shape_.menu);
+    toolsMenu->addMenu(textSizeMenu_);
     toolsMenu->addMenu(eraserMenu_);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->setObjectName(QStringLiteral("menuView"));
     viewMenu->addAction(navigationAction_);
     viewMenu->addAction(plannerAction_);
+    viewMenu->addAction(consoleAction_);
     viewMenu->addSeparator();
     QMenu* themeMenu = viewMenu->addMenu(tr("&Theme"));
     themeMenu->setObjectName(QStringLiteral("menuTheme"));
@@ -957,6 +997,11 @@ void MainWindow::readSettings() {
         }
     }
     shapeFill_ = settings_->value(kShapeFillKey, false).toBool();
+    bool textSizeOk = false;
+    const float textSize = settings_->value(kTextSizeKey).toFloat(&textSizeOk);
+    if (textSizeOk) {
+        textSize_ = textSize; // made valid by applyToolSettings
+    }
     applyToolSettings();
 }
 
@@ -977,6 +1022,7 @@ void MainWindow::writeSettings() {
     settings_->setValue(kShapeColorKey, shape_.color.name(QColor::HexArgb));
     settings_->setValue(kShapeWidthKey, shape_.width);
     settings_->setValue(kShapeFillKey, shapeFill_);
+    settings_->setValue(kTextSizeKey, textSize_);
     for (const ShapeKindName& entry : kShapeKinds) {
         if (static_cast<int>(entry.kind) == shapeKind_) {
             settings_->setValue(kShapeKindKey, QString::fromLatin1(entry.name));
@@ -1215,6 +1261,12 @@ bool MainWindow::releaseWorkspace(std::optional<std::filesystem::path>& rescued)
             break;
         }
     }
+    // PDF inspections in a worker process are stopped (the worker is killed) instead of
+    // being waited for (D53 §10); the decision to close is final at this point.
+    open_->importStop->store(true);
+    if (open_->pdfSearchStop) {
+        open_->pdfSearchStop->store(true); // a PDF search's worker is killed the same way
+    }
     if (backgroundJobs_ > 0) {
         // Imports still copying write into this workspace's temporary/: finish them while
         // it is locked (a copy takes about 0.4 s per 50 MB); their results are dropped.
@@ -1295,6 +1347,7 @@ void MainWindow::detach(bool closeSession) {
         }
     }
     open_.reset();
+    pdfSearches_ = 0; // their finishing steps belong to the closed workspace: dropped
     revealedPage_.reset();
     revealedSection_.reset();
     if (stack_ != nullptr) {
@@ -1508,6 +1561,13 @@ void MainWindow::showActivePage() {
     planner_->setActivePage(page);
     updateActions();
     updateStatus();
+}
+
+void MainWindow::setPdfWorker(QString program, QStringList arguments,
+                              std::filesystem::path tempRoot) {
+    pdfWorkerProgram_ = std::move(program);
+    pdfWorkerArguments_ = std::move(arguments);
+    pdfWorkerTempRoot_ = std::move(tempRoot);
 }
 
 void MainWindow::setTimeZone(const study::TimeZone* zone) {
@@ -1873,7 +1933,9 @@ void MainWindow::applyToolSettings() {
                       .color = toCoreColor(shape_.color),
                       .width = shape_.width,
                       .fill = shapeFill_};
+    settings.textSize = textSize_;
     settings = canvas::sanitized(settings);
+    textSize_ = settings.textSize;
     shapeKind_ = static_cast<int>(settings.shape.kind);
     shape_.color = toQColor(settings.shape.color);
     shape_.width = settings.shape.width;
@@ -1916,6 +1978,48 @@ void MainWindow::refreshInkIcons() {
     }
 }
 
+void MainWindow::chooseTextSize(float size) {
+    textSize_ = size;
+    styleShown_ = static_cast<int>(canvas::ToolKind::Text);
+    applyToolSettings(); // new boxes; also syncs the menu and the style button
+    if (!open_) {
+        return;
+    }
+    if (auto applied = open_->controller->applyTextFontSize(textSize_); !applied) {
+        dialogs_->showError(this, tr("The text size could not be changed."),
+                            errorText(applied.error()));
+    }
+    if (canvasWidget_ != nullptr) {
+        canvasWidget_->refreshTextEditor(); // the editor shows the new size at once
+    }
+    syncInkActions();
+}
+
+float MainWindow::shownTextSize() const {
+    if (!open_) {
+        return textSize_;
+    }
+    const canvas::CanvasController& controller = *open_->controller;
+    if (const auto& edit = controller.textEdit()) {
+        return edit->fontSize;
+    }
+    std::optional<float> shared;
+    const document::Workspace& workspace = open_->session->workspace();
+    for (const core::ElementId id : controller.selection().ids()) {
+        const document::Element* element = workspace.findElement(id);
+        const auto* box =
+            element != nullptr ? std::get_if<document::TextBox>(&element->payload) : nullptr;
+        if (box == nullptr) {
+            continue;
+        }
+        if (shared && *shared != box->fontSize) {
+            return textSize_; // mixed sizes: none of them is shown
+        }
+        shared = box->fontSize;
+    }
+    return shared.value_or(textSize_);
+}
+
 void MainWindow::syncInkActions() {
     if (pen_.colors == nullptr || highlighter_.colors == nullptr || shape_.colors == nullptr) {
         return;
@@ -1939,11 +2043,24 @@ void MainWindow::syncInkActions() {
             action->setChecked(std::abs(action->data().toFloat() - ink->width) < 0.01F);
         }
     }
+    const float textSize = shownTextSize();
+    if (textSizeGroup_ != nullptr) {
+        for (QAction* action : textSizeGroup_->actions()) {
+            action->setChecked(static_cast<float>(action->data().toInt()) == textSize);
+        }
+    }
     if (inkStyleButton_ == nullptr) {
         return;
     }
     const QColor border = toQColor(themes_->tokens().borderStrong);
     const auto shownTool = static_cast<canvas::ToolKind>(styleShown_);
+    if (shownTool == canvas::ToolKind::Text) {
+        inkStyleButton_->setMenu(textSizeMenu_);
+        inkStyleButton_->setIcon(textSizeIcon(textSize, toQColor(themes_->tokens().textSecondary)));
+        inkStyleButton_->setToolTip(tr("Text size: %1").arg(static_cast<int>(textSize)));
+        inkStyleButton_->setAccessibleName(inkStyleButton_->toolTip());
+        return;
+    }
     const InkControls& shown = shownTool == canvas::ToolKind::Highlighter ? highlighter_
                                : shownTool == canvas::ToolKind::Shape     ? shape_
                                                                           : pen_;
@@ -2047,27 +2164,46 @@ void MainWindow::insertImage() {
     // stored and inserted here (docs/PERFORMANCE.md).
     runInBackground([this, stage = open_->session->prepareAssetImport(*chosen), mediaType, page,
                      pixels]() -> std::function<void()> {
-        auto staged = std::make_shared<core::Result<application::StagedAssetFile>>(stage());
+        auto staged = std::make_shared<StagedImport>(stage());
         return [this, staged, mediaType, page, pixels] {
             const QString failed = tr("The image could not be inserted.");
-            if (!*staged) {
+            if (!staged->ok()) {
                 dialogs_->showError(this, failed, errorText(staged->error()));
                 return;
             }
             // Content-addressed: importing the same file again reuses the stored copy.
-            auto asset = open_->session->finishAssetImport(**staged, mediaType);
+            auto asset = open_->session->finishAssetImport(staged->take(), mediaType);
             if (!asset) {
                 dialogs_->showError(this, failed, errorText(asset.error()));
                 return;
             }
-            if (activePage() != page && !openPage(page)) {
+            if (activePage() == page) {
+                if (auto inserted = open_->controller->insertImage(*asset, pixels); !inserted) {
+                    dialogs_->showError(this, failed, errorText(inserted.error()));
+                    return;
+                }
+                selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
+                return;
+            }
+            // The user moved on (1.2-IMP-01): the image goes to the page it was started from,
+            // placed in the view that page was left with, and the current page stays.
+            const document::PageInfo* target = open_->session->workspace().findPage(page);
+            if (target == nullptr) {
                 return; // the page is gone meanwhile; the asset stays for garbage collection
             }
-            if (auto inserted = open_->controller->insertImage(*asset, pixels); !inserted) {
+            const auto left = open_->views.find(page);
+            const canvas::Camera& camera = open_->controller->camera();
+            const bool remembered = left != open_->views.end();
+            if (auto inserted = open_->controller->insertImageOnPage(
+                    page, remembered ? left->second.center : camera.center(),
+                    remembered ? left->second.zoom : camera.zoom(), *asset, pixels);
+                !inserted) {
                 dialogs_->showError(this, failed, errorText(inserted.error()));
                 return;
             }
-            selectTool(canvas::ToolKind::Select); // the new image is selected, ready to move
+            statusBar()->showMessage(
+                tr("The image was inserted on \u201C%1\u201D.").arg(toQString(target->title)),
+                5000);
         };
     });
 }
@@ -2076,32 +2212,62 @@ void MainWindow::importPdf() {
     if (!open_ || open_->session->isReadOnly()) {
         return;
     }
-    const auto chosen = dialogs_->chooseDocumentToImport(this);
-    if (!chosen) {
+    if (const auto chosen = dialogs_->chooseDocumentToImport(this)) {
+        importPdfFile(*chosen);
+    }
+}
+
+void MainWindow::importPdfFile(
+    const std::filesystem::path& pdf,
+    std::function<void(const QString& error, std::optional<core::PageId> first, std::size_t pages)>
+        done) {
+    if (!open_ || open_->session->isReadOnly()) {
         return;
     }
-    // Reading the page sizes and copying the file happen on a pool thread; the section is
-    // created here. Only read: the PDF is copied into the workspace and never written.
-    runInBackground([this, stage = open_->session->prepareAssetImport(*chosen),
-                     source = *chosen]() -> std::function<void()> {
-        auto info = std::make_shared<core::Result<PdfInfo>>(inspectPdf(source));
-        auto staged = std::make_shared<core::Result<application::StagedAssetFile>>(
-            *info ? stage()
-                  : core::Result<application::StagedAssetFile>(tl::unexpected(info->error())));
-        return [this, info, staged, source] {
+    // Copying the file and reading its page sizes happen off the GUI thread; the section is
+    // created here. The copy is staged first and its page sizes are read by a worker
+    // process (docs/PDF_WORKER.md, D53), so a PDF that crashes or hangs the parser fails
+    // only this import. Only read: the PDF is copied into the workspace and never written.
+    // The imported document is opened only if the user is still on this page when it is
+    // ready (1.2-IMP-01).
+    const std::optional<core::PageId> startedOn = activePage();
+    const core::JobId job = core::JobId::generate(*open_->ids); // on the GUI thread (D53 §7)
+    PdfWorkerOptions worker;
+    worker.program = pdfWorkerProgram_;
+    worker.arguments = pdfWorkerArguments_;
+    worker.tempRoot = pdfWorkerTempRoot_;
+    runInBackground([this, stage = open_->session->prepareAssetImport(pdf), source = pdf, startedOn,
+                     job, stop = open_->importStop, worker = std::move(worker),
+                     done = std::move(done)]() -> std::function<void()> {
+        auto staged = std::make_shared<StagedImport>(stage());
+        auto info = std::make_shared<core::Result<PdfInfo>>(
+            staged->ok() ? inspectPdfInWorker(staged->file(), job, *stop, worker)
+                         : core::Result<PdfInfo>(tl::unexpected(staged->error())));
+        return [this, info, staged, source, startedOn, done] {
             const QString file = QString::fromStdU16String(source.u16string());
             const QString failed = tr("The PDF could not be imported.");
+            // The console reports in its output; the menu command in a dialog.
+            const auto report = [&](const QString& details) {
+                if (done) {
+                    done(details, std::nullopt, 0);
+                } else {
+                    dialogs_->showError(this, failed, details);
+                }
+            };
             if (!*info) {
-                dialogs_->showError(this, failed, tr("%1: %2").arg(file, errorText(info->error())));
+                if (info->error().code == core::ErrorCode::Conflict) {
+                    return; // stopped: the workspace is being closed
+                }
+                report(tr("%1: %2").arg(file, errorText(info->error())));
                 return;
             }
-            if (!*staged) {
-                dialogs_->showError(this, failed, errorText(staged->error()));
+            if (!staged->ok()) {
+                report(errorText(staged->error()));
                 return;
             }
-            auto asset = open_->session->finishAssetImport(**staged, "application/pdf");
+            auto asset = open_->session->finishAssetImport(staged->take(), "application/pdf");
             if (!asset) {
-                dialogs_->showError(this, failed, errorText(asset.error()));
+                report(errorText(asset.error()));
                 return;
             }
             // Into the current notebook, else the first one; with none, a new notebook
@@ -2115,13 +2281,23 @@ void MainWindow::importPdf() {
                 notebook, QFileInfo(file).completeBaseName().toStdString(), *asset,
                 (*info)->pageSizes);
             if (!imported) {
-                dialogs_->showError(this, failed, errorText(imported.error()));
+                report(errorText(imported.error()));
                 return;
             }
-            openPage(imported->firstPage);
+            if (done) {
+                done({}, imported->firstPage, (*info)->pageSizes.size());
+            }
             QTreeView* tree = navigation_->tree();
             tree->expand(treeModel_->indexOf(HierarchyItem{imported->notebook}));
             tree->expand(treeModel_->indexOf(HierarchyItem{imported->section}));
+            if (activePage() != startedOn) {
+                // The user moved on meanwhile: the document is shown in the tree, not opened.
+                statusBar()->showMessage(
+                    tr("\u201C%1\u201D was imported.").arg(QFileInfo(file).completeBaseName()),
+                    5000);
+                return;
+            }
+            openPage(imported->firstPage);
             tree->setCurrentIndex(treeModel_->indexOf(HierarchyItem{imported->firstPage}));
         };
     });
@@ -2192,28 +2368,40 @@ void MainWindow::exportPages(bool wholeSection) {
     if (!target) {
         return;
     }
-    const QString failed = tr("The export could not be written.");
-    // The workspace directory belongs to StudyBoard: never write into it.
-    if (open_->session->isInsideWorkspace(*target)) {
-        dialogs_->showError(this, failed, tr("Choose a location outside the workspace folder."));
-        return;
-    }
     const QString suffix =
         QFileInfo(QString::fromStdU16String(target->u16string())).suffix().toLower();
     const ExportFormat format = suffix == QStringLiteral("png")   ? ExportFormat::Png
                                 : suffix == QStringLiteral("svg") ? ExportFormat::Svg
                                                                   : ExportFormat::Pdf;
+    if (auto written = writePagesTo(pages, *target, format);
+        !written && written.error().code != core::ErrorCode::Conflict) { // Conflict: cancelled
+        dialogs_->showError(this, tr("The export could not be written."),
+                            errorText(written.error()));
+    }
+}
+
+core::Result<void> MainWindow::writePagesTo(const std::vector<core::PageId>& pages,
+                                            const std::filesystem::path& target,
+                                            ExportFormat format) {
+    if (!open_ || pages.empty()) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "there is no page to export");
+    }
+    // The workspace directory belongs to StudyBoard: never write into it.
+    if (open_->session->isInsideWorkspace(target)) {
+        return core::makeError(core::ErrorCode::InvalidArgument,
+                               tr("Choose a location outside the workspace folder.").toStdString());
+    }
+    finishTextEditing(); // what is typed is part of the page
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    auto written = ui::exportPages(ws, pages, *target, format, exportSources(pages.size()));
+    auto written = ui::exportPages(open_->session->workspace(), pages, target, format,
+                                   exportSources(pages.size()));
     QApplication::restoreOverrideCursor();
     if (!written) {
-        if (written.error().code != core::ErrorCode::Conflict) { // Conflict: cancelled
-            dialogs_->showError(this, failed, errorText(written.error()));
-        }
-        return;
+        return written;
     }
     statusBar()->showMessage(
-        tr("Exported to %1").arg(QString::fromStdU16String(target->u16string())), 5000);
+        tr("Exported to %1").arg(QString::fromStdU16String(target.u16string())), 5000);
+    return {};
 }
 
 void MainWindow::printPages() {
@@ -2614,8 +2802,10 @@ void MainWindow::updateStatus() {
                     static_cast<int>(session.pendingWriteCount()));
         tip = tr("Saving failed; StudyBoard tries again with the next change.\n%1")
                   .arg(errorText(*error));
-    } else if (backgroundJobs_ > 0) {
+    } else if (backgroundJobs_ > pdfSearches_) {
         status = tr("Importing…");
+    } else if (pdfSearches_ > 0) {
+        status = tr("Searching PDFs…");
     } else {
         status = tr("All changes saved");
     }

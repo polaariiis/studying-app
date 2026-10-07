@@ -9,10 +9,26 @@ each release's packages. Building the packages locally is described in
 | | |
 |---|---|
 | Version | **1.0.0** (tag `v1.0.0`) |
-| Source | `main` at the tag |
+| Source | tag `v1.0.0` (commit `5d477e6`, tagged on `main`); release line `release/1.0` |
 | Platforms | Windows x64, Linux x86_64, macOS arm64 (Apple silicon) |
 | Signing | **Unsigned / signing-ready** — see [Signing](#signing) |
 | Downloads | [GitHub releases](https://github.com/polaariiis/studying-app/releases) |
+
+The next version, 1.2, is in development and **not released**: no `v1.2.0` tag or package
+exists yet. Builds of `main` and `dev/1.2` still report 1.0.0 until step 2 below sets the
+1.2 version.
+
+## Branches and tags
+
+| Reference | Role | Rules |
+|---|---|---|
+| `v<version>` tags (`v1.0.0`) | The released source of each version | Immutable: never moved, deleted or recreated; the GitHub release and its packages belong to the tag |
+| `release/<major>.<minor>` (`release/1.0`) | Maintenance line of a released version, created at its tag | Fixes for that version only; a fix release is tagged here |
+| `main` | Integration line, the default branch | Receives the state of the development branch as one "Integrate …" commit (squash merge), so its history stays short; never force-pushed |
+| `dev/<major>.<minor>` (`dev/1.2`) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; then the feature branch is deleted |
+
+When 1.2 is released, its tag is made on `main`, `release/1.2` is created at it, and the
+next version's development continues on `dev/1.3`.
 
 ## Packages
 

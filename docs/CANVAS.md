@@ -18,7 +18,7 @@ flowchart LR
     tool -->|preview state| overlay[Preview & overlays]
     tool -->|commit Patch| editor["document::Editor"]
     editor --> doc[PageDocument]
-    doc -->|changed(Patch)| scene
+    doc -->|"changed(Patch)"| scene
     ctrl -->|buildFrame| frame["render::RenderFrame"]
     scene --> frame
     overlay --> frame
@@ -319,6 +319,16 @@ hit testing; locked layers are drawn but not hit-testable by editing tools.
   requested), never above 4096 px per side; textures are released with their element or
   page. Text boxes are runs of their own in batches, so painter's order holds. Rotation is
   not shown while editing; resizing is step 8.
+* **Font size (1.2, 1.2-TXT-02)**: every text box has its own font size
+  (`document::TextBox::fontSize`, a whole number in [6, 144], default `kTextSize` = 16),
+  the one source for the layout (`TextLayout::heightFor`/`rasterize` take it), the editor
+  overlay's font, the texture cache (a texture remembers the font size and box size it was
+  laid out for) and exports. Tools ▸ Text Size (also the style button while the text tool
+  is chosen) offers 12–72: the size for new boxes (`ToolSettings::textSize`, remembered
+  per user); while a box is edited, that box's size (the editor follows at once; written
+  with the text by `commands::editText`); otherwise the selected text boxes' size as one
+  command (`commands::setTextFontSize`, "Change text size": their height follows the
+  layout, width and text stay). Only the changed boxes are rasterised again.
 
 ## 10. Documents and images
 
@@ -490,7 +500,9 @@ What exists (`src/canvas`), and where it differs from the sketches above.
   edge stays (dragging past it flips the box), images keep their aspect ratio on corners
   (Shift frees it; for shapes Shift keeps it), line ends snap to 45° with Shift, sizes never
   drop below 4 view px. The drag draws the element at its new geometry (shapes
-  tessellated per frame, text and images stretch their texture) and writes nothing;
+  tessellated per frame, images stretch their texture; since 1.2 a text box is laid out
+  and rasterised again for its new width, as its raster is cached with the size it was
+  laid out for) and writes nothing;
   release commits `commands::resizeElement` (connector ends attached to the element keep
   their relative place on its bounds) or, for a connector end, `setConnectorEnds` with the
   end re-attached to whatever it is dropped on. Limitation: attached connectors are

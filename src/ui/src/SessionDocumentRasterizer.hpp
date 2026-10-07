@@ -3,6 +3,7 @@
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/canvas/DocumentRasterizer.hpp>
 #include <studyapp/core/Error.hpp>
+#include <studyapp/ipc/PdfInspection.hpp>
 
 #include <QObject>
 #include <QThreadPool>
@@ -24,18 +25,29 @@ namespace studyapp::ui {
 // input: it is only ever read, page counts and sizes are bounded, and a page that cannot be
 // rendered shows as blank paper.
 
-/// Most pages an imported PDF may have.
-inline constexpr int kMaxPdfPages = 5000;
+/// Most pages an imported PDF may have (the PDF worker's contract, D53).
+inline constexpr int kMaxPdfPages = static_cast<int>(ipc::pdf::kMaxPages);
 /// Largest page side accepted, in points (PDF's own limit: 14 400 pt = 200 in).
-inline constexpr double kMaxPdfPagePoints = 14400.0;
+inline constexpr double kMaxPdfPagePoints = ipc::pdf::kMaxPagePoints;
 
 struct PdfInfo {
     std::vector<core::DVec2> pageSizes; ///< world units (1/96 in), one per page
 };
 
-/// Reads a PDF's page count and page sizes. Errors: IoError (unreadable, not a PDF, corrupt),
-/// Unsupported (password-protected), InvalidArgument (no pages, too many, a page of no
-/// valid size or larger than kMaxPdfPagePoints).
+/// Opens `file` with QtPdf and reads its page count and page sizes, applying the limits
+/// above: the inspection itself, as the PDF worker runs it (docs/PDF_WORKER.md; the
+/// reply's job is left nil). Never throws; only reads the file.
+[[nodiscard]] ipc::pdf::InspectReply inspectPdfLocally(const std::filesystem::path& file);
+
+/// What an inspection result means for an import: the page sizes in world units, checked
+/// again (count and every size, ipc::pdf::validPageSize), or the error the user sees.
+/// Errors: IoError (unreadable, not a PDF, corrupt, a failed request), Unsupported
+/// (password-protected, unsupported security), InvalidArgument (no pages, too many, a page
+/// of no valid size).
+[[nodiscard]] core::Result<PdfInfo> pdfInfoFrom(const ipc::pdf::InspectReply& reply);
+
+/// inspectPdfLocally then pdfInfoFrom, in this process (self-test, benchmarks). Imports
+/// inspect in the worker process (inspectPdfInWorker).
 [[nodiscard]] core::Result<PdfInfo> inspectPdf(const std::filesystem::path& file);
 
 /// canvas::DocumentRasterizer over the open workspace's PDF assets. Tiles are rendered on one

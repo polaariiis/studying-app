@@ -5,15 +5,21 @@
 // studyapp_app_benchmarks. Runs on the offscreen Qt platform (no window, no GPU).
 
 #include "PageExport.hpp"
+#include "PdfInspectionClient.hpp"
+#include "PdfText.hpp"
 #include "SessionDocumentRasterizer.hpp"
 #include "SyntheticPage.hpp"
 
+#include <studyapp/application/PdfTextSearch.hpp>
 #include <studyapp/application/Planner.hpp>
 #include <studyapp/application/Search.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/application/WorkspaceStructure.hpp>
+#include <studyapp/core/Clock.hpp>
+#include <studyapp/core/IdGenerator.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/platform/QtTextLayout.hpp>
+#include <studyapp/testing/MinimalPdf.hpp>
 #include <studyapp/testing/TempDirectory.hpp>
 
 #include <QGuiApplication>
@@ -22,6 +28,7 @@
 #include <QPainter>
 #include <QPdfWriter>
 
+#include <atomic>
 #include <benchmark/benchmark.h>
 #include <chrono>
 #include <filesystem>
@@ -282,7 +289,8 @@ void BM_TextRaster(benchmark::State& state) {
     const std::string text = "Osmosis: water moves across a semipermeable membrane\n"
                              "from low to high solute concentration.";
     for (auto _ : state) {
-        benchmark::DoNotOptimize(layout.rasterize(text, {240.0F, 64.0F}, pixelsPerUnit));
+        benchmark::DoNotOptimize(
+            layout.rasterize(text, {240.0F, 64.0F}, canvas::kTextSize, pixelsPerUnit));
     }
 }
 BENCHMARK(BM_TextRaster)->Arg(10)->Arg(42)->Unit(benchmark::kMicrosecond);
@@ -296,7 +304,80 @@ void BM_PdfInspect(benchmark::State& state) {
         benchmark::DoNotOptimize(ui::inspectPdf(file));
     }
 }
-BENCHMARK(BM_PdfInspect)->Arg(200)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_PdfInspect)->Arg(1)->Arg(200)->Unit(benchmark::kMillisecond);
+
+/// The same inspection through the worker process (D53): job directory and channels, start
+/// of `studyapp --pdf-worker`, its reply and exit, cleanup — the cost one import pays.
+void BM_PdfInspectInWorker(benchmark::State& state) {
+    testing::TempDirectory dir;
+    const auto file = writePdf(dir / "doc.pdf", static_cast<int>(state.range(0)));
+    const core::SystemClock clock;
+    core::UuidV7Generator ids(clock);
+    const std::atomic<bool> stop{false};
+    ui::PdfWorkerOptions options;
+    options.program = QString::fromUtf8(STUDYAPP_EXECUTABLE);
+    for (auto _ : state) {
+        auto info = ui::inspectPdfInWorker(file, core::JobId::generate(ids), stop, options);
+        if (!info) {
+            state.SkipWithError(info.error().message.c_str());
+            return;
+        }
+        benchmark::DoNotOptimize(info);
+    }
+}
+BENCHMARK(BM_PdfInspectInWorker)->Arg(1)->Arg(200)->Unit(benchmark::kMillisecond);
+
+/// A PDF of `pages` pages with ten lines of real text each (about 600 bytes per page).
+std::filesystem::path writeTextPdf(const std::filesystem::path& file, int pages) {
+    std::vector<std::vector<std::string>> content;
+    for (int i = 0; i < pages; ++i) {
+        std::vector<std::string> lines;
+        for (int line = 0; line < 10; ++line) {
+            lines.push_back("Page " + std::to_string(i + 1) + " line " + std::to_string(line) +
+                            ": vectors, matrices and their eigenvalues in a basis.");
+        }
+        content.push_back(std::move(lines));
+    }
+    std::ofstream(file, std::ios::binary) << testing::minimalPdf(content);
+    return file;
+}
+
+/// `pdf search` (1.2-CMD-01): the text of a PDF read by `studyapp --pdf-worker` — the cost
+/// of the first search of a document (later searches use the cache).
+void BM_PdfTextInWorker(benchmark::State& state) {
+    testing::TempDirectory dir;
+    const auto file = writeTextPdf(dir / "doc.pdf", static_cast<int>(state.range(0)));
+    const core::SystemClock clock;
+    core::UuidV7Generator ids(clock);
+    const std::atomic<bool> stop{false};
+    ui::PdfWorkerOptions options;
+    options.program = QString::fromUtf8(STUDYAPP_EXECUTABLE);
+    for (auto _ : state) {
+        auto text = ui::extractPdfTextInWorker(file, core::JobId::generate(ids), stop, options);
+        if (!text) {
+            state.SkipWithError(text.error().message.c_str());
+            return;
+        }
+        benchmark::DoNotOptimize(text);
+    }
+}
+BENCHMARK(BM_PdfTextInWorker)->Arg(1)->Arg(200)->Arg(2000)->Unit(benchmark::kMillisecond);
+
+/// Matching a phrase in the cached text of a PDF (the cost of every later search): the
+/// worst case, a phrase that is nowhere, so every page is folded and scanned.
+void BM_PdfTextSearch(benchmark::State& state) {
+    testing::TempDirectory dir;
+    const auto file = writeTextPdf(dir / "doc.pdf", static_cast<int>(state.range(0)));
+    auto text = ui::pdfTextFrom(ui::extractPdfTextLocally(file));
+    if (!text) {
+        state.SkipWithError(text.error().message.c_str());
+        return;
+    }
+    for (auto _ : state) {
+        benchmark::DoNotOptimize(application::findInPdfText(*text, "Quaternion ROTATIONS"));
+    }
+}
+BENCHMARK(BM_PdfTextSearch)->Arg(200)->Arg(2000)->Unit(benchmark::kMillisecond);
 
 void BM_PdfTile(benchmark::State& state) {
     Fixture f;

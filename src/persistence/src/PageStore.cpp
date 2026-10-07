@@ -29,7 +29,9 @@ using document::TextBox;
 namespace {
 
 /// Version of the `text_box.content` JSON written by this build: `{"v":1,"text":"…"}`
-/// (plain text; the rich-text model of DATA_MODEL.md §4.3 will be version 2).
+/// (plain text; the rich-text model of DATA_MODEL.md §4.3 will be version 2). Since 1.2 a
+/// font size other than the default adds `"size":24` (optional; absent means
+/// document::kDefaultTextFontSize), so the version stays 1 and 1.0 still reads the text.
 constexpr std::int64_t kTextContentVersion = 1;
 
 std::int64_t argb(const core::Color& color) {
@@ -81,13 +83,15 @@ Result<void> writeKindRow(Database& database, core::ElementId id, const Stroke& 
 
 Result<void> writeKindRow(Database& database, core::ElementId id, const TextBox& text, bool insert,
                           bool /*writePoints*/) {
-    // sizing 2 = fixed box: the Phase 2 model stores an explicit size.
+    // sizing 2 = fixed box: the Phase 2 model stores an explicit size. The font size is
+    // written only when it is not the default (?6 NULL: no "size" key).
     auto statement = database.cached(
         insert ? "INSERT INTO text_box (element_id, width, height, sizing, content, plain_text) "
-                 "VALUES (?1, ?2, ?3, 2, json_object('v', ?4, 'text', ?5), ?5)"
-               : "UPDATE text_box SET width = ?2, height = ?3, "
-                 "content = json_object('v', ?4, 'text', ?5), plain_text = ?5 "
-                 "WHERE element_id = ?1");
+                 "VALUES (?1, ?2, ?3, 2, CASE WHEN ?6 IS NULL THEN json_object('v', ?4, 'text', "
+                 "?5) ELSE json_object('v', ?4, 'text', ?5, 'size', ?6) END, ?5)"
+               : "UPDATE text_box SET width = ?2, height = ?3, content = CASE WHEN ?6 IS NULL "
+                 "THEN json_object('v', ?4, 'text', ?5) ELSE json_object('v', ?4, 'text', ?5, "
+                 "'size', ?6) END, plain_text = ?5 WHERE element_id = ?1");
     if (!statement) {
         return forward(statement);
     }
@@ -97,6 +101,12 @@ Result<void> writeKindRow(Database& database, core::ElementId id, const TextBox&
         .bindReal(3, static_cast<double>(text.size.y))
         .bindInt(4, kTextContentVersion)
         .bindText(5, text.text);
+    if (text.fontSize == document::kDefaultTextFontSize) {
+        (*statement)->bindNull(6);
+    } else {
+        // A whole number (document invariant), stored as a JSON integer.
+        (*statement)->bindInt(6, static_cast<std::int64_t>(text.fontSize));
+    }
     return detail::runOnOneRow(database, **statement, "text box", id.toString());
 }
 
@@ -411,9 +421,9 @@ Result<PageData> PageStore::load(core::PageId page) {
     auto texts = loadKind<TextBox>(
         *database_, page,
         "SELECT k.element_id, k.width, k.height, json_extract(k.content, '$.v'), "
-        "json_extract(k.content, '$.text') FROM text_box k JOIN element e ON e.id = k.element_id "
-        "WHERE e.page_id = ?1",
-        "text_box", rows, [](RowDecoder& decode, const Statement& /*s*/) {
+        "json_extract(k.content, '$.text'), json_extract(k.content, '$.size') FROM text_box k "
+        "JOIN element e ON e.id = k.element_id WHERE e.page_id = ?1",
+        "text_box", rows, [](RowDecoder& decode, const Statement& s) {
             TextBox text{.size = {decode.real32(1), decode.real32(2)}, .text = {}};
             const std::int64_t version = decode.integer(3);
             if (decode.ok() && version != kTextContentVersion) {
@@ -421,6 +431,11 @@ Result<PageData> PageStore::load(core::PageId page) {
                 return text;
             }
             text.text = decode.text(4);
+            // Optional (1.2); a non-number fails here, a number outside the valid font sizes
+            // is rejected by the workspace invariants when the page is loaded.
+            if (!s.columnIsNull(5)) {
+                text.fontSize = decode.real32(5);
+            }
             return text;
         });
     if (!texts) {

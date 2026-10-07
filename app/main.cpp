@@ -14,19 +14,23 @@
 #include <studyapp/platform/QtWorkspaceLocker.hpp>
 #include <studyapp/ui/AppIcon.hpp>
 #include <studyapp/ui/MainWindow.hpp>
+#include <studyapp/ui/PdfWorker.hpp>
 #include <studyapp/ui/SelfTest.hpp>
 #include <studyapp/ui/ThemeManager.hpp>
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QCoreApplication>
 #include <QDir>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <random>
@@ -99,6 +103,14 @@ void generateStrokes(WorkspaceSession& session, studyapp::core::PageId page, int
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // PDF inspection worker (docs/PDF_WORKER.md, D53): a window-less process with only a
+    // QCoreApplication — no GUI platform plugin, settings, log sink or workspace.
+    if (argc >= 2 && std::strcmp(argv[1], studyapp::ui::kPdfWorkerArgument) == 0) {
+        const QCoreApplication worker(argc, argv);
+        const QStringList arguments = QCoreApplication::arguments(); // Unicode on Windows too
+        return arguments.size() == 3 ? studyapp::ui::runPdfWorker(arguments.at(2)) : 1;
+    }
+
     QApplication app(argc, argv); // NOLINT(misc-const-correctness): configured via static APIs
     QApplication::setOrganizationName(toQString(studyapp::core::build::kProductName));
     QApplication::setApplicationName(toQString(studyapp::core::build::kProductName));

@@ -53,6 +53,7 @@ Labels used in this document:
 | Copying and hashing an imported image or PDF | A thread pool; the GUI thread only stores the result (≈ 2 ms) | Phase 9 (D48) |
 | Decoding images | Up to two worker threads | Phase 6 |
 | Rendering PDF tiles (PDFium) | One worker thread | Phase 8 |
+| Reading the text of PDFs for `pdf search` | The PDF worker process, started from the window's thread pool; matching on that pool thread | 1.2 (D55) |
 | Export (PDF, PNG, SVG) | GUI thread with a progress dialog and Cancel | Phase 8–9 |
 
 Writing to SQLite happens on the GUI thread, one transaction per edit, as part of the edit
@@ -180,7 +181,9 @@ step. Costs are measured on the reference laptop.
 
 * **Workload:** reading an imported PDF.
 * **Observed (measured):** 3.9–6.4 ms per tile on a worker thread; 55 ms to import a
-  200-page PDF.
+  200-page PDF. Since 1.2 the page sizes are read in a worker process (D53): 81 ms for a
+  200-page PDF and 43 ms for a 1-page PDF (in-process: 38.9 ms and 1.07 ms), on the import's
+  pool thread; tiles are still rendered in-process.
 * **Cause:** PDFium rendering.
 * **Done:** one worker thread, tile textures cached (192 MB), queued requests dropped when
   the page changes.
@@ -218,6 +221,43 @@ step. Costs are measured on the reference laptop.
   measured**; inferred from hashing speed: seconds for gigabytes of assets.
 * **Limitation (accepted for 1.0):** they run on the GUI thread without progress.
 * **Future:** run them in the background with progress.
+* **Measured in 1.2 (1.2-PERF-01, V-07; docs/BENCHMARKS.md "Workspace maintenance"):** on
+  synthetic ~1 GB and ~5 GB workspaces (Release, reference laptop, median of 5 runs; 3 for
+  the 5 GB copies). Every one of these operations runs synchronously on the GUI thread
+  (MainWindow: wait cursor, no event processing, no progress), so the window takes no input
+  and paints nothing for the whole time below; Windows shows it as "Not Responding" after
+  about 5 s.
+
+  | Operation | ~1 GB | ~5 GB | Scales with |
+  |---|---:|---:|---|
+  | Check Workspace | 6.5 s | 33.5 s | asset bytes (SHA-256) |
+  | – of that: database `integrity_check` | 0.24 s | 0.97 s | database size |
+  | – of that: asset verification | 6.6 s | 32.5 s | asset bytes |
+  | Back Up Now | 0.22 s | 1.0 s | database size (assets are not copied, D49) |
+  | Closing with the daily backup (closing without it) | 0.22 s (0.03 s) | 1.15 s (0.11 s) | database size |
+  | Recovery check (`quick_check` + `foreign_key_check`) | 0.19 s | 0.99 s | database size |
+  | Export Workspace (bundle) | 5.4 s | fails after 24 s: bundles are limited to 4 GiB (D46) | asset bytes (CRC-32) |
+  | Open Bundle as Workspace | 11.8 s | not measurable (no bundle > 4 GiB) | asset bytes (CRC-32 + SHA-256) |
+  | Import Notebook (the whole workspace as a bundle) | 21.5 s | not measurable (no bundle > 4 GiB) | asset bytes |
+  | Save a Copy | 9.1 s | 45.3 s | asset bytes (copied and hashed) |
+
+* **Cause (measured):** CPU, not the disk: CPU time equals wall time in every case, and
+  StudyBoard's own SHA-256 hashes 159 MiB/s and its CRC-32 287 MiB/s in memory (one core).
+  Costs are linear in the asset bytes (1 GB → 5 GB: ×5.0–5.1); runs vary by < 2 %, except
+  the very first database check after generation (cold file cache: 1.0 s and 4.8 s) and a
+  Check Workspace with a colder cache (8.4 s and 41.7 s: the same CPU time plus disk waits).
+* **Memory (measured):** small. Verifying assets streams them (peak 6 MB in a process that
+  only verifies); the session-based operations peak at the size of the loaded workspace
+  (120 MB at 1 GB, 420 MB at 5 GB, of which ≈ 266 MB is the open 200 000-stroke workspace).
+* **Decision (V-07):** backups, the close-time backup and the recovery check stay as they
+  are (≈ 1 s at 5 GB). Check Workspace, the bundle operations and Save a Copy freeze the
+  window for seconds per gigabyte of assets — beyond the 5 s "Not Responding" point already
+  at ~1 GB for Check Workspace, Export, Open and Import Bundle and Save a Copy — and are candidates for
+  running off the GUI thread with progress (their work is file reading and hashing; only the
+  asset list and the final database steps need the session). A faster SHA-256 and CRC-32
+  would cut every one of them. Bundles of workspaces over 4 GiB cannot be exported at all,
+  and the failure is reported only after the whole attempt. These are recorded as new
+  backlog items, not implemented in S8.
 
 ### 3.12 Opening a large workspace
 
@@ -236,6 +276,25 @@ step. Costs are measured on the reference laptop.
   a planner list with thousands of entries is **not measured**.
 * **Design:** the planner panel is built when first shown, and planner edits cost no canvas
   frame.
+
+### 3.14 PDF content search
+
+* **Workload:** `pdf search` in the command console over the text of imported PDFs
+  (1.2-CMD-01; docs/COMMAND_CONSOLE.md §6).
+* **Observed (measured, Release, a 4-vCPU Linux container):** the first search of a PDF
+  reads its text in the PDF worker: 19 ms (1 page), 71 ms (200 pages), 0.48 s
+  (2 000 pages); later searches use the cached text: 0.44 ms (200 pages) and 4.6 ms
+  (2 000 pages) for a full scan (`BM_PdfTextInWorker`, `BM_PdfTextSearch`; BENCHMARKS.md).
+* **Design:** nothing of it runs on the GUI thread except collecting what to search and
+  writing the results; PDFs are read one after another in worker processes (one at a
+  time, so a large library does not start many processes at once); the text is cached per
+  workspace session with a byte budget (32 MiB, 64 PDFs, least recently used dropped), so
+  memory stays bounded however many PDFs are searched; results are capped (50 per PDF,
+  200 in all) and the console's output keeps at most 1 000 lines. The console itself
+  costs nothing until it is opened: no timers, no polling, no canvas work.
+* **Limitation:** with more PDF text than the cache holds, every search reads the PDFs
+  that fell out again (≈ 0.25 ms per page on this machine); a persisted text index would
+  remove that (follow-up 1.2-PDF-03). Very large libraries were not measured.
 
 ## 4. How to measure
 

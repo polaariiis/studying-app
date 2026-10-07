@@ -68,6 +68,9 @@ public:
 
     /// Ends text editing in the overlay editor and writes the text (no-op when not editing).
     void finishTextEditing();
+    /// Lays the overlay editor out again for the edit's current font size (after the
+    /// controller's applyTextFontSize; no-op when not editing).
+    void refreshTextEditor();
 
     /// Empty while the renderer works; otherwise why it could not start.
     [[nodiscard]] const QString& graphicsError() const noexcept { return graphicsError_; }
