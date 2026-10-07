@@ -34,6 +34,20 @@ else. Checksums (`SHA256SUMS.txt`) are attached to the release.
 | Status | First stable release |
 | Platforms | Windows x64 · Linux x86_64 · macOS arm64 |
 | Signing | Unsigned; signing and notarisation are prepared for when certificates exist |
+| In development | 1.2 — **not released yet** (see [Versions and branches](#versions-and-branches)) |
+
+## Versions and branches
+
+| Reference | What it is |
+|---|---|
+| Tag `v1.0.0` | The **latest stable release**, 1.0.0. The packages above are built from it; it never moves. |
+| Branch `release/1.0` | The 1.0 release line, starting exactly at `v1.0.0`. It receives 1.0 fixes only, never 1.2 features. |
+| Branch `main` | The integration line. It holds the current 1.2 development state, integrated from `dev/1.2` in single "Integrate …" commits. It is **not** a release: build from `v1.0.0` (or download the packages) for the stable version. |
+| Branch `dev/1.2` | Active 1.2 development with the detailed history: every feature branch is merged here first. |
+
+Short-lived `feature/…` branches exist only while a feature is in progress and are deleted
+once merged into `dev/1.2`. Development builds still report version 1.0.0 until the 1.2
+release sets its version ([docs/RELEASE.md](docs/RELEASE.md)).
 
 ## Features
 
@@ -52,10 +66,10 @@ else. Checksums (`SHA256SUMS.txt`) are attached to the release.
   Save a Copy when a disk keeps failing.
 * **Accessibility** — every control is named for screen readers; F6 moves between panes.
 
-In development for 1.2 (branch `dev/1.2`): a **command console** (View ▸ Command Console,
-Ctrl+Shift+C) for typing StudyBoard commands — open pages, search, import, export,
-diagnostics — and for **searching the text inside imported PDFs** (`pdf search "…"`); see
-[docs/COMMAND_CONSOLE.md](docs/COMMAND_CONSOLE.md).
+In development for 1.2 (not released yet; on `dev/1.2` and `main`): a **command console**
+(View ▸ Command Console, Ctrl+Shift+C) for typing StudyBoard commands — open pages, search,
+import, export, diagnostics — and for **searching the text inside imported PDFs**
+(`pdf search "…"`); see [docs/COMMAND_CONSOLE.md](docs/COMMAND_CONSOLE.md).
 
 ## System requirements
 
@@ -133,7 +147,8 @@ More in [docs/ROADMAP.md](docs/ROADMAP.md) (Phase 9, "Not in Phase 9").
 ## Building from source
 
 C++20, CMake 3.25+ with Ninja, Qt 6.8 LTS (with the Qt PDF add-on). Tested toolchains: MSVC
-2022, GCC 13, AppleClang 15.
+2022, GCC 13, AppleClang 15. Check out `v1.0.0` to build the stable release; `main` and
+`dev/1.2` build the 1.2 development state.
 
 ```sh
 cmake --preset release

@@ -567,6 +567,10 @@ so linuxdeploy-plugin-qt's optional GTK theme hint is not applied.
 
 ## Version 1.2 (in development, `dev/1.2`)
 
+Not released. The detailed history is on `dev/1.2`; `main` receives its state as single
+"Integrate …" commits (branch model: [RELEASE.md](RELEASE.md#branches-and-tags)). The latest
+stable release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`).
+
 Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-CI-01,
 1.2-REL-01, 1.2-TXT-01, 1.2-TXT-02, 1.2-IMP-01, 1.2-PDF-01, 1.2-PDF-02, 1.2-PERF-01,
 1.2-REL-02); this section tracks tasks from 1.2-CMD-01 on.

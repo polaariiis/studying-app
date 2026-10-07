@@ -275,10 +275,14 @@ Enforcement:
 
 ## 7. Continuous integration
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main` and to
-phase integration branches (`phase-*`), on pull requests and manually;
-[`package.yml`](../.github/workflows/package.yml) builds and smoke-tests the packages on the
-same pushes (§8):
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main`, to
+development branches (`dev/**`), to `migration/**` and to the former phase branches
+(`phase-*`), on pull requests and manually;
+[`package.yml`](../.github/workflows/package.yml) builds and smoke-tests the packages on
+pushes to `main`, `dev/**` and `phase-*` and manually (§8). Feature branches and
+`release/*` branches are checked by starting both workflows manually
+(`gh workflow run ci.yml --ref <branch>`, the same for `package.yml`); the branch model is in
+[RELEASE.md](RELEASE.md#branches-and-tags). The CI jobs:
 
 | Job | Runners | What it does |
 |---|---|---|
