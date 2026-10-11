@@ -2,6 +2,7 @@
 # persistence or SQLite headers.
 studyapp_add_module(application
     SOURCES
+        include/studyapp/application/BatchExport.hpp
         include/studyapp/application/CommandConsole.hpp
         include/studyapp/application/ComponentVersions.hpp
         include/studyapp/application/PageNavigator.hpp
@@ -12,6 +13,7 @@ studyapp_add_module(application
         include/studyapp/application/WorkspaceSession.hpp
         include/studyapp/application/StartPage.hpp
         include/studyapp/application/WorkspaceStructure.hpp
+        src/BatchExport.cpp
         src/CommandConsole.cpp
         src/ComponentVersions.cpp
         src/PageNavigator.cpp
