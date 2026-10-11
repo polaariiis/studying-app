@@ -87,12 +87,18 @@ std::string exportFileName(std::string_view title, std::string_view fallback) {
         char32_t code = 0;
         const std::size_t bytes = decode(title, at, code);
         if (bytes == 0 || isForbidden(code)) {
+            if (name.size() + 1 > kMaxExportNameBytes) {
+                break;
+            }
             name.push_back('_');
             at += std::max<std::size_t>(bytes, 1);
         } else if (code == U' ' && name.empty()) {
             at += bytes; // leading spaces
             continue;
         } else {
+            if (name.size() + bytes > kMaxExportNameBytes) {
+                break; // a whole character or nothing
+            }
             name.append(title.substr(at, bytes));
             at += bytes;
         }

@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -60,6 +62,49 @@ std::vector<BatchExportItem> itemsOf(const std::vector<std::string>& titles,
                          .fileName = skipped ? std::string() : title + ".pdf"});
     }
     return items;
+}
+
+const std::string kUmlaut = "\xC3\xA4";        // ä, 2 bytes
+const std::string kKanji = "\xE6\x95\xB0";     // 数, 3 bytes
+const std::string kEmoji = "\xF0\x9F\x93\x9D"; // U+1F4DD, 4 bytes
+
+/// Whether `text` is well-formed UTF-8 (no cut, overlong or surrogate sequence).
+bool isValidUtf8(std::string_view text) {
+    for (std::size_t at = 0; at < text.size();) {
+        const auto lead = static_cast<unsigned char>(text[at]);
+        const std::size_t length = lead < 0x80U              ? 1
+                                   : (lead & 0xE0U) == 0xC0U ? 2
+                                   : (lead & 0xF0U) == 0xE0U ? 3
+                                   : (lead & 0xF8U) == 0xF0U ? 4
+                                                             : 0;
+        if (length == 0 || at + length > text.size()) {
+            return false;
+        }
+        char32_t code = length == 1 ? lead : lead & (0xFFU >> (length + 1));
+        for (std::size_t k = 1; k < length; ++k) {
+            const auto next = static_cast<unsigned char>(text[at + k]);
+            if ((next & 0xC0U) != 0x80U) {
+                return false;
+            }
+            code = (code << 6U) | (next & 0x3FU);
+        }
+        const char32_t smallest = length == 1   ? 0U
+                                  : length == 2 ? 0x80U
+                                  : length == 3 ? 0x800U
+                                                : 0x10000U;
+        if (code < smallest || code > 0x10FFFFU || (code >= 0xD800U && code <= 0xDFFFU)) {
+            return false;
+        }
+        at += length;
+    }
+    return true;
+}
+
+/// Code points of well-formed UTF-8: the bytes that do not continue a character.
+std::size_t codePointsOf(std::string_view text) {
+    return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](char c) {
+        return (static_cast<unsigned char>(c) & 0xC0U) != 0x80U;
+    }));
 }
 
 core::Result<void> failure(core::ErrorCode code, std::string message) {
@@ -158,21 +203,58 @@ TEST(ExportFileNameTest, KeepsAtMostAHundredCodePoints) {
     EXPECT_EQ(exportFileName(std::string(100, 'a')), std::string(100, 'a'));
     EXPECT_EQ(exportFileName(std::string(101, 'a')), std::string(100, 'a'));
     EXPECT_EQ(exportFileName(std::string(500, 'a')), std::string(100, 'a'));
-    // Multi-byte titles are cut between characters: 100 characters, never half of one.
-    const std::string umlaut = "\xC3\xA4";        // ä, 2 bytes
-    const std::string kanji = "\xE6\x95\xB0";     // 数, 3 bytes
-    const std::string emoji = "\xF0\x9F\x93\x9D"; // U+1F4DD, 4 bytes
-    for (const std::string& character : {umlaut, kanji, emoji}) {
-        EXPECT_EQ(exportFileName(repeated(character, 130)), repeated(character, 100));
-        // One ASCII letter first, so a cut by bytes would land inside a character.
-        EXPECT_EQ(exportFileName("x" + repeated(character, 130)), "x" + repeated(character, 99));
-    }
+    EXPECT_EQ(exportFileName(std::string(150, 'a')), std::string(100, 'a'));
+    // Two-byte characters are cut between characters: 100 of them, never half of one.
+    EXPECT_EQ(exportFileName(repeated(kUmlaut, 130)), repeated(kUmlaut, 100));
+    // One ASCII letter first, so a cut by bytes would land inside a character.
+    EXPECT_EQ(exportFileName("x" + repeated(kUmlaut, 130)), "x" + repeated(kUmlaut, 99));
     // What the cut leaves is trimmed again; replaced characters count as one each.
     EXPECT_EQ(exportFileName(std::string(99, 'a') + " b"), std::string(99, 'a'));
     EXPECT_EQ(exportFileName(std::string(99, 'a') + ".b"), std::string(99, 'a'));
     EXPECT_EQ(exportFileName(std::string(150, '/')), std::string(100, '_'));
     // Leading spaces are not counted.
     EXPECT_EQ(exportFileName("   " + std::string(100, 'a') + "b"), std::string(100, 'a'));
+}
+
+TEST(ExportFileNameTest, KeepsAtMostTwoHundredBytes) {
+    ASSERT_EQ(kMaxExportNameBytes, 200U);
+    // Three- and four-byte characters reach 200 bytes before 100 characters: the cut is the
+    // last whole character that fits.
+    EXPECT_EQ(exportFileName(repeated(kKanji, 130)), repeated(kKanji, 66)); // 198 bytes
+    EXPECT_EQ(exportFileName(repeated(kEmoji, 130)), repeated(kEmoji, 50)); // 200 bytes
+    // One ASCII letter first, so a cut at byte 200 would land inside a character.
+    EXPECT_EQ(exportFileName("x" + repeated(kKanji, 130)), "x" + repeated(kKanji, 66));   // 199
+    EXPECT_EQ(exportFileName("x" + repeated(kEmoji, 130)), "x" + repeated(kEmoji, 49));   // 197
+    EXPECT_EQ(exportFileName("xy" + repeated(kKanji, 130)), "xy" + repeated(kKanji, 66)); // 200
+    for (const std::string& character : {kKanji, kEmoji}) {
+        for (const char* prefix : {"", "x", "xy", "xyz"}) {
+            const std::string name = exportFileName(prefix + repeated(character, 130));
+            EXPECT_LE(name.size(), kMaxExportNameBytes) << prefix << character;
+            EXPECT_GT(name.size(), kMaxExportNameBytes - character.size()) << prefix << character;
+            EXPECT_LE(codePointsOf(name), kMaxExportNameLength) << prefix << character;
+            EXPECT_TRUE(isValidUtf8(name)) << prefix << character;
+        }
+    }
+    // What the byte cut leaves is trimmed again (the cut falls after " " or "."), and a
+    // replaced character is one byte.
+    EXPECT_EQ(exportFileName(repeated(kKanji, 65) + "ab " + kKanji), repeated(kKanji, 65) + "ab");
+    EXPECT_EQ(exportFileName(repeated(kKanji, 65) + "ab." + kKanji), repeated(kKanji, 65) + "ab");
+    EXPECT_EQ(exportFileName(repeated(kKanji, 66) + "??" + kKanji), repeated(kKanji, 66) + "__");
+    EXPECT_EQ(exportFileName(repeated(kKanji, 66) + "\xFF\xFF\xFF"), repeated(kKanji, 66) + "__");
+}
+
+TEST(ExportFileNameTest, ADeviceNameStillGetsItsUnderscoreAfterTheCut) {
+    // The cut applies to the title; the "_" comes on top of it.
+    const std::string longAscii = "CON." + std::string(150, 'a');
+    EXPECT_EQ(exportFileName(longAscii), "CON_." + std::string(96, 'a')); // 100 characters + "_"
+    const std::string longKanji = "aux." + repeated(kKanji, 130);
+    const std::string name = exportFileName(longKanji);
+    EXPECT_EQ(name, "aux_." + repeated(kKanji, 65)); // 4 + 195 bytes of the title, + "_"
+    EXPECT_EQ(name.size(), kMaxExportNameBytes);
+    EXPECT_TRUE(isValidUtf8(name));
+    // The cut can also be what leaves a device name: "NUL " then the rest is dropped.
+    EXPECT_EQ(exportFileName("NUL" + std::string(97, ' ') + "notes"), "NUL_");
+    EXPECT_EQ(exportFileName("LPT1" + std::string(96, '.') + "notes"), "LPT1_");
 }
 
 // ---------------------------------------------------------------------------- plan
@@ -270,6 +352,36 @@ TEST(BatchExportPlanTest, EmptySectionsAreSkippedAndTakeNoName) {
     EXPECT_TRUE((*plan)[2].skipped());
     // The empty section does not use up "Notes.pdf".
     EXPECT_EQ(fileNamesOf(*plan), (std::vector<std::string>{"", "Notes.pdf", ""}));
+}
+
+TEST(BatchExportPlanTest, MaximumLengthNamesStayDistinctAndWithin255Bytes) {
+    document::test::TestWorkspace t;
+    const auto notebook = t.addNotebook("Course");
+    // Twelve sections with the same title of 130 three-byte characters (390 bytes), one of
+    // them a device name once cut, and a longer extension than ".pdf".
+    const std::string title = repeated(kKanji, 130);
+    for (int i = 0; i < 12; ++i) {
+        t.addPage(t.addSection(notebook, title), "Page");
+    }
+    t.addPage(t.addSection(notebook, "con." + repeated(kEmoji, 130)), "Page");
+    for (const char* extension : {".pdf", ".sbexport"}) {
+        const auto plan = planNotebookExport(t.workspace, notebook, extension);
+        ASSERT_OK(plan);
+        ASSERT_EQ(plan->size(), 13U);
+        std::set<std::string> names;
+        for (const BatchExportItem& item : *plan) {
+            EXPECT_LE(item.fileName.size(), 255U) << item.fileName;
+            EXPECT_TRUE(isValidUtf8(item.fileName)) << item.fileName;
+            EXPECT_TRUE(item.fileName.ends_with(extension)) << item.fileName;
+            names.insert(item.fileName);
+        }
+        EXPECT_EQ(names.size(), 13U);
+        const std::string kept = repeated(kKanji, 66); // 198 bytes
+        EXPECT_EQ((*plan)[0].fileName, kept + extension);
+        EXPECT_EQ((*plan)[1].fileName, kept + " (2)" + extension);
+        EXPECT_EQ((*plan)[11].fileName, kept + " (12)" + extension);
+        EXPECT_EQ((*plan)[12].fileName, "con_." + repeated(kEmoji, 49) + extension);
+    }
 }
 
 TEST(BatchExportPlanTest, AnEmptyNotebookGivesAnEmptyPlan) {
