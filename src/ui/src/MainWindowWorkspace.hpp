@@ -61,6 +61,17 @@ struct MainWindow::OpenWorkspace {
         std::make_shared<application::PdfTextCache>();
     /// The running PDF search's stop flag: set by `cancel`, a new search, or release.
     std::shared_ptr<std::atomic<bool>> pdfSearchStop;
+    /// The running batch export's stop flag, null when none runs (one at a time,
+    /// 1.2-CMD-03): set by `cancel` or release; the export ends before its next page.
+    std::shared_ptr<std::atomic<bool>> exportStop;
+
+    /// Tells a running batch export to stop (and wakes whoever waits on the flag).
+    void stopBatchExport() const {
+        if (exportStop) {
+            exportStop->store(true);
+            exportStop->notify_all();
+        }
+    }
 };
 
 } // namespace studyapp::ui

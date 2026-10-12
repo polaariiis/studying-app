@@ -10,6 +10,8 @@
 #include <QMainWindow>
 #include <QStringList>
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -169,6 +171,16 @@ public:
     [[nodiscard]] CommandConsole* commandConsole() const noexcept { return console_; }
     /// PDF text searches running on pool threads (tests wait for 0).
     [[nodiscard]] int pdfSearchCount() const noexcept { return pdfSearches_; }
+    /// Batch exports (`export notebook pdf`, 1.2-CMD-03) running on pool threads (tests wait
+    /// for 0).
+    [[nodiscard]] int batchExportCount() const noexcept { return batchExports_; }
+    /// Called on the export thread before each section of a batch export is written, with
+    /// the section's position in the notebook (0-based), the file it is written to and the
+    /// export's stop flag — which is notified when it is set, so a hook can wait() on it.
+    /// For tests: they order the export and the GUI thread through it instead of waiting.
+    using BatchExportHook =
+        std::function<void(std::size_t, const std::filesystem::path&, const std::atomic<bool>&)>;
+    void setBatchExportHook(BatchExportHook hook);
 
     // ---- diagnostics ---------------------------------------------------------------------
     /// Zooms the canvas by `zoomFactor` (<= 0: zoom to fit), then pans it back and forth for
@@ -293,6 +305,13 @@ private:
                                                     std::shared_ptr<application::ConsoleSink> out);
     /// Stops a running PDF search; false if none was running.
     bool cancelPdfSearch();
+    /// `export notebook pdf`: writes every section of the open page's notebook as one PDF
+    /// into `folder` on a pool thread, from a copy of the workspace taken now; progress and
+    /// the summary go to `out`.
+    [[nodiscard]] core::Result<void>
+    startNotebookExport(const std::string& folder, std::shared_ptr<application::ConsoleSink> out);
+    /// Stops a running batch export; false if none was running.
+    bool cancelBatchExport();
 
     // Chrome.
     void syncThemeActions();
@@ -444,7 +463,9 @@ private:
     QAction* consoleAction_ = nullptr;
     CommandConsole* console_ = nullptr;
     std::unique_ptr<application::CommandRegistry> commands_;
-    int pdfSearches_ = 0; ///< PDF text searches running on pool threads
+    int pdfSearches_ = 0;  ///< PDF text searches running on pool threads
+    int batchExports_ = 0; ///< batch exports running on pool threads
+    BatchExportHook batchExportHook_;
 };
 
 } // namespace studyapp::ui

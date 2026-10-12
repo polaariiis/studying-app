@@ -246,6 +246,9 @@ MainWindow::~MainWindow() {
     if (open_ && open_->pdfSearchStop) {
         open_->pdfSearchStop->store(true); // a PDF search is not waited for (its worker is killed)
     }
+    if (open_) {
+        open_->stopBatchExport(); // waited for below, but only until its page in progress ends
+    }
     jobs_->waitForDone(); // their file work writes into the workspace, which is still locked
     detach(true);         // best effort: pending writes are flushed; failures are logged
     delete consoleDock_;  // the console refers to the command registry, a member
@@ -1267,6 +1270,8 @@ bool MainWindow::releaseWorkspace(std::optional<std::filesystem::path>& rescued)
     if (open_->pdfSearchStop) {
         open_->pdfSearchStop->store(true); // a PDF search's worker is killed the same way
     }
+    // A batch export ends before its next page; the file it was writing is not left behind.
+    open_->stopBatchExport();
     if (backgroundJobs_ > 0) {
         // Imports still copying write into this workspace's temporary/: finish them while
         // it is locked (a copy takes about 0.4 s per 50 MB); their results are dropped.
@@ -1348,6 +1353,7 @@ void MainWindow::detach(bool closeSession) {
     }
     open_.reset();
     pdfSearches_ = 0; // their finishing steps belong to the closed workspace: dropped
+    batchExports_ = 0;
     revealedPage_.reset();
     revealedSection_.reset();
     if (stack_ != nullptr) {
@@ -2802,8 +2808,10 @@ void MainWindow::updateStatus() {
                     static_cast<int>(session.pendingWriteCount()));
         tip = tr("Saving failed; StudyBoard tries again with the next change.\n%1")
                   .arg(errorText(*error));
-    } else if (backgroundJobs_ > pdfSearches_) {
+    } else if (backgroundJobs_ > pdfSearches_ + batchExports_) {
         status = tr("Importing…");
+    } else if (batchExports_ > 0) {
+        status = tr("Exporting…");
     } else if (pdfSearches_ > 0) {
         status = tr("Searching PDFs…");
     } else {
