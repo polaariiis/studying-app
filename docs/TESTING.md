@@ -155,6 +155,51 @@ running one, closing the workspace during a search (prompt, no job left), a miss
 PDF — all reported in the console, never as dialogs. Packages: `studyapp --self-test` also
 reads the text of a PDF in the worker process and finds a phrase on the right page.
 
+**1.2 additions (batch PDF export, 1.2-CMD-03, D56).** `application_tests`
+(`BatchExportTest`, Qt-free, also in ci-core and the sanitizer build): file names from
+section titles (`ExportFileNameTest`: ordinary and non-ASCII titles kept; forbidden
+characters, control characters and bytes that are not UTF-8 replaced; blank titles;
+leading spaces, trailing spaces and dots; every Windows device name, in any case and with
+an extension; the cut at 100 code points and at 200 bytes between characters, trimmed
+again, with the device rule still applied); the plan of a notebook export
+(`BatchExportPlanTest`: notebook order, pages per section, another notebook left out;
+duplicate titles and names differing only in ASCII case numbered; a numbered name never
+taking another section's name; empty sections skipped without taking a name; an empty and
+an unknown notebook; maximum-length names distinct and within 255 bytes); the runner
+(`BatchExportRunnerTest`: all written in order; a failed item and one that throws do not
+stop the rest; every error code but `Conflict` is a failure; stop set before the first
+item, between items and during the last one; an item returning `Conflict` cancels; skipped
+items; the progress callback's order and outcomes; no items). `ui.ShellTest`:
+`exportFromASnapshotOnAnotherThread` — the same four pages (ink, a text box, an image,
+pages of an imported PDF) exported on the GUI thread and on a `std::thread` from a copy of
+the workspace have the same page count, page sizes and pixels, and what is drawn after the
+copy is not in the thread's file. `exportNotebookPdfFromTheConsole` — `help`; three
+sections give exactly three files named by the rules, the console lines in notebook order
+and the summary; never the GUI thread; each file equals `export section pdf` of its
+section pixel for pixel; an empty section is skipped. `exportNotebookPdfRefusesBeforeWriting`
+— no workspace, no folder, a relative, missing, non-folder or inside-workspace path,
+existing files (left as they were), no open page: an error and nothing written or started.
+`exportNotebookPdfContinuesAfterAFailedSection` and `exportNotebookPdfSurvivesAnException`
+— a file appearing at a section's target and a section whose writing throws fail that
+section only, in the console and not in a dialog. `exportNotebookPdfFromAReadOnlyWorkspace`.
+`exportNotebookPdfWithoutAMissingAsset` — a missing image and a missing imported PDF do
+not fail their sections. `exportNotebookPdfRunsBesideTheWindowAndCancels` — while the
+export is held, commands answer, the status bar and `diagnostics` show it, a second export
+is refused, an import beside it is shown as importing; `cancel` keeps what was written and
+leaves nothing else. `exportNotebookPdfIgnoresLaterEdits` — a stroke drawn while the
+export is held is not in the file. `exportNotebookPdfEndsWithItsWorkspace` — closing the
+workspace, opening another one and destroying the window each stop the export and return,
+with no file for the unwritten sections and no further console line; reopened, the export
+runs to its end. These tests use no fixed waits and no time limits: a test hook
+(`MainWindow::setBatchExportHook`), called on the export thread before each section,
+holds the export on an atomic flag until the test or the stop flag releases it, and the
+tests wait for conditions (`batchExportCount()`). Not covered: the sanitizer build is
+Qt-free, so it runs `BatchExportTest` but none of the `ui` code above — there is no
+address-, undefined-behaviour- or thread-sanitizer run of the export thread; the fallback
+assertion in `PageExport.cpp` is compiled only into Debug builds; an unsaved-changes
+question open while an export finishes, a present but unreadable asset, and I/O errors
+other than an existing file are not provoked.
+
 **1.2 additions (development version, 1.2.0-dev).** `core_tests` (`BuildInfoTest`): the
 version shown to users is the numeric version, optionally followed by `-<label>`
 (`1.2.0-dev`), which package names depend on. Packages: the smoke tests compare
