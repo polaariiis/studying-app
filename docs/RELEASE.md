@@ -14,9 +14,11 @@ each release's packages. Building the packages locally is described in
 | Signing | **Unsigned / signing-ready** — see [Signing](#signing) |
 | Downloads | [GitHub releases](https://github.com/polaariiis/studying-app/releases) |
 
-The next version, 1.2, is in development and **not released**: there is no `v1.2.0` tag or
-release. `dev/1.2` builds report **1.2.0-dev**, a development version (see
-[Development builds](#development-builds)).
+The next version, 1.2, is being prepared for release and is **not released**: there is no
+`v1.2.0` tag or release, and 1.0.0 stays the current release until a `v1.2.0` release is
+published. `dev/1.2` builds report **1.2.0**, without a development label; the earlier
+development build 1.2.0-dev is described under [Development builds](#development-builds),
+and what is still to be done under [Branches and tags](#branches-and-tags).
 
 ## Development builds
 
@@ -32,10 +34,12 @@ demonstration. It is **not a release**: no support, no upgrade promise, and it i
 | Workspaces | Compatible both ways with 1.0.0 (1.2 has no schema migration) |
 
 The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION 1.2.0)` and
-`STUDYAPP_VERSION_LABEL` (`dev`; empty for a release). Together they give
-`STUDYAPP_VERSION` = `1.2.0-dev`, the one value shown by `--version`, About, the status bar
-and `diagnostics`, recorded in workspaces, and used for the package and installer names.
-Only the macOS bundle version stays numeric (`1.2.0`), because macOS requires digits there.
+`STUDYAPP_VERSION_LABEL` (`dev` for a development build; empty for a release). Together
+they give `STUDYAPP_VERSION`, the one value shown by `--version`, About, the status bar
+and `diagnostics`, recorded in workspaces, and used for the package and installer names:
+`1.2.0-dev` with the label `dev`, as in the build above. The label is empty now, in
+preparation for the 1.2.0 release, so `dev/1.2` reports `1.2.0`. Only the macOS bundle
+version stays numeric (`1.2.0`), because macOS requires digits there.
 
 A development build is made like a release (below), with these differences: the tag is made
 on the development branch (`v1.2.0-dev` on `dev/1.2`), never on `main`; `release.yml` marks
@@ -49,12 +53,18 @@ moved once pushed; a later snapshot gets a new tag (`v1.2.0-dev.2`).
 |---|---|---|
 | `v<version>` tags (`v1.0.0`) | The released source of each version | Immutable: never moved, deleted or recreated; the GitHub release and its packages belong to the tag |
 | `v<version>-dev[.<n>]` tags (`v1.2.0-dev`) | A [development build](#development-builds) of a development branch | Immutable like release tags; a GitHub *pre-release* at most, never Latest |
-| `release/<major>.<minor>` (`release/1.0`) | Maintenance line of a released version, created at its tag | Fixes for that version only; a fix release is tagged here |
+| `release/<major>.<minor>` (`release/1.0`; `release/1.2` is planned, not created) | Maintenance line of a version, created at its release-candidate commit on `main` before the tag; the tag is then made on that same commit on `main` | Fixes for that version only; a fix release is tagged here |
 | `main` | Integration line, the default branch | Receives the state of the development branch as one "Integrate …" commit (squash merge), so its history stays short; never force-pushed |
-| `dev/<major>.<minor>` (`dev/1.2`) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; then the feature branch is deleted |
+| `dev/<major>.<minor>` (`dev/1.2`; `dev/2.0` is planned, not created) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; a merged feature branch is deleted only when the maintainer decides. Retired (no new work) once the next development line exists, and deleted only when the maintainer decides |
 
-When 1.2 is released, its tag is made on `main`, `release/1.2` is created at it, and the
-next version's development continues on `dev/1.3`.
+`release/1.2`, `dev/2.0` and the tag `v1.2.0` are **planned and do not exist yet**. For
+the 1.2 release, the completed state of `dev/1.2` is integrated into `main` as one
+"Integrate …" commit, the release candidate; `release/1.2` is created at that commit
+before the tag, and `v1.2.0` is then made on that same commit on `main`. The next
+version's development continues on `dev/2.0` (not `dev/1.3`), created at the tip of
+`dev/1.2` so that it keeps the full history; from then on `dev/1.2` receives no new work.
+A `dev/2.0` created there reports `1.2.0` until its first change sets its own version,
+`2.0.0-dev`.
 
 ## Packages
 
@@ -85,7 +95,8 @@ never touches them.
 2. The version is set in the top-level `CMakeLists.txt` (`project(VERSION …)`, and
    `STUDYAPP_VERSION_LABEL` emptied for a release); the packages, the application's About
    box and the workspace metadata take it from there.
-3. Pushing a tag `v<version>` on `main` runs `release.yml`: the same package and
+3. `release/<major>.<minor>` is created at the release-candidate commit. Pushing a tag
+   `v<version>` on that same commit on `main` runs `release.yml`: the same package and
    smoke-test jobs, the optional signing jobs, then a **draft** GitHub release with every
    package, its `.sha256` file and `SHA256SUMS.txt`. Every package's size and SHA-256, and
    the version each packaged application reports, are also published as notices on the
