@@ -18,6 +18,7 @@
 #include <QSaveFile>
 #include <QSvgGenerator>
 #include <QTextDocument>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
@@ -152,6 +153,8 @@ public:
             return *sources_->text;
         }
         if (!textStyle_) {
+            // An export on another thread must bring its style (ExportSources::text).
+            Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
             textStyle_ = exportTextStyle();
         }
         return *textStyle_;

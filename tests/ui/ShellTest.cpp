@@ -10,6 +10,7 @@
 #include "SessionImageSource.hpp"
 #include "WorkspaceTreeModel.hpp"
 
+#include <studyapp/application/BatchExport.hpp>
 #include <studyapp/application/PageNavigator.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/application/WorkspaceStructure.hpp>
@@ -61,13 +62,16 @@
 #include <QTreeView>
 #include <QTreeWidget>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <variant>
@@ -270,6 +274,17 @@ std::vector<QString> childTitles(const QAbstractItemModel& model, const QModelIn
     }
     return titles;
 }
+
+/// The notebook `export notebook pdf` is tested on, in notebook order: the start section
+/// with a second page; "Week 2: Series" (one page, with a text box); a section named
+/// like the first one (one page). Every page has ink.
+struct ExportBook {
+    core::NotebookId notebook;
+    std::vector<core::SectionId> sections;
+    QStringList files;  ///< the file names of the sections, in notebook order
+    QString title;      ///< of the notebook
+    QString firstTitle; ///< of the first and the third section
+};
 
 } // namespace
 
@@ -3286,7 +3301,7 @@ private Q_SLOTS:
         run(console, QStringLiteral("cancel"));
         QTRY_COMPARE_WITH_TIMEOUT(shell.window->pdfSearchCount(), 0, 3000);
         QVERIFY(console->plainText().contains(u"PDF search for “eigenvalue” was cancelled."_s));
-        QVERIFY(run(console, QStringLiteral("cancel")).contains(u"No PDF search is running."_s));
+        QVERIFY(run(console, QStringLiteral("cancel")).contains(u"Nothing is running."_s));
         QVERIFY(noJobsLeft());
 
         // A new search replaces a running one.
@@ -3334,6 +3349,637 @@ private Q_SLOTS:
         QTRY_COMPARE(shell.window->pdfSearchCount(), 0);
         QVERIFY(console->plainText().contains(u"the PDF file is missing from the workspace"_s));
         QCOMPARE(shell.dialogs->errors.size(), 0); // all of it in the console, no dialogs
+    }
+
+    // ------------------------------------------------------- batch export (1.2-CMD-03)
+
+    static ExportBook makeExportBook(Shell& shell) {
+        const auto made = [&shell](auto created) {
+            if (!created || !shell.window->session()->execute(std::move(created->command))) {
+                qFatal("the export notebook could not be built");
+            }
+            return created->id;
+        };
+        const core::PageId first = *shell.window->activePage();
+        const core::SectionId start = shell.ws().findPage(first)->section;
+        const core::NotebookId notebook = shell.ws().findSection(start)->notebook;
+        const std::string title = shell.ws().findSection(start)->title;
+        (void)shell.draw(first);
+        (void)shell.draw(made(document::commands::createPage(shell.ws(), start, "Second", {},
+                                                             shell.clock, shell.ids)));
+        const core::SectionId series = made(document::commands::createSection(
+            shell.ws(), notebook, "Week 2: Series", shell.clock, shell.ids));
+        const core::PageId seriesPage = made(document::commands::createPage(
+            shell.ws(), series, "Convergence", {}, shell.clock, shell.ids));
+        (void)shell.draw(seriesPage);
+        (void)made(document::commands::createElement(
+            shell.ws(), shell.ws().layersOf(seriesPage).front(),
+            {.transform = {.position = {0, 60}},
+             .payload = document::TextBox{.size = {220, 40}, .text = "Series text"}},
+            shell.ids));
+        const core::SectionId again = made(
+            document::commands::createSection(shell.ws(), notebook, title, shell.clock, shell.ids));
+        (void)shell.draw(made(document::commands::createPage(shell.ws(), again, "Third", {},
+                                                             shell.clock, shell.ids)));
+        const QString name = QString::fromStdString(application::exportFileName(title));
+        return {.notebook = notebook,
+                .sections = {start, series, again},
+                .files = {name + u".pdf"_s, u"Week 2_ Series.pdf"_s, name + u" (2).pdf"_s},
+                .title = QString::fromStdString(shell.ws().findNotebook(notebook)->title),
+                .firstTitle = QString::fromStdString(title)};
+    }
+
+    /// A new, empty folder for exported files.
+    QString freshFolder(const QString& name) {
+        const QString folder = dir_.filePath(name + QString::number(++counter_));
+        if (!QDir().mkpath(folder)) {
+            qFatal("cannot create %s", qPrintable(folder));
+        }
+        return folder;
+    }
+
+    /// Everything in `folder` (also hidden and temporary files), by name.
+    static QStringList entriesOf(const QString& folder) {
+        return QDir(folder).entryList(
+            QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+    }
+
+    static QStringList sorted(QStringList names) {
+        names.sort();
+        return names;
+    }
+
+    /// The pages of a PDF as pictures, one pixel per point (empty if it cannot be read).
+    static std::vector<QImage> pdfPictures(const QString& file) {
+        std::vector<QImage> pictures;
+        QPdfDocument pdf;
+        if (pdf.load(file) != QPdfDocument::Error::None) {
+            return pictures;
+        }
+        for (int page = 0; page < pdf.pageCount(); ++page) {
+            pictures.push_back(renderPdfPage(file, page, pdf.pagePointSize(page).toSize()));
+        }
+        return pictures;
+    }
+
+    /// What the console wrote since it had `before` lines.
+    static QStringList linesSince(const ui::CommandConsole* console, std::size_t before) {
+        QStringList written;
+        const auto& lines = console->lines();
+        for (std::size_t i = before; i < lines.size(); ++i) {
+            written << QString::fromStdString(lines[i].text);
+        }
+        return written;
+    }
+
+    static QString statusOf(const Shell& shell) {
+        return shell.window->findChild<QLabel*>(QStringLiteral("saveStatusLabel"))->text();
+    }
+
+    static QString exportCommand(const QString& folder) {
+        return QStringLiteral("export notebook pdf \"%1\"").arg(folder);
+    }
+
+    // `export notebook pdf <folder>` writes one PDF per section of the open page's notebook,
+    // named after the sections, on a pool thread; the console shows the start, one line per
+    // section in notebook order and the summary. A section's file is what `export section
+    // pdf` writes for it. A section without pages is skipped.
+    void exportNotebookPdfFromTheConsole() {
+        Shell shell(settings(QStringLiteral("exportbook")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportBook"))));
+        const ExportBook book = makeExportBook(shell);
+        ui::CommandConsole* console = openConsole(shell);
+        QVERIFY(run(console, QStringLiteral("help")).contains(u"export notebook pdf <folder>"_s));
+        const QString help = run(console, QStringLiteral("help export notebook pdf"));
+        QVERIFY(help.contains(u"export notebook pdf <folder>"_s));
+        QVERIFY(help.contains(u"Existing files are never replaced"_s));
+        QVERIFY(help.contains(u"export notebook pdf /home/me/algebra"_s));
+
+        std::vector<std::size_t> indices; // written on the export thread, read when it is done
+        std::vector<QThread*> threads;
+        shell.window->setBatchExportHook(
+            [&](std::size_t index, const std::filesystem::path&, const std::atomic<bool>&) {
+                indices.push_back(index);
+                threads.push_back(QThread::currentThread());
+            });
+        const QString folder = freshFolder(QStringLiteral("book"));
+        const QString shown = QDir::toNativeSeparators(folder);
+        auto before = console->lines().size();
+        run(console, exportCommand(folder));
+        QVERIFY(!lastIsError(console));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        QCOMPARE(linesSince(console, before).mid(1), // after the echo of the command
+                 (QStringList{
+                     u"Exporting 3 sections of “%1” to %2… (cancel stops)"_s.arg(book.title, shown),
+                     u"[1/3] %1 → %2 (2 pages)"_s.arg(book.firstTitle, book.files[0]),
+                     u"[2/3] Week 2: Series → Week 2_ Series.pdf (1 page)"_s,
+                     u"[3/3] %1 → %2 (1 page)"_s.arg(book.firstTitle, book.files[2]),
+                     u"Exported 3 of 3 sections to %1"_s.arg(shown)}));
+        QCOMPARE(entriesOf(folder), sorted(book.files)); // exactly these, nothing else
+        const std::vector<std::size_t> pageCounts{2, 1, 1};
+        for (int i = 0; i < 3; ++i) {
+            QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[i])).size(),
+                     pageCounts[static_cast<std::size_t>(i)]);
+        }
+        // Never on the GUI thread.
+        QCOMPARE(indices, (std::vector<std::size_t>{0, 1, 2}));
+        for (const QThread* thread : threads) {
+            QVERIFY(thread != qApp->thread());
+        }
+        QTRY_COMPARE(shell.window->backgroundJobCount(), 0);
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+
+        // Each file is what `export section pdf` writes for that section: the same pages,
+        // page sizes and pixels.
+        for (const std::size_t i : {std::size_t{0}, std::size_t{1}}) {
+            QVERIFY(shell.window->openPage(shell.ws().pagesOf(book.sections[i]).front()));
+            const QString single = dir_.filePath(QStringLiteral("book-section-%1.pdf").arg(i));
+            run(console, QStringLiteral("export section pdf \"%1\"").arg(single));
+            QVERIFY(!lastIsError(console));
+            const auto fromSection = pdfPictures(single);
+            const auto fromBook =
+                pdfPictures(QDir(folder).filePath(book.files[static_cast<qsizetype>(i)]));
+            QCOMPARE(fromSection.size(), pageCounts[i]);
+            QCOMPARE(fromBook.size(), fromSection.size());
+            for (std::size_t page = 0; page < fromSection.size(); ++page) {
+                QVERIFY(!fromSection[page].isNull());
+                QCOMPARE(fromBook[page].size(), fromSection[page].size());
+                QVERIFY(fromBook[page] == fromSection[page]);
+            }
+        }
+
+        // A section without pages is skipped with a line; it is not a failure.
+        auto empty = document::commands::createSection(shell.ws(), book.notebook, "Empty",
+                                                       shell.clock, shell.ids);
+        QVERIFY(empty.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(empty->command)).has_value());
+        const QString second = freshFolder(QStringLiteral("book-empty"));
+        before = console->lines().size();
+        run(console, exportCommand(second));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        const QStringList written = linesSince(console, before);
+        QVERIFY(written.contains(u"[4/4] Empty: no pages, skipped"_s));
+        QCOMPARE(written.last(), u"Exported 3 of 4 sections to %1 (1 skipped)"_s.arg(
+                                     QDir::toNativeSeparators(second)));
+        QVERIFY(!lastIsError(console));
+        QCOMPARE(entriesOf(second), sorted(book.files));
+        QCOMPARE(indices, (std::vector<std::size_t>{0, 1, 2, 0, 1, 2})); // not asked to write it
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+    }
+
+    // What `export notebook pdf` refuses, it refuses before anything is written or started:
+    // no workspace, a relative, missing or non-folder path, a folder inside the workspace,
+    // a file that is already there (left as it was), no open page.
+    void exportNotebookPdfRefusesBeforeWriting() {
+        Shell shell(settings(QStringLiteral("exportrefuse")));
+        ui::CommandConsole* console = openConsole(shell);
+        int hooked = 0;
+        shell.window->setBatchExportHook(
+            [&](std::size_t, const std::filesystem::path&, const std::atomic<bool>&) { ++hooked; });
+        const QString folder = freshFolder(QStringLiteral("refused"));
+        const auto refused = [&](const QString& line, const QString& why) {
+            const QString written = run(console, line);
+            QVERIFY2(lastIsError(console), qPrintable(line));
+            QVERIFY2(written.contains(why), qPrintable(written));
+            QCOMPARE(shell.window->batchExportCount(), 0);
+            QCOMPARE(shell.window->backgroundJobCount(), 0);
+        };
+        refused(exportCommand(folder), u"no workspace is open"_s);
+
+        const auto path = freshPath(QStringLiteral("ExportRefuse"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const ExportBook book = makeExportBook(shell);
+        refused(QStringLiteral("export notebook pdf"), u"folder"_s); // the argument is required
+        refused(QStringLiteral("export notebook pdf out"), u"give the full path of the folder"_s);
+        refused(exportCommand(folder + u"/missing"_s), u"does not exist"_s);
+        const QString file = dir_.filePath(QStringLiteral("refused-a-file.txt"));
+        {
+            QFile out(file);
+            QVERIFY(out.open(QIODevice::WriteOnly));
+            out.write("text");
+        }
+        refused(exportCommand(file), u"is not a folder"_s);
+        const QString root = QString::fromStdU16String(path.u16string());
+        const QStringList inWorkspace = entriesOf(root);
+        refused(exportCommand(root), u"choose a folder outside the workspace folder"_s);
+        QCOMPARE(entriesOf(root), inWorkspace);
+        QVERIFY(entriesOf(folder).isEmpty());
+
+        // A file one of the sections would be written to is already there: nothing is
+        // exported, and the file keeps its content.
+        const auto keep = [&](const QString& name) {
+            QFile out(QDir(folder).filePath(name));
+            QVERIFY(out.open(QIODevice::WriteOnly));
+            out.write("mine");
+        };
+        const auto kept = [&](const QString& name) {
+            QFile in(QDir(folder).filePath(name));
+            return in.open(QIODevice::ReadOnly) && in.readAll() == "mine";
+        };
+        keep(book.files[2]);
+        refused(exportCommand(folder), u"“%1” already exists in “%2”; nothing was exported"_s.arg(
+                                           book.files[2], QDir::toNativeSeparators(folder)));
+        QCOMPARE(entriesOf(folder), QStringList{book.files[2]});
+        QVERIFY(kept(book.files[2]));
+        keep(book.files[0]);
+        refused(exportCommand(folder),
+                u"“%1” and 1 more file already exist in"_s.arg(book.files[0]));
+        QCOMPARE(entriesOf(folder), sorted({book.files[0], book.files[2]}));
+        QVERIFY(kept(book.files[0]) && kept(book.files[2]));
+
+        // No page is open.
+        shell.select(book.notebook);
+        shell.action("actionDeleteItem")->trigger(); // confirmed by the scripted dialog
+        QVERIFY(!shell.window->activePage().has_value());
+        const QString other = freshFolder(QStringLiteral("refused-no-page"));
+        refused(exportCommand(other), u"open a page first"_s);
+        QVERIFY(entriesOf(other).isEmpty());
+        QCOMPARE(hooked, 0); // no export was ever started
+        // And with nothing running, cancel says so; that is not an error.
+        QVERIFY(run(console, QStringLiteral("cancel")).contains(u"Nothing is running."_s));
+        QVERIFY(!lastIsError(console));
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+    }
+
+    // A section that cannot be written does not stop the others: a file that appears at its
+    // target after the command was entered is not replaced, the section is reported as
+    // failed, and the summary counts it.
+    void exportNotebookPdfContinuesAfterAFailedSection() {
+        Shell shell(settings(QStringLiteral("exportfail")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportFail"))));
+        const ExportBook book = makeExportBook(shell);
+        ui::CommandConsole* console = openConsole(shell);
+        shell.window->setBatchExportHook(
+            [](std::size_t index, const std::filesystem::path& target, const std::atomic<bool>&) {
+                if (index == 1) {
+                    std::ofstream(target, std::ios::binary) << "mine";
+                }
+            });
+        const QString folder = freshFolder(QStringLiteral("failed"));
+        const QString shown = QDir::toNativeSeparators(folder);
+        const auto before = console->lines().size();
+        run(console, exportCommand(folder));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        QCOMPARE(linesSince(console, before).mid(2),
+                 (QStringList{u"[1/3] %1 → %2 (2 pages)"_s.arg(book.firstTitle, book.files[0]),
+                              u"[2/3] Week 2: Series: not exported: the file already exists"_s,
+                              u"[3/3] %1 → %2 (1 page)"_s.arg(book.firstTitle, book.files[2]),
+                              u"Exported 2 of 3 sections to %1 (1 failed)"_s.arg(shown)}));
+        const auto& lines = console->lines();
+        QVERIFY(lines[lines.size() - 3].style == application::ConsoleLine::Style::Error);
+        QVERIFY(!lastIsError(console)); // the summary is not an error line
+        QCOMPARE(entriesOf(folder), sorted(book.files));
+        QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[0])).size(), std::size_t{2});
+        QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[2])).size(), std::size_t{1});
+        QFile untouched(QDir(folder).filePath(book.files[1]));
+        QVERIFY(untouched.open(QIODevice::ReadOnly));
+        QCOMPARE(untouched.readAll(), QByteArray("mine"));
+        QCOMPARE(shell.dialogs->errors.size(), 0); // reported in the console, no dialog
+    }
+
+    // A section whose writing throws fails like any other: reported in the console with its
+    // title, no file for it, the others written; nothing reaches a dialog.
+    void exportNotebookPdfSurvivesAnException() {
+        Shell shell(settings(QStringLiteral("exportthrow")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportThrow"))));
+        const ExportBook book = makeExportBook(shell);
+        ui::CommandConsole* console = openConsole(shell);
+        shell.window->setBatchExportHook(
+            [](std::size_t index, const std::filesystem::path&, const std::atomic<bool>&) {
+                if (index == 1) {
+                    throw std::runtime_error("the disk is gone");
+                }
+            });
+        const QString folder = freshFolder(QStringLiteral("thrown"));
+        const auto before = console->lines().size();
+        run(console, exportCommand(folder));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        QCOMPARE(linesSince(console, before).mid(2),
+                 (QStringList{u"[1/3] %1 → %2 (2 pages)"_s.arg(book.firstTitle, book.files[0]),
+                              u"[2/3] Week 2: Series: not exported: the disk is gone"_s,
+                              u"[3/3] %1 → %2 (1 page)"_s.arg(book.firstTitle, book.files[2]),
+                              u"Exported 2 of 3 sections to %1 (1 failed)"_s.arg(
+                                  QDir::toNativeSeparators(folder))}));
+        const auto& lines = console->lines();
+        QVERIFY(lines[lines.size() - 3].style == application::ConsoleLine::Style::Error);
+        QCOMPARE(entriesOf(folder), sorted({book.files[0], book.files[2]})); // none for it
+        QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[0])).size(), std::size_t{2});
+        QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[2])).size(), std::size_t{1});
+        QTRY_COMPARE(shell.window->backgroundJobCount(), 0);
+        QCOMPARE(statusOf(shell), u"All changes saved"_s);
+        QCOMPARE(shell.dialogs->errors.size(), 0); // in the console, not in a dialog
+    }
+
+    // A workspace opened read-only is exported like any other: exporting only reads.
+    void exportNotebookPdfFromAReadOnlyWorkspace() {
+        Shell owner(settings(QStringLiteral("exportro1")));
+        const auto path = freshPath(QStringLiteral("ExportReadOnly"));
+        QVERIFY(owner.window->createWorkspace(path));
+        const ExportBook book = makeExportBook(owner);
+        Shell shell(settings(QStringLiteral("exportro2")));
+        QVERIFY(shell.window->openWorkspace(path)); // in use: opened read-only
+        QVERIFY(shell.window->session()->isReadOnly());
+        QVERIFY(shell.window->activePage().has_value());
+        ui::CommandConsole* console = openConsole(shell);
+        const QString folder = freshFolder(QStringLiteral("readonly"));
+        const auto before = console->lines().size();
+        run(console, exportCommand(folder));
+        QVERIFY(!lastIsError(console));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        const QStringList written = linesSince(console, before);
+        QCOMPARE(written.last(),
+                 u"Exported 3 of 3 sections to %1"_s.arg(QDir::toNativeSeparators(folder)));
+        for (std::size_t i = before; i < console->lines().size(); ++i) {
+            QVERIFY(console->lines()[i].style != application::ConsoleLine::Style::Error);
+        }
+        QCOMPARE(entriesOf(folder), sorted(book.files));
+        const std::vector<std::size_t> pageCounts{2, 1, 1};
+        for (int i = 0; i < 3; ++i) {
+            QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[i])).size(),
+                     pageCounts[static_cast<std::size_t>(i)]);
+        }
+        QVERIFY(shell.window->session()->isReadOnly());
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        QCOMPARE(owner.dialogs->errors.size(), 0);
+    }
+
+    // An image or an imported PDF whose file has gone missing from the workspace does not
+    // fail its section: the pages are exported without it, as the single-section export and
+    // the canvas show them.
+    void exportNotebookPdfWithoutAMissingAsset() {
+        Shell shell(settings(QStringLiteral("exportasset")));
+        const auto path = freshPath(QStringLiteral("ExportAsset"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const ExportBook book = makeExportBook(shell);
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("export-asset.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        shell.waitForImports();
+        shell.dialogs->importDocument = toPath(writeTextPdf(QStringLiteral("Gone.pdf")));
+        shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
+        const auto sections = shell.ws().sectionsOf(book.notebook);
+        QCOMPARE(sections.size(), std::size_t{4}); // the PDF became a section of the notebook
+        // Reopened, so that nothing of this session holds the files; then they disappear.
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        std::vector<core::PageId> pages;
+        for (const core::SectionId section : shell.ws().sectionsOf(book.notebook)) {
+            const auto of = shell.ws().pagesOf(section);
+            pages.insert(pages.end(), of.begin(), of.end());
+        }
+        const std::vector<core::AssetId> assets = ui::exportAssets(shell.ws(), pages);
+        QCOMPARE(assets.size(), std::size_t{2}); // the image and the PDF
+        for (const core::AssetId asset : assets) {
+            const auto stored = shell.window->session()->assetPath(asset);
+            QVERIFY(stored.has_value());
+            std::error_code ec;
+            QVERIFY(std::filesystem::remove(*stored, ec));
+            QVERIFY(!std::filesystem::exists(*stored));
+        }
+
+        ui::CommandConsole* console = openConsole(shell);
+        const QString folder = freshFolder(QStringLiteral("missing-asset"));
+        const auto before = console->lines().size();
+        run(console, exportCommand(folder));
+        QVERIFY(!lastIsError(console));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        const QStringList written = linesSince(console, before);
+        QVERIFY(written.contains(u"[4/4] Gone → Gone.pdf (3 pages)"_s));
+        QCOMPARE(written.last(), u"Exported 4 of 4 sections to %1"_s.arg(
+                                     QDir::toNativeSeparators(folder))); // none failed
+        for (std::size_t i = before; i < console->lines().size(); ++i) {
+            QVERIFY(console->lines()[i].style != application::ConsoleLine::Style::Error);
+        }
+        QCOMPARE(entriesOf(folder), sorted(book.files + QStringList{u"Gone.pdf"_s}));
+        QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[0])).size(), std::size_t{2});
+        // The PDF's pages are there at their size (612 × 792 pt), as paper: its text is not.
+        const auto gone = pdfPictures(QDir(folder).filePath(u"Gone.pdf"_s));
+        QCOMPARE(gone.size(), std::size_t{3});
+        QCOMPARE(gone[0].size(), QSize(612, 792));
+        bool text = false;
+        for (int y = 50; y < 100 && !text; ++y) {
+            for (int x = 72; x < 400 && !text; ++x) {
+                text = gone[0].pixelColor(x, y).red() < 128;
+            }
+        }
+        QVERIFY(!text);
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+    }
+
+    // While an export runs the window works: commands answer, the status bar and diagnostics
+    // show it, a second export is refused, an import beside it is shown as importing.
+    // `cancel` stops it before the next section: what was written stays, nothing else is
+    // left in the folder.
+    void exportNotebookPdfRunsBesideTheWindowAndCancels() {
+        Shell shell(settings(QStringLiteral("exportcancel")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportCancel"))));
+        const ExportBook book = makeExportBook(shell);
+        ui::CommandConsole* console = openConsole(shell);
+        // The export thread stops before the second section until the export is cancelled.
+        std::atomic<bool> reached{false};
+        std::vector<QThread*> threads;
+        shell.window->setBatchExportHook(
+            [&](std::size_t index, const std::filesystem::path&, const std::atomic<bool>& stop) {
+                threads.push_back(QThread::currentThread());
+                if (index == 1) {
+                    reached.store(true);
+                    stop.wait(false);
+                }
+            });
+        const QString folder = freshFolder(QStringLiteral("cancelled"));
+        const QString shown = QDir::toNativeSeparators(folder);
+        const auto before = console->lines().size();
+        run(console, exportCommand(folder));
+        QCOMPARE(shell.window->batchExportCount(), 1);
+        QCOMPARE(statusOf(shell), u"Exporting…"_s);
+        QTRY_VERIFY(reached.load());
+        QTRY_VERIFY(linesSince(console, before).join(u'\n').contains(u"[1/3]"_s));
+
+        // The GUI thread is free: a command answers, diagnostics count the export.
+        const QString listed = run(console, QStringLiteral("list pages"));
+        QVERIFY(!lastIsError(console));
+        QVERIFY(listed.contains(u"Second"_s));
+        QVERIFY(run(console, QStringLiteral("diagnostics")).contains(u"1 batch export)"_s));
+        // One export at a time.
+        const QString second = freshFolder(QStringLiteral("cancelled-second"));
+        const QString refusal = run(console, exportCommand(second));
+        QVERIFY(lastIsError(console));
+        QVERIFY(refusal.contains(u"an export is already running; cancel stops it"_s));
+        QCOMPARE(shell.window->batchExportCount(), 1);
+        QVERIFY(entriesOf(second).isEmpty());
+        // An import beside it is shown as importing, then the export again.
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("beside-export.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        QCOMPARE(shell.window->backgroundJobCount(), 2);
+        QCOMPARE(statusOf(shell), u"Importing…"_s);
+        QTRY_COMPARE(shell.window->backgroundJobCount(), 1);
+        QCOMPARE(statusOf(shell), u"Exporting…"_s);
+        QCOMPARE(shell.window->batchExportCount(), 1);
+
+        QVERIFY(!run(console, QStringLiteral("cancel")).contains(u"Nothing is running"_s));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        QCOMPARE(linesSince(console, before).last(),
+                 u"Export cancelled: 1 of 3 sections exported to %1"_s.arg(shown));
+        QVERIFY(!lastIsError(console));
+        QCOMPARE(entriesOf(folder), QStringList{book.files[0]}); // no second file, no leftover
+        QCOMPARE(pdfPictures(QDir(folder).filePath(book.files[0])).size(), std::size_t{2});
+        QCOMPARE(threads.size(), std::size_t{2}); // the third section was never started
+        for (const QThread* thread : threads) {
+            QVERIFY(thread != qApp->thread());
+        }
+        QTRY_COMPARE(shell.window->backgroundJobCount(), 0);
+        QCOMPARE(statusOf(shell), u"All changes saved"_s);
+        QVERIFY(run(console, QStringLiteral("cancel")).contains(u"Nothing is running."_s));
+        QVERIFY(!lastIsError(console));
+
+        // Nothing of the cancelled export is in the way of the next one.
+        shell.window->setBatchExportHook({});
+        const QString again = freshFolder(QStringLiteral("cancelled-again"));
+        run(console, exportCommand(again));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        QCOMPARE(entriesOf(again), sorted(book.files));
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+    }
+
+    // The export writes the workspace as it was when the command was entered: what is drawn
+    // while it runs is in the workspace and not in the files.
+    void exportNotebookPdfIgnoresLaterEdits() {
+        Shell shell(settings(QStringLiteral("exportedit")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportEdit"))));
+        const ExportBook book = makeExportBook(shell);
+        ui::CommandConsole* console = openConsole(shell);
+        const core::PageId seriesPage = shell.ws().pagesOf(book.sections[1]).front();
+        // The second section as it is now.
+        QVERIFY(shell.window->openPage(seriesPage));
+        const QString earlier = dir_.filePath(QStringLiteral("edit-before.pdf"));
+        run(console, QStringLiteral("export section pdf \"%1\"").arg(earlier));
+        QVERIFY(!lastIsError(console));
+        const auto before = pdfPictures(earlier);
+        QCOMPARE(before.size(), std::size_t{1});
+
+        // The export thread stops before the second section until the test lets it go on.
+        std::atomic<bool> reached{false};
+        std::atomic<bool> release{false};
+        shell.window->setBatchExportHook(
+            [&](std::size_t index, const std::filesystem::path&, const std::atomic<bool>&) {
+                if (index == 1) {
+                    reached.store(true);
+                    release.wait(false);
+                }
+            });
+        const QString folder = freshFolder(QStringLiteral("edited"));
+        run(console, exportCommand(folder));
+        QTRY_VERIFY(reached.load());
+        const auto layer = shell.ws().layersOf(seriesPage).front();
+        const auto elements = shell.ws().elementsOf(layer).size();
+        auto later = document::commands::createElement(
+            shell.ws(), layer,
+            {.payload = document::Stroke{.color = core::Color::black(),
+                                         .baseWidth = 30.0F,
+                                         .points = document::makeStrokePoints(
+                                             {{0, 200, 1}, {300, 260, 1}})}},
+            shell.ids);
+        QVERIFY(later.has_value());
+        QVERIFY(shell.window->session()->execute(std::move(later->command)).has_value());
+        release.store(true);
+        release.notify_all();
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        QCOMPARE(entriesOf(folder), sorted(book.files));
+
+        const auto exported = pdfPictures(QDir(folder).filePath(book.files[1]));
+        QCOMPARE(exported.size(), std::size_t{1});
+        QCOMPARE(exported[0].size(), before[0].size());
+        QVERIFY(exported[0] == before[0]); // as before the stroke
+        // The stroke is in the workspace, and an export made now shows it.
+        QCOMPARE(shell.ws().elementsOf(layer).size(), elements + 1);
+        const QString now = dir_.filePath(QStringLiteral("edit-after.pdf"));
+        run(console, QStringLiteral("export section pdf \"%1\"").arg(now));
+        const auto after = pdfPictures(now);
+        QCOMPARE(after.size(), std::size_t{1});
+        QVERIFY(after[0].size() != before[0].size() || !(after[0] == before[0]));
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+    }
+
+    // Closing the workspace, opening another one or closing the window while an export runs
+    // stops the export before its next section and returns; the file in progress is not left
+    // behind and nothing more is printed for the workspace that was closed.
+    void exportNotebookPdfEndsWithItsWorkspace() {
+        Shell shell(settings(QStringLiteral("exportclose")));
+        const auto path = freshPath(QStringLiteral("ExportClose"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const ExportBook book = makeExportBook(shell);
+        ui::CommandConsole* console = openConsole(shell);
+        // The export thread stops before the second section until the export is told to stop
+        // — which closing has to do, or it would wait for ever.
+        std::atomic<bool> reached{false};
+        const auto hold = [&](std::size_t index, const std::filesystem::path&,
+                              const std::atomic<bool>& stop) {
+            if (index == 1) {
+                reached.store(true);
+                stop.wait(false);
+            }
+        };
+        const auto startHeld = [&](const QString& folder) {
+            reached.store(false);
+            shell.window->setBatchExportHook(hold);
+            const auto before = console->lines().size();
+            run(console, exportCommand(folder));
+            QVERIFY(!lastIsError(console));
+            QTRY_VERIFY(reached.load());
+            QTRY_VERIFY(linesSince(console, before).join(u'\n').contains(u"[1/3]"_s));
+        };
+
+        // Close Workspace.
+        const QString closed = freshFolder(QStringLiteral("closed"));
+        startHeld(closed);
+        auto printed = console->lines().size();
+        QVERIFY(shell.window->closeWorkspace());
+        QCOMPARE(shell.window->batchExportCount(), 0);
+        QTRY_COMPARE(shell.window->backgroundJobCount(), 0); // its last steps were delivered
+        QCOMPARE(console->lines().size(), printed);          // and printed nothing
+        QCOMPARE(entriesOf(closed), QStringList{book.files[0]});
+        QCOMPARE(pdfPictures(QDir(closed).filePath(book.files[0])).size(), std::size_t{2});
+        // Reopened, the same export runs to its end.
+        QVERIFY(shell.window->openWorkspace(path));
+        shell.window->setBatchExportHook({});
+        const QString reopened = freshFolder(QStringLiteral("reopened"));
+        printed = console->lines().size();
+        run(console, exportCommand(reopened));
+        QTRY_COMPARE(shell.window->batchExportCount(), 0);
+        QCOMPARE(linesSince(console, printed).last(),
+                 u"Exported 3 of 3 sections to %1"_s.arg(QDir::toNativeSeparators(reopened)));
+        QCOMPARE(entriesOf(reopened), sorted(book.files));
+
+        // Another workspace is opened.
+        const QString replaced = freshFolder(QStringLiteral("replaced"));
+        startHeld(replaced);
+        printed = console->lines().size();
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportOther"))));
+        QCOMPARE(shell.window->batchExportCount(), 0);
+        QTRY_COMPARE(shell.window->backgroundJobCount(), 0);
+        QCOMPARE(console->lines().size(), printed);
+        QCOMPARE(entriesOf(replaced), QStringList{book.files[0]});
+        QCOMPARE(shell.ws().pageCount(), std::size_t{1}); // the new workspace is the open one
+        QCOMPARE(statusOf(shell), u"All changes saved"_s);
+
+        // The window is destroyed.
+        QVERIFY(shell.window->openWorkspace(path));
+        const QString destroyed = freshFolder(QStringLiteral("destroyed"));
+        startHeld(destroyed);
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+        shell.tester.reset();
+        shell.window.reset();
+        QCoreApplication::processEvents(); // what the export still posted finds no window
+        QCOMPARE(entriesOf(destroyed), QStringList{book.files[0]});
+        QCOMPARE(pdfPictures(QDir(destroyed).filePath(book.files[0])).size(), std::size_t{2});
     }
 
     void navigationCanBeHidden() {

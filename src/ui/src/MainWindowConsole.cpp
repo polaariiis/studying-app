@@ -12,6 +12,7 @@
 #include "PdfInspectionClient.hpp"
 #include "PlannerPanel.hpp"
 
+#include <studyapp/application/BatchExport.hpp>
 #include <studyapp/application/CommandConsole.hpp>
 #include <studyapp/application/ComponentVersions.hpp>
 #include <studyapp/application/PdfTextSearch.hpp>
@@ -25,16 +26,22 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFileInfo>
+#include <QPointer>
 #include <QStatusBar>
 #include <QSysInfo>
 #include <QThreadPool>
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
+#include <filesystem>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
+#include <system_error>
 #include <utility>
+#include <vector>
 
 namespace studyapp::ui {
 
@@ -83,6 +90,16 @@ std::string bytesText(std::size_t bytes) {
         return std::to_string(bytes / 1024U) + " KiB";
     }
     return std::to_string(bytes) + " bytes";
+}
+
+/// `name` (UTF-8) in `folder`.
+std::filesystem::path fileIn(const std::filesystem::path& folder, const std::string& name) {
+    return folder / std::filesystem::path(std::u8string(name.begin(), name.end()));
+}
+
+/// "2 of 3 sections".
+std::string sectionsOf(std::size_t done, std::size_t total) {
+    return std::to_string(done) + " of " + plural(total, "section", "sections");
 }
 
 } // namespace
@@ -381,6 +398,193 @@ bool MainWindow::cancelPdfSearch() {
         return false;
     }
     open_->pdfSearchStop->store(true);
+    return true;
+}
+
+// ---------------------------------------------------------------------------- batch export
+
+void MainWindow::setBatchExportHook(BatchExportHook hook) {
+    batchExportHook_ = std::move(hook);
+}
+
+core::Result<void> MainWindow::startNotebookExport(const std::string& folder,
+                                                   std::shared_ptr<ConsoleSink> out) {
+    const auto page = activePage();
+    if (!page) {
+        return fail("open a page first (open page <title>)");
+    }
+    if (open_->exportStop) {
+        return fail("an export is already running; cancel stops it");
+    }
+    if (!QDir::isAbsolutePath(toQString(folder))) {
+        return fail("give the full path of the folder to write into");
+    }
+    const QFileInfo target(QDir::cleanPath(toQString(folder)));
+    const std::string shown = toUtf8(QDir::toNativeSeparators(target.filePath()));
+    if (!target.exists()) {
+        return core::makeError(core::ErrorCode::NotFound,
+                               "the folder " + inQuotes(shown) + " does not exist");
+    }
+    if (!target.isDir()) {
+        return fail(inQuotes(shown) + " is not a folder");
+    }
+    const std::filesystem::path directory(target.filePath().toStdU16String());
+    // The workspace directory belongs to StudyBoard: never write into it.
+    if (open_->session->isInsideWorkspace(directory / "export.pdf")) {
+        return fail("choose a folder outside the workspace folder");
+    }
+    finishTextEditing(); // what is typed is part of the page
+    const document::Workspace& ws = open_->session->workspace();
+    const core::NotebookId notebook = ws.findSection(ws.findPage(*page)->section)->notebook;
+    auto plan = application::planNotebookExport(ws, notebook);
+    if (!plan) {
+        return tl::unexpected(plan.error());
+    }
+    // Nothing is ever replaced: an existing file refuses the whole export before it starts.
+    std::vector<core::PageId> pages;
+    std::vector<std::string> existing;
+    for (const application::BatchExportItem& item : *plan) {
+        if (item.skipped()) {
+            continue;
+        }
+        pages.insert(pages.end(), item.pages.begin(), item.pages.end());
+        std::error_code ec;
+        if (std::filesystem::exists(fileIn(directory, item.fileName), ec) || ec) {
+            existing.push_back(item.fileName);
+        }
+    }
+    if (pages.empty()) {
+        return fail("the notebook has no pages to export");
+    }
+    if (!existing.empty()) {
+        return core::makeError(
+            core::ErrorCode::AlreadyExists,
+            inQuotes(existing.front()) +
+                (existing.size() > 1
+                     ? " and " + plural(existing.size() - 1, "more file", "more files") +
+                           " already exist"
+                     : std::string(" already exists")) +
+                " in " + inQuotes(shown) + "; nothing was exported");
+    }
+    // Everything the export thread uses, taken here on the GUI thread as plain data (the
+    // session, its workspace and the application's font and palette are not thread-safe): a
+    // copy of the workspace, so later edits are not in the output; the files of the assets
+    // the pages show; the text style.
+    auto snapshot = std::make_shared<const document::Workspace>(ws);
+    std::map<core::AssetId, std::filesystem::path> files;
+    for (const core::AssetId asset : exportAssets(ws, pages)) {
+        if (auto file = open_->session->assetPath(asset)) {
+            files.emplace(asset, std::move(*file));
+        }
+    }
+    auto stop = std::make_shared<std::atomic<bool>>(false);
+    open_->exportStop = stop;
+    out->muted("Exporting " + plural(plan->size(), "section", "sections") + " of " +
+               inQuotes(ws.findNotebook(notebook)->title) + " to " + shown +
+               "\u2026 (cancel stops)");
+    ++batchExports_;
+    updateStatus();
+    runInBackground([window = QPointer<MainWindow>(this), alive = std::weak_ptr<void>(open_->alive),
+                     items = std::move(*plan), directory, shown, snapshot = std::move(snapshot),
+                     files = std::move(files), text = exportTextStyle(), stop,
+                     hook = batchExportHook_, out]() -> std::function<void()> {
+        // Pool thread: the values captured above and nothing of the window. `window`, `alive`
+        // and `out` are only passed on to steps that run on the GUI thread.
+        using Outcome = application::BatchExportOutcome;
+        application::BatchExportResult result;
+        std::string failure;
+        try {
+            const ExportSources sources{
+                .assetPath = [&files](core::AssetId asset) -> std::optional<std::filesystem::path> {
+                    const auto file = files.find(asset);
+                    return file != files.end() ? std::optional(file->second) : std::nullopt;
+                },
+                .progress = [&stop](std::size_t, std::size_t) { return !stop->load(); },
+                .text = text};
+            result = application::runBatchExport(
+                items,
+                [&](const application::BatchExportItem& item) -> core::Result<void> {
+                    const std::filesystem::path file = fileIn(directory, item.fileName);
+                    if (hook) {
+                        hook(static_cast<std::size_t>(&item - items.data()), file, *stop);
+                    }
+                    // Checked again: a file that appeared since the command was entered is
+                    // not replaced. (Conflict is kept for a cancel: it would end the batch.)
+                    std::error_code ec;
+                    if (std::filesystem::exists(file, ec) || ec) {
+                        return core::makeError(core::ErrorCode::AlreadyExists,
+                                               "the file already exists");
+                    }
+                    return ui::exportPages(*snapshot, item.pages, file, ExportFormat::Pdf, sources);
+                },
+                *stop,
+                [&](std::size_t index, const Outcome& outcome) {
+                    const application::BatchExportItem& item = items[index];
+                    application::ConsoleLine line{.text = "[" + std::to_string(index + 1) + "/" +
+                                                          std::to_string(items.size()) + "] " +
+                                                          item.title};
+                    if (outcome.state == Outcome::State::Done) {
+                        line.text += " \u2192 " + item.fileName + " (" +
+                                     plural(item.pages.size(), "page", "pages") + ")";
+                    } else if (outcome.state == Outcome::State::Skipped) {
+                        line.text += ": no pages, skipped";
+                        line.style = application::ConsoleLine::Style::Muted;
+                    } else {
+                        line.text += ": not exported: " + outcome.message;
+                        line.style = application::ConsoleLine::Style::Error;
+                    }
+                    // Printed on the GUI thread, and only into the console of the workspace
+                    // the export belongs to.
+                    QMetaObject::invokeMethod(
+                        qApp,
+                        [window, alive, out, line = std::move(line)]() mutable {
+                            if (window != nullptr && !alive.expired()) {
+                                out->write(std::move(line));
+                            }
+                        },
+                        Qt::QueuedConnection);
+                });
+        } catch (const std::exception& error) {
+            failure = error.what();
+        } catch (...) {
+            failure = "an unexpected error occurred";
+        }
+        return [window, out, stop, shown, result = std::move(result),
+                failure = std::move(failure)] {
+            --window->batchExports_;
+            if (window->open_ && window->open_->exportStop == stop) {
+                window->open_->exportStop.reset();
+            }
+            window->updateStatus();
+            if (!failure.empty()) {
+                out->error("export notebook pdf: stopped by an error: " + failure);
+                return;
+            }
+            using State = application::BatchExportOutcome::State;
+            const std::size_t failed = result.count(State::Failed);
+            const std::size_t skipped = result.count(State::Skipped);
+            std::string counts;
+            if (failed > 0 || skipped > 0) {
+                counts = " (" + (failed > 0 ? std::to_string(failed) + " failed" : std::string()) +
+                         (failed > 0 && skipped > 0 ? ", " : "") +
+                         (skipped > 0 ? std::to_string(skipped) + " skipped" : std::string()) + ")";
+            }
+            const std::string done = sectionsOf(result.count(State::Done), result.outcomes.size());
+            if (result.cancelled) {
+                out->muted("Export cancelled: " + done + " exported to " + shown + counts);
+            } else {
+                out->text("Exported " + done + " to " + shown + counts);
+            }
+        };
+    });
+    return {};
+}
+
+bool MainWindow::cancelBatchExport() {
+    if (!open_ || !open_->exportStop || open_->exportStop->load()) {
+        return false;
+    }
+    open_->stopBatchExport();
     return true;
 }
 
@@ -721,12 +925,15 @@ void MainWindow::registerConsoleCommands(application::CommandRegistry& registry)
     add({.words = {"cancel"},
          .aliases = {},
          .arguments = {},
-         .summary = "Stop a running PDF search",
-         .details = {},
+         .summary = "Stop a running PDF search or batch export",
+         .details = "A batch export stops before its next page: the sections already written "
+                    "stay, the file in progress\nis not left behind.",
          .examples = {},
          .handler = [this](const CommandCall&, ConsoleSink& out) -> core::Result<void> {
-             if (!cancelPdfSearch()) {
-                 out.muted("No PDF search is running.");
+             const bool search = cancelPdfSearch();
+             const bool exporting = cancelBatchExport();
+             if (!search && !exporting) {
+                 out.muted("Nothing is running.");
              }
              return {};
          }});
@@ -915,6 +1122,25 @@ void MainWindow::registerConsoleCommands(application::CommandRegistry& registry)
                "Export the current page as SVG");
     exportSpec({"export", "section", "pdf"}, ExportFormat::Pdf, true,
                "Export every page of the current section as one PDF");
+    add({.words = {"export", "notebook", "pdf"},
+         .aliases = {},
+         .arguments = {{"folder", ArgumentKind::Required}},
+         .summary = "Export every section of the current notebook, one PDF each",
+         .details = "Writes one PDF per section of the open page's notebook into the folder, "
+                    "named after the section,\nin the background: the window stays usable, "
+                    "each section is reported as it is written, and\n`cancel` stops it. The "
+                    "folder must exist, be given with its full path and lie outside the\n"
+                    "workspace. Existing files are never replaced: if one of the files is "
+                    "already there, nothing\nis exported. Changes made while it runs are not "
+                    "in the output.",
+         .examples = {"export notebook pdf \"C:\\Users\\me\\Documents\\Algebra\"",
+                      "export notebook pdf /home/me/algebra"},
+         .handler = [this, session](const CommandCall& call, ConsoleSink&) -> core::Result<void> {
+             if (auto s = session(); !s) {
+                 return tl::unexpected(s.error());
+             }
+             return startNotebookExport(call.arg(0), console_->laterSink());
+         }});
 
     // ---- history of the document
     const auto undoRedo = [this, writable](bool isUndo) {
@@ -999,6 +1225,9 @@ void MainWindow::registerConsoleCommands(application::CommandRegistry& registry)
                  "Background: " + plural(static_cast<std::size_t>(backgroundJobs_), "job", "jobs") +
                      " (" +
                      plural(static_cast<std::size_t>(pdfSearches_), "PDF search", "PDF searches") +
+                     ", " +
+                     plural(static_cast<std::size_t>(batchExports_), "batch export",
+                            "batch exports") +
                      "), pool of " + std::to_string(jobs_->maxThreadCount()) + " threads",
                  1);
              out.text("PDF worker: " +
