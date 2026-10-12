@@ -23,6 +23,8 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <optional>
+#include <variant>
 #include <vector>
 
 namespace studyapp::ui {
@@ -89,12 +91,12 @@ QPainterPath meshPath(const render::MeshData& mesh) {
 /// Text boxes are laid out exactly like platform::QtTextLayout lays them out on the canvas
 /// (application font at the box's font size in pixels, no margin, wrapped within the box
 /// minus padding).
-void paintText(QPainter& painter, const document::TextBox& box) {
+void paintText(QPainter& painter, const document::TextBox& box, const ExportTextStyle& style) {
     if (box.text.empty()) {
         return;
     }
     QTextDocument document;
-    QFont font = QGuiApplication::font();
+    QFont font = style.font;
     font.setPixelSize(std::max(1, static_cast<int>(std::lround(box.fontSize))));
     document.setDefaultFont(font);
     document.setDocumentMargin(0.0);
@@ -107,9 +109,7 @@ void paintText(QPainter& painter, const document::TextBox& box) {
     painter.setRenderHint(QPainter::TextAntialiasing);
     painter.setClipRect(QRectF(0, 0, box.size.x, box.size.y), Qt::IntersectClip);
     painter.translate(canvas::kTextPadding, canvas::kTextPadding);
-    QAbstractTextDocumentLayout::PaintContext context;
-    context.palette.setColor(QPalette::Text, Qt::black);
-    document.documentLayout()->draw(&painter, context);
+    document.documentLayout()->draw(&painter, style.context);
     painter.restore();
 }
 
@@ -146,6 +146,17 @@ public:
         return reader.read();
     }
 
+    /// The caller's text style; without one, the application's (GUI thread), taken once.
+    const ExportTextStyle& textStyle() {
+        if (sources_->text) {
+            return *sources_->text;
+        }
+        if (!textStyle_) {
+            textStyle_ = exportTextStyle();
+        }
+        return *textStyle_;
+    }
+
 private:
     std::optional<std::filesystem::path> assetPath(core::AssetId asset) const {
         return sources_->assetPath ? sources_->assetPath(asset) : std::nullopt;
@@ -153,6 +164,7 @@ private:
 
     const ExportSources* sources_;
     std::map<core::AssetId, std::unique_ptr<QPdfDocument>> pdfs_;
+    std::optional<ExportTextStyle> textStyle_;
 };
 
 void paintPattern(QPainter& painter, const document::PageBackground& background,
@@ -309,7 +321,7 @@ void paintElement(QPainter& painter, const document::Element& element, Resources
     painter.save();
     painter.setTransform(toQTransform(canvas::meshToWorld(element)), true);
     if (const auto* box = std::get_if<document::TextBox>(&element.payload)) {
-        paintText(painter, *box);
+        paintText(painter, *box, resources.textStyle());
         painter.restore();
         return;
     }
@@ -396,6 +408,40 @@ core::Result<void> commit(QSaveFile& file) {
 }
 
 } // namespace
+
+ExportTextStyle exportTextStyle() {
+    ExportTextStyle style{.font = QGuiApplication::font(), .context = {}};
+    style.context.palette.setColor(QPalette::Text, Qt::black);
+    return style;
+}
+
+std::vector<core::AssetId> exportAssets(const document::Workspace& workspace,
+                                        std::span<const core::PageId> pages) {
+    std::vector<core::AssetId> assets;
+    const auto add = [&assets](core::AssetId asset) {
+        if (std::find(assets.begin(), assets.end(), asset) == assets.end()) {
+            assets.push_back(asset);
+        }
+    };
+    for (const core::PageId page : pages) {
+        const document::PageInfo* info = workspace.findPage(page);
+        if (info == nullptr) {
+            continue;
+        }
+        if (info->document) {
+            add(info->document->asset);
+        }
+        for (const core::LayerId layer : workspace.layersOf(page)) {
+            for (const core::ElementId id : workspace.elementsOf(layer)) {
+                if (const auto* image =
+                        std::get_if<document::Image>(&workspace.findElement(id)->payload)) {
+                    add(image->asset);
+                }
+            }
+        }
+    }
+    return assets;
+}
 
 core::DRect exportArea(const document::Workspace& workspace, core::PageId page) {
     const document::PageInfo* info = workspace.findPage(page);

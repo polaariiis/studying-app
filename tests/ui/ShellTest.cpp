@@ -55,6 +55,7 @@
 #include <QTest>
 #include <QTextBrowser>
 #include <QTextEdit>
+#include <QThread>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
@@ -64,8 +65,12 @@
 #include <cmath>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <thread>
+#include <variant>
 #include <vector>
 
 using namespace studyapp;
@@ -2171,6 +2176,202 @@ private Q_SLOTS:
         QVERIFY(*shell.ws().findPage(page) == *before.findPage(page));
         QCOMPARE(shell.ws().elementsOf(layer).size(), before.elementsOf(layer).size());
         QVERIFY(shell.window->session()->history().undoCount() > undoCount); // the import only
+    }
+
+    // 1.2-CMD-03: an export can run on a thread other than the GUI thread when it is given
+    // plain data — a copy of the workspace, asset files looked up beforehand, the text style
+    // taken on the GUI thread. It writes the same PDF as the GUI-thread export of the same
+    // pages (ink, a text box, an image, pages of an imported PDF), and what is drawn after
+    // the copy was taken is not in it.
+    void exportFromASnapshotOnAnotherThread() {
+        Shell shell(settings(QStringLiteral("exportthread")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ExportThread"))));
+        const auto page = *shell.window->activePage();
+        const auto layer = shell.ws().layersOf(page).front();
+        const auto add = [&](core::LayerId to, document::ElementPayload payload,
+                             core::DVec2 at = {}) {
+            auto created = document::commands::createElement(
+                shell.ws(), to, {.transform = {.position = at}, .payload = std::move(payload)},
+                shell.ids);
+            QVERIFY(created.has_value());
+            QVERIFY(shell.window->session()->execute(std::move(created->command)).has_value());
+        };
+        add(layer,
+            document::Stroke{.color = core::Color::black(),
+                             .baseWidth = 12.0F,
+                             .points = document::makeStrokePoints({{100, 200, 1}, {300, 200, 1}})});
+        add(layer, document::TextBox{.size = {300, 80}, .text = "Thread text", .fontSize = 32},
+            {100, 400});
+        QImage red(64, 32, QImage::Format_RGB32);
+        red.fill(QColor(200, 30, 30));
+        const QString png = dir_.filePath(QStringLiteral("thread.png"));
+        QVERIFY(red.save(png));
+        shell.dialogs->insertImage = toPath(png);
+        shell.action("actionInsertImage")->trigger();
+        shell.waitForImports();
+        std::optional<core::DVec2> imageCentre;
+        for (const core::ElementId id : shell.ws().elementsOf(layer)) {
+            const document::Element& element = *shell.ws().findElement(id);
+            if (std::holds_alternative<document::Image>(element.payload)) {
+                imageCentre = canvas::visualBounds(element).center();
+            }
+        }
+        QVERIFY(imageCentre.has_value());
+        // A section of an imported PDF (three pages of text, 612 × 792 pt), with ink on its
+        // first page.
+        shell.dialogs->importDocument = toPath(writeTextPdf(QStringLiteral("Thread.pdf")));
+        shell.action("actionImportPdf")->trigger();
+        shell.waitForImports();
+        const auto pdfPage = *shell.window->activePage();
+        QVERIFY(pdfPage != page);
+        add(shell.ws().layersOf(pdfPage).front(),
+            document::Stroke{.color = core::Color::black(),
+                             .baseWidth = 8.0F,
+                             .points = document::makeStrokePoints({{300, 300, 1}, {450, 300, 1}})});
+        std::vector<core::PageId> pages{page};
+        const auto pdfPages = shell.ws().pagesOf(shell.ws().findPage(pdfPage)->section);
+        pages.insert(pages.end(), pdfPages.begin(), pdfPages.end());
+        QCOMPARE(pages.size(), std::size_t{4});
+        QCOMPARE(shell.dialogs->errors.size(), 0);
+
+        // The GUI thread, as File ▸ Export does it: the session's workspace and asset files,
+        // the application's text style.
+        const QString guiFile = dir_.filePath(QStringLiteral("thread-gui.pdf"));
+        application::WorkspaceSession* session = shell.window->session();
+        const ui::ExportSources guiSources{
+            .assetPath = [session](core::AssetId asset) -> std::optional<std::filesystem::path> {
+                auto found = session->assetPath(asset);
+                return found ? std::optional(std::move(*found)) : std::nullopt;
+            },
+            .progress = {}};
+        const auto onGui =
+            ui::exportPages(shell.ws(), pages, toPath(guiFile), ui::ExportFormat::Pdf, guiSources);
+        QVERIFY2(onGui.has_value(), onGui ? "" : onGui.error().message.c_str());
+
+        // Plain data for the other thread, all of it taken here on the GUI thread.
+        const auto snapshot = std::make_shared<const document::Workspace>(shell.ws());
+        const std::vector<core::AssetId> assets = ui::exportAssets(*snapshot, pages);
+        QCOMPARE(assets.size(), std::size_t{2}); // the image and the PDF, once each
+        std::map<core::AssetId, std::filesystem::path> files;
+        for (const core::AssetId asset : assets) {
+            auto found = session->assetPath(asset);
+            QVERIFY(found.has_value());
+            files.emplace(asset, std::move(*found));
+        }
+        std::vector<core::AssetId> asked; // written by the export thread, read after join()
+        std::vector<std::size_t> progress;
+        const ui::ExportSources plainSources{
+            .assetPath = [&files,
+                          &asked](core::AssetId asset) -> std::optional<std::filesystem::path> {
+                asked.push_back(asset);
+                const auto found = files.find(asset);
+                return found != files.end() ? std::optional(found->second) : std::nullopt;
+            },
+            .progress =
+                [&progress](std::size_t done, std::size_t total) {
+                    progress.push_back(done * 10 + total);
+                    return true;
+                },
+            .text = ui::exportTextStyle()};
+
+        // Drawn after the copy was taken: in the workspace, not in the snapshot's export.
+        add(layer,
+            document::Stroke{.color = core::Color::black(),
+                             .baseWidth = 30.0F,
+                             .points = document::makeStrokePoints({{100, 600, 1}, {400, 600, 1}})});
+        QVERIFY(!(shell.ws() == *snapshot));
+
+        const QString threadFile = dir_.filePath(QStringLiteral("thread-worker.pdf"));
+        const std::filesystem::path threadTarget = toPath(threadFile);
+        core::Result<void> onThread = core::makeError(core::ErrorCode::Internal, "not run");
+        QThread* ranOn = nullptr;
+        std::thread worker([&] {
+            ranOn = QThread::currentThread();
+            onThread = ui::exportPages(*snapshot, pages, threadTarget, ui::ExportFormat::Pdf,
+                                       plainSources);
+        });
+        worker.join();
+        QVERIFY2(onThread.has_value(), onThread ? "" : onThread.error().message.c_str());
+        QVERIFY(ranOn != nullptr);
+        QVERIFY(ranOn != QThread::currentThread());
+        QVERIFY(ranOn != qApp->thread());
+        QCOMPARE(progress, (std::vector<std::size_t>{4, 14, 24, 34})); // before each page
+        // Only files looked up beforehand were asked for: nothing went to the session.
+        QVERIFY(!asked.empty());
+        for (const core::AssetId asset : asked) {
+            QVERIFY(files.contains(asset));
+        }
+
+        // The same document: page count, page sizes, and every pixel of every page.
+        QPdfDocument gui;
+        QPdfDocument thread;
+        QCOMPARE(gui.load(guiFile), QPdfDocument::Error::None);
+        QCOMPARE(thread.load(threadFile), QPdfDocument::Error::None);
+        QCOMPARE(gui.pageCount(), 4);
+        QCOMPARE(thread.pageCount(), 4);
+        std::vector<QImage> pictures;
+        for (int i = 0; i < 4; ++i) {
+            QCOMPARE(thread.pagePointSize(i), gui.pagePointSize(i));
+            const QSize size = gui.pagePointSize(i).toSize(); // one pixel per point
+            QVERIFY(!size.isEmpty());
+            const QImage fromGui = renderPdfPage(guiFile, i, size);
+            const QImage fromThread = renderPdfPage(threadFile, i, size);
+            QVERIFY(!fromGui.isNull());
+            QCOMPARE(fromThread.size(), fromGui.size());
+            QVERIFY2(fromThread == fromGui, qPrintable(QStringLiteral("page %1 differs").arg(i)));
+            pictures.push_back(fromThread);
+        }
+        // And it is the content: the ink, the text, the image, the PDF behind its ink — but not
+        // the stroke drawn after the copy.
+        const core::DRect area = ui::exportArea(*snapshot, page);
+        const auto at = [&](core::DVec2 world) {
+            return QPoint(
+                static_cast<int>((world.x - area.min.x) * pictures[0].width() / area.width()),
+                static_cast<int>((world.y - area.min.y) * pictures[0].height() / area.height()));
+        };
+        QVERIFY(pictures[0].pixelColor(at({200, 200})).red() < 60);  // the stroke
+        QVERIFY(pictures[0].pixelColor(at({200, 300})).red() > 230); // paper
+        const QColor image = pictures[0].pixelColor(at(*imageCentre));
+        QVERIFY(image.red() > 150 && image.green() < 90 && image.blue() < 90);
+        const QRect textBox(at({100, 400}), at({400, 480}));
+        bool inked = false;
+        for (int y = textBox.top(); y < textBox.bottom() && !inked; ++y) {
+            for (int x = textBox.left(); x < textBox.right() && !inked; ++x) {
+                inked = pictures[0].pixelColor(x, y).red() < 128;
+            }
+        }
+        QVERIFY(inked); // the text was painted
+        if (area.contains(core::DVec2{250, 600})) {
+            QVERIFY(pictures[0].pixelColor(at({250, 600})).red() > 230); // the later stroke is not
+        }
+        // The PDF page (one pixel per point): its first lines of text, 72 pt from the left
+        // and the top, and the ink on it (300..450 units = 225..337 pt).
+        bool pdfText = false;
+        for (int y = 50; y < 100 && !pdfText; ++y) {
+            for (int x = 72; x < 400 && !pdfText; ++x) {
+                pdfText = pictures[1].pixelColor(x, y).red() < 128;
+            }
+        }
+        QVERIFY(pdfText);
+        QVERIFY(pictures[1].pixelColor(280, 225).red() < 60);
+        QVERIFY(pictures[1].pixelColor(500, 500).red() > 230); // its paper
+
+        // The later stroke is still in the workspace, and a new export shows it.
+        const QString laterFile = dir_.filePath(QStringLiteral("thread-later.pdf"));
+        QVERIFY(
+            ui::exportPages(shell.ws(), pages, toPath(laterFile), ui::ExportFormat::Pdf, guiSources)
+                .has_value());
+        const core::DRect laterArea = ui::exportArea(shell.ws(), page);
+        QPdfDocument later;
+        QCOMPARE(later.load(laterFile), QPdfDocument::Error::None);
+        const QImage laterPicture = renderPdfPage(laterFile, 0, later.pagePointSize(0).toSize());
+        QVERIFY(laterPicture
+                    .pixelColor(static_cast<int>((250 - laterArea.min.x) * laterPicture.width() /
+                                                 laterArea.width()),
+                                static_cast<int>((600 - laterArea.min.y) * laterPicture.height() /
+                                                 laterArea.height()))
+                    .red() < 60);
+        QCOMPARE(shell.dialogs->errors.size(), 0);
     }
 
     // Phase 8, step 6: File ▸ Export Notebook / Export Workspace write bundles; Import
