@@ -8,9 +8,10 @@ project(studyapp
 )
 
 # Pre-release label of this version: empty for a release, "dev" for a development build.
-# STUDYAPP_VERSION (1.2.0-dev) is what the application shows and what packages are named
-# after; PROJECT_VERSION stays numeric where a platform requires it (docs/RELEASE.md).
-set(STUDYAPP_VERSION_LABEL "dev")
+# STUDYAPP_VERSION (1.2.0; 1.2.0-dev with the label "dev") is what the application shows and
+# what packages are named after; PROJECT_VERSION stays numeric where a platform requires it
+# (docs/RELEASE.md).
+set(STUDYAPP_VERSION_LABEL "")
 if(STUDYAPP_VERSION_LABEL)
     set(STUDYAPP_VERSION "${PROJECT_VERSION}-${STUDYAPP_VERSION_LABEL}")
 else()
