@@ -237,7 +237,8 @@ Enforcement:
   `QT_NO_URL_CAST_FROM_STRING`, `QT_NO_NARROWING_CONVERSIONS_IN_CONNECT`,
   `QT_DISABLE_DEPRECATED_UP_TO=0x060800`.
 * Generated header `studyapp/core/BuildInfo.hpp` carries product name and version from
-  `project()` and `STUDYAPP_VERSION_LABEL` (`kVersion` = `1.2.0-dev` on `dev/1.2`;
+  `project()` and `STUDYAPP_VERSION_LABEL` (`kVersion` = `1.2.0` on `dev/1.2`, where the
+  label is empty; `1.2.0-dev` with the label `dev`;
   [RELEASE.md](RELEASE.md#development-builds)).
 
 ### 5.5 Resources
@@ -277,11 +278,11 @@ Enforcement:
 ## 7. Continuous integration
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main`, to
-development branches (`dev/**`), to `migration/**` and to the former phase branches
-(`phase-*`), on pull requests and manually;
+development branches (`dev/**`), to release lines (`release/**`), to `migration/**` and to
+the former phase branches (`phase-*`), on pull requests and manually;
 [`package.yml`](../.github/workflows/package.yml) builds and smoke-tests the packages on
-pushes to `main`, `dev/**` and `phase-*` and manually (§8). Feature branches and
-`release/*` branches are checked by starting both workflows manually
+pushes to `main`, `dev/**`, `release/**` and `phase-*` and manually (§8). Feature
+branches are checked by starting both workflows manually
 (`gh workflow run ci.yml --ref <branch>`, the same for `package.yml`); the branch model is in
 [RELEASE.md](RELEASE.md#branches-and-tags). The CI jobs:
 

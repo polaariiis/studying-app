@@ -567,15 +567,21 @@ so linuxdeploy-plugin-qt's optional GTK theme hint is not applied.
 
 ## Version 1.2 (in development, `dev/1.2`)
 
-Not released. The detailed history is on `dev/1.2`; `main` receives its state as single
-"Integrate …" commits (branch model: [RELEASE.md](RELEASE.md#branches-and-tags)). The latest
-stable release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`).
+Development of 1.2 is complete and its release is in preparation; 1.2 is **not released**.
+The detailed history is on `dev/1.2`; `main` receives its state as single "Integrate …"
+commits (branch model: [RELEASE.md](RELEASE.md#branches-and-tags)). The latest stable
+release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`).
 
 **Development build 1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`): a packaged snapshot of the
 tasks below that are marked done, for testing and demonstration — not a release
-([releases/v1.2.0-dev.md](releases/v1.2.0-dev.md)). The 1.2 release itself still needs the
-open follow-ups to be decided and the version label removed (RELEASE.md, "Development
-builds").
+([releases/v1.2.0-dev.md](releases/v1.2.0-dev.md)).
+
+**Release preparation (1.2-REL-03).** The open follow-ups are decided: 1.2-CMD-02 and
+1.2-PDF-03 are moved to [Version 2.0](#version-20-planned-dev20). The version label is
+removed, so `dev/1.2` reports 1.2.0. CI and the package workflow also run on pushes to
+`release/**`. Still to be done, and none of it exists yet: the integration of the
+completed 1.2 state into `main`, the branch `release/1.2` at that commit, and the tag
+`v1.2.0` with its release (RELEASE.md, "Branches and tags").
 
 Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-CI-01,
 1.2-REL-01, 1.2-TXT-01, 1.2-TXT-02, 1.2-IMP-01, 1.2-PDF-01, 1.2-PDF-02, 1.2-PERF-01,
@@ -617,14 +623,14 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
 
 | Task | What | Why not now |
 |---|---|---|
-| 1.2-CMD-02 | Highlight PDF search matches on the page (character boxes from the worker, drawn as an overlay) | Needs per-character geometry in the protocol and a canvas overlay; navigation to the page already works |
+| 1.2-CMD-02 | Highlight PDF search matches on the page (character boxes from the worker, drawn as an overlay) | Moved to [Version 2.0](#version-20-planned-dev20), where the reason is kept |
 | 1.2-CMD-03 | First batch commands (e.g. `export notebook pdf <folder>`) with progress and `cancel`, off the GUI thread | Implemented as `export notebook pdf <folder>`, see below; `export section png [folder]` and a folder dialog are still open |
-| 1.2-PDF-03 | Persisted PDF text index (e.g. FTS5 rows per PDF page, filled through the worker) so the first search of a session is instant for large libraries | Needs a schema migration and an indexing strategy; the session cache is enough at the measured sizes |
+| 1.2-PDF-03 | Persisted PDF text index (e.g. FTS5 rows per PDF page, filled through the worker) so the first search of a session is instant for large libraries | Moved to [Version 2.0](#version-20-planned-dev20), where the reason is kept |
 
 ### 1.2-CMD-03 — Batch PDF export from the command console
 
-* **Status:** implemented on the feature branch `feature/1.2-CMD-03-batch-pdf-export`
-  (from `dev/1.2`); not merged when this was written.
+* **Status:** done (feature branch `feature/1.2-CMD-03-batch-pdf-export`, merged into
+  `dev/1.2` as `8b6a60b`).
 * **Delivered:** one batch command, `export notebook pdf <folder>`: every section of the
   open page's notebook as one PDF in an existing folder, written on a thread of the
   window's pool from a copy of the workspace; one console line per section and a summary;
@@ -652,6 +658,23 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
   only in non-ASCII case or Unicode normalisation are not told apart; a file appearing
   between the last check and the final rename is replaced; a killed process can leave a
   temporary file in the target folder (COMMAND_CONSOLE.md §10.1, "Limits").
+
+## Version 2.0 (planned, `dev/2.0`)
+
+Not started. `dev/2.0` is planned as the next development line and does not exist yet; it
+is to be created at the tip of `dev/1.2` (branch model:
+[RELEASE.md](RELEASE.md#branches-and-tags)).
+
+The tasks below were recorded for 1.2 as
+[follow-ups of 1.2-CMD-01](#follow-ups-recorded-by-12-cmd-01) and moved here when 1.2 was
+prepared for release (1.2-REL-03). They keep their original IDs, so that the documents
+that name them (COMMAND_CONSOLE.md §6, PERFORMANCE.md §3.14, releases/v1.2.0-dev.md) can
+still be followed to them.
+
+| Task | What | Why not now |
+|---|---|---|
+| 1.2-CMD-02 | Highlight PDF search matches on the page (character boxes from the worker, drawn as an overlay) | Needs per-character geometry in the protocol and a canvas overlay; navigation to the page already works |
+| 1.2-PDF-03 | Persisted PDF text index (e.g. FTS5 rows per PDF page, filled through the worker) so the first search of a session is instant for large libraries | Needs a schema migration and an indexing strategy; the session cache is enough at the measured sizes |
 
 ## Later / candidate features
 

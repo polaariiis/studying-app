@@ -200,7 +200,7 @@ assertion in `PageExport.cpp` is compiled only into Debug builds; an unsaved-cha
 question open while an export finishes, a present but unreadable asset, and I/O errors
 other than an existing file are not provoked.
 
-**1.2 additions (development version, 1.2.0-dev).** `core_tests` (`BuildInfoTest`): the
+**1.2 additions (version label of development builds).** `core_tests` (`BuildInfoTest`): the
 version shown to users is the numeric version, optionally followed by `-<label>`
 (`1.2.0-dev`), which package names depend on. Packages: the smoke tests compare
 `--version` with the version in the package's file name, label included
