@@ -1,17 +1,17 @@
 cmake_minimum_required(VERSION 3.25...3.31)
 
 project(studyapp
-    VERSION 1.2.0
+    VERSION 2.0.0
     DESCRIPTION "StudyBoard - local-first notes, drawing and study planning"
     HOMEPAGE_URL "https://github.com/polaariiis/studying-app"
     LANGUAGES C CXX # C is needed for the vendored SQLite amalgamation
 )
 
 # Pre-release label of this version: empty for a release, "dev" for a development build.
-# STUDYAPP_VERSION (1.2.0; 1.2.0-dev with the label "dev") is what the application shows and
-# what packages are named after; PROJECT_VERSION stays numeric where a platform requires it
-# (docs/RELEASE.md).
-set(STUDYAPP_VERSION_LABEL "")
+# STUDYAPP_VERSION (2.0.0-dev with the label "dev"; 2.0.0 without it) is what the application
+# shows and what packages are named after; PROJECT_VERSION stays numeric where a platform
+# requires it (docs/RELEASE.md).
+set(STUDYAPP_VERSION_LABEL "dev")
 if(STUDYAPP_VERSION_LABEL)
     set(STUDYAPP_VERSION "${PROJECT_VERSION}-${STUDYAPP_VERSION_LABEL}")
 else()

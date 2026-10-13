@@ -51,7 +51,12 @@ enough C++ runtime (§8).
    [aqtinstall](https://github.com/miurahr/aqtinstall):
    `pip install aqtinstall` then `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtpdf -O C:\Qt`.
    Since Phase 8 the add-on module **Qt PDF** (`qtpdf`) is required besides the default
-   modules (Qt Svg and Qt Print Support are part of them).
+   modules (Qt Svg and Qt Print Support are part of them). That command installs the whole
+   kit together with Qt PDF, for a machine without Qt 6.8.3. To add Qt PDF to a kit that is
+   already installed, add `--noarchives`:
+   `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtpdf --noarchives -O C:\Qt`
+   downloads the module only, not the base kit again. The option has the same meaning in
+   the macOS and Linux commands below.
 3. Build from a **Developer PowerShell / Developer Command Prompt for VS 2022** (so `cl.exe`
    and `ninja` are on `PATH`), or open the folder in Visual Studio, which uses the presets
    directly.
@@ -237,8 +242,8 @@ Enforcement:
   `QT_NO_URL_CAST_FROM_STRING`, `QT_NO_NARROWING_CONVERSIONS_IN_CONNECT`,
   `QT_DISABLE_DEPRECATED_UP_TO=0x060800`.
 * Generated header `studyapp/core/BuildInfo.hpp` carries product name and version from
-  `project()` and `STUDYAPP_VERSION_LABEL` (`kVersion` = `1.2.0` on `dev/1.2`, where the
-  label is empty; `1.2.0-dev` with the label `dev`;
+  `project()` and `STUDYAPP_VERSION_LABEL` (`kVersion` = `2.0.0-dev` on `dev/2.0`, with the
+  label `dev`; `1.2.0` in the 1.2.0 release, where the label is empty;
   [RELEASE.md](RELEASE.md#development-builds)).
 
 ### 5.5 Resources
@@ -272,7 +277,8 @@ Enforcement:
   ```sh
   clang-tidy -p build/debug src/core/src/*.cpp
   ```
-  Findings are advisory in Phase 1 and not yet gated in CI.
+  CI gates the Qt-free modules: its `clang-tidy` job runs `tools/run_clang_tidy.py` over
+  them, and any finding fails it (§7).
 * **Boundary check** — `python tools/check_boundaries.py`.
 
 ## 7. Continuous integration

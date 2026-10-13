@@ -8,20 +8,18 @@ each release's packages. Building the packages locally is described in
 
 | | |
 |---|---|
-| Version | **1.0.0** (tag `v1.0.0`) |
-| Source | tag `v1.0.0` (commit `5d477e6`, tagged on `main`); release line `release/1.0` |
+| Version | **1.2.0** (tag `v1.2.0`) |
+| Source | tag `v1.2.0` (commit `345edb5`, tagged on `main`); release line `release/1.2` |
+| Published | 2026-10-13 ([GitHub release](https://github.com/polaariiis/studying-app/releases/tag/v1.2.0); [release notes](releases/v1.2.0.md)) |
 | Platforms | Windows x64, Linux x86_64, macOS arm64 (Apple silicon) |
 | Signing | **Unsigned / signing-ready** — see [Signing](#signing) |
 | Downloads | [GitHub releases](https://github.com/polaariiis/studying-app/releases) |
-| Release candidate | **1.2.0** — the current release once the tag `v1.2.0` and its GitHub release are published; until then 1.0.0 ([notes](releases/v1.2.0.md)) |
+| Previous release | **1.0.0** (tag `v1.0.0`, commit `5d477e6`, tagged on `main`); release line `release/1.0` |
 
-**1.2.0 is the stable release candidate, awaiting final tagging and publication.** It is
-not a release: 1.0.0 stays the current release, and the only one to download, until the
-tag `v1.2.0` and its GitHub release are published. The candidate is the "Integrate …"
-commit on `main` that `release/1.2` points to; it reports **1.2.0**, without a
-development label. The tag `v1.2.0` does not exist while 1.2.0 is a candidate. The earlier
-development build 1.2.0-dev is described under [Development builds](#development-builds),
-and how the candidate becomes the release under [Branches and tags](#branches-and-tags).
+1.2.0 is the current stable release. The packages of both releases are recorded under
+[Release records](#release-records). The development build 1.2.0-dev, made before the
+release, is described under [Development builds](#development-builds), and the branches
+and tags of both versions under [Branches and tags](#branches-and-tags).
 
 ## Development builds
 
@@ -36,13 +34,14 @@ demonstration. It is **not a release**: no support, no upgrade promise, and it i
 | Packages | `StudyBoard-1.2.0-dev-…` (the names of [Packages](#packages) with version `1.2.0-dev`) |
 | Workspaces | Compatible both ways with 1.0.0 (1.2 has no schema migration) |
 
-The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION 1.2.0)` and
+The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION …)` and
 `STUDYAPP_VERSION_LABEL` (`dev` for a development build; empty for a release). Together
 they give `STUDYAPP_VERSION`, the one value shown by `--version`, About, the status bar
 and `diagnostics`, recorded in workspaces, and used for the package and installer names:
-`1.2.0-dev` with the label `dev`, as in the build above. The label is empty now, so the
-1.2.0 release candidate reports `1.2.0`. Only the macOS bundle version stays numeric
-(`1.2.0`), because macOS requires digits there.
+`1.2.0-dev` with version 1.2.0 and the label `dev`, as in the build above. The label is
+empty in a release: 1.2.0 reports `1.2.0`. `dev/2.0` has version 2.0.0 and the label
+`dev`, so its builds report `2.0.0-dev`. Only the macOS bundle version stays numeric
+(`1.2.0`, `2.0.0`), because macOS requires digits there.
 
 A development build is made like a release (below), with these differences: the tag is made
 on the development branch (`v1.2.0-dev` on `dev/1.2`), never on `main`; `release.yml` marks
@@ -54,26 +53,24 @@ moved once pushed; a later snapshot gets a new tag (`v1.2.0-dev.2`).
 
 | Reference | Role | Rules |
 |---|---|---|
-| `v<version>` tags (`v1.0.0`) | The released source of each version | Immutable: never moved, deleted or recreated; the GitHub release and its packages belong to the tag |
+| `v<version>` tags (`v1.0.0`, `v1.2.0`) | The released source of each version | Immutable: never moved, deleted or recreated; the GitHub release and its packages belong to the tag |
 | `v<version>-dev[.<n>]` tags (`v1.2.0-dev`) | A [development build](#development-builds) of a development branch | Immutable like release tags; a GitHub *pre-release* at most, never Latest |
 | `release/<major>.<minor>` (`release/1.0`, `release/1.2`) | Maintenance line of a version, created at its release-candidate commit on `main` before the tag; the tag is then made on the candidate on `main` | Before the tag it follows the candidate: fast-forwarded if the candidate is replaced, never moved otherwise. After the tag: fixes for that version only; a fix release is tagged here |
-| `main` | Integration line, the default branch | Receives the state of the development branch as one "Integrate …" commit (squash merge), so its history stays short; never force-pushed |
-| `dev/<major>.<minor>` (`dev/1.2`, `dev/2.0`) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; a merged feature branch is deleted only when the maintainer decides. Once the next development line exists it receives no new feature work, only changes that finalise its release, and it is deleted only when the maintainer decides |
+| `main` | Integration line, the default branch | Receives the state of the development branch — or, after a version's tag, of that version's release line — as one "Integrate …" commit (squash merge), so its history stays short; never force-pushed |
+| `dev/<major>.<minor>` (`dev/1.2`, `dev/2.0`) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; a merged feature branch is deleted only when the maintainer decides. Once the next development line exists it receives no new feature work, only changes that finalise its release; it is retired (no new work) once its version is released, and deleted only when the maintainer decides |
 
-For 1.2: the completed state of `dev/1.2` is integrated into `main` as one "Integrate …"
-commit, the release candidate, and `release/1.2` was created at that commit, before the
-tag. The tag `v1.2.0` is made on the candidate on `main` after final verification, by the
-maintainer's decision; it does not exist while 1.2.0 is a candidate. A change that only
-finalises the 1.2.0 release (documentation, release notes) still goes through `dev/1.2`
-and one more "Integrate …" commit on `main`, which replaces the candidate; `release/1.2`
-is then fast-forwarded to the new candidate, and never moved otherwise. After the tag,
-1.2 fixes belong to `release/1.2`.
+For 1.2: the completed state of `dev/1.2` was integrated into `main` in "Integrate …"
+commits, `release/1.2` was created at the release candidate before the tag, and the tag
+`v1.2.0` was made on `main` at commit `345edb5`. 1.2 fixes now belong to `release/1.2`.
+
+After the tag, a change on `release/<major>.<minor>` reaches `main` as one more
+"Integrate …" commit (a squash of the release line) for as long as `main` still holds that
+version, and it reaches the development line by cherry-pick (`git cherry-pick -x`), not by
+merging the release line.
 
 The next version's development is on `dev/2.0` (not `dev/1.3`), created at the tip of
-`dev/1.2` so that it keeps the full history. Now that it exists, `dev/1.2` receives no new
-feature work. `dev/2.0` is fast-forwarded to include the changes that finalise 1.2.0, so
-that the next integration from `dev/2.0` does not undo them. It reports `1.2.0` until its
-first own change sets its version, `2.0.0-dev`.
+`dev/1.2` so that it keeps the full history; `dev/1.2` is retired and receives no new
+work. `dev/2.0` reports its own version, `2.0.0-dev`.
 
 ## Packages
 
@@ -116,7 +113,8 @@ never touches them.
 
 ## Signing
 
-The packages of 1.0.0 are **not signed**: the repository has no code-signing certificates.
+The packages of 1.0.0 and 1.2.0 are **not signed**: the repository has no code-signing
+certificates.
 Windows SmartScreen shows "Windows protected your PC" on first start (More info ▸ Run
 anyway); macOS Gatekeeper blocks the first start (right-click the application ▸ Open, or
 System Settings ▸ Privacy & Security ▸ Open Anyway). Linux packages are not signed on any
@@ -141,11 +139,11 @@ certificate password on its command line inside the CI job.
 ## Verifying a download
 
 ```sh
-sha256sum -c StudyBoard-1.0.0-linux-x86_64.AppImage.sha256     # Linux
-shasum -a 256 -c StudyBoard-1.0.0-macos-arm64.dmg.sha256         # macOS
+sha256sum -c StudyBoard-1.2.0-linux-x86_64.AppImage.sha256     # Linux
+shasum -a 256 -c StudyBoard-1.2.0-macos-arm64.dmg.sha256         # macOS
 ```
 
-On Windows: `Get-FileHash StudyBoard-1.0.0-windows-AMD64.exe -Algorithm SHA256` and compare
+On Windows: `Get-FileHash StudyBoard-1.2.0-windows-AMD64.exe -Algorithm SHA256` and compare
 with `SHA256SUMS.txt`. Any installation can check itself with `studyapp --self-test` (on
 Windows run it as `studyapp --self-test | more` to see the output).
 
@@ -202,3 +200,26 @@ page; `export page pdf` and the refusal to overwrite; six shell-like inputs answ
 "Unknown command" with no process started; a damaged PDF reported by the worker with the
 application still running; a closed and reopened workspace keeping the import, with the
 PDF text read again by a short-lived worker and no temporary job folders left.
+
+### 1.2.0
+
+Tag `v1.2.0` on commit `345edb5` (on `main`), built by the
+[release workflow run](https://github.com/polaariiis/studying-app/actions/runs/38449912666)
+(10 of 10 jobs successful) and published on 2026-10-13
+([GitHub release](https://github.com/polaariiis/studying-app/releases/tag/v1.2.0);
+[notes](releases/v1.2.0.md)). All packages **unsigned**: the signing jobs signed nothing,
+and the published files have the checksums of the unsigned package jobs.
+
+| File | Platform | Architecture | Size (bytes) | SHA-256 |
+|---|---|---|---:|---|
+| `StudyBoard-1.2.0-windows-AMD64.exe` | Windows 10 22H2+ | x64 | 50 534 334 | `66c0271cd5c28891010656d70a878f59fb3d1567cce43525df408a1482f57aa0` |
+| `StudyBoard-1.2.0-windows-AMD64.zip` | Windows 10 22H2+ | x64 | 60 497 154 | `44cad69a9a0b682220b28c4e204b6dfb529c2408192e7f1dc522a81def7bda06` |
+| `StudyBoard-1.2.0-linux-x86_64.AppImage` | Ubuntu 22.04+ | x86_64 | 41 871 864 | `ce35b1e0d132733610719882cc936148e55e91d52973c9e8f9f2f6d1dfc483c9` |
+| `StudyBoard-1.2.0-linux-x86_64.tar.gz` | Ubuntu 22.04+ | x86_64 | 45 971 661 | `22e5fe1fb1b6ee07dc0da87d378d41a2a23b3404ee9a1658bfa8ec4837faf2cf` |
+| `StudyBoard-1.2.0-macos-arm64.dmg` | macOS 13+ | arm64 | 33 443 586 | `1efad659877e68e29d6157fcce08af5df4601e8c4bb39e049eb1bb6b38877a87` |
+
+Validation in that run: all four smoke tests logged "version reported: StudyBoard 1.2.0
+(package 1.2.0)" and "self-test passed"; the Ubuntu 22.04 runner used the bundled C++
+runtime and the Ubuntu 24.04 runner the system's; the Windows OpenGL check is reported,
+not required. The maintainer reported a passed manual smoke test of the Windows installer
+on 2026-10-13.
