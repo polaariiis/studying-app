@@ -11,13 +11,13 @@ built with Qt, drawing with OpenGL.
 
 ## Download
 
-**[Download StudyBoard 1.0.0 from the releases page](https://github.com/polaariiis/studying-app/releases/latest)**
+**[Download StudyBoard 1.2.0 from the releases page](https://github.com/polaariiis/studying-app/releases/latest)**
 
 | Platform | Package |
 |---|---|
-| Windows x64 | [Installer (`.exe`)](https://github.com/polaariiis/studying-app/releases/download/v1.0.0/StudyBoard-1.0.0-windows-AMD64.exe) · [Portable ZIP](https://github.com/polaariiis/studying-app/releases/download/v1.0.0/StudyBoard-1.0.0-windows-AMD64.zip) |
-| Linux x86_64 | [AppImage](https://github.com/polaariiis/studying-app/releases/download/v1.0.0/StudyBoard-1.0.0-linux-x86_64.AppImage) · [`.tar.gz`](https://github.com/polaariiis/studying-app/releases/download/v1.0.0/StudyBoard-1.0.0-linux-x86_64.tar.gz) |
-| macOS, Apple silicon | [Disk image (`.dmg`)](https://github.com/polaariiis/studying-app/releases/download/v1.0.0/StudyBoard-1.0.0-macos-arm64.dmg) |
+| Windows x64 | [Installer (`.exe`)](https://github.com/polaariiis/studying-app/releases/download/v1.2.0/StudyBoard-1.2.0-windows-AMD64.exe) · [Portable ZIP](https://github.com/polaariiis/studying-app/releases/download/v1.2.0/StudyBoard-1.2.0-windows-AMD64.zip) |
+| Linux x86_64 | [AppImage](https://github.com/polaariiis/studying-app/releases/download/v1.2.0/StudyBoard-1.2.0-linux-x86_64.AppImage) · [`.tar.gz`](https://github.com/polaariiis/studying-app/releases/download/v1.2.0/StudyBoard-1.2.0-linux-x86_64.tar.gz) |
+| macOS, Apple silicon | [Disk image (`.dmg`)](https://github.com/polaariiis/studying-app/releases/download/v1.2.0/StudyBoard-1.2.0-macos-arm64.dmg) |
 
 Every package includes everything it needs; you do not have to install Qt or anything
 else. Checksums (`SHA256SUMS.txt`) are attached to the release.
@@ -28,40 +28,41 @@ else. Checksums (`SHA256SUMS.txt`) are attached to the release.
 
 ### Development / test build (not a release)
 
-**StudyBoard 1.2.0-dev** is a development snapshot of `dev/1.2` for testing and
-demonstrating the 1.2 work (command console, PDF content search, …). It is **not an official
-release** and never replaces 1.0.0 above. What it contains, its limitations and its packages
-(`StudyBoard-1.2.0-dev-…`): [docs/releases/v1.2.0-dev.md](docs/releases/v1.2.0-dev.md). On
-GitHub it can only appear as a *pre-release*, never as the latest release.
+**StudyBoard 1.2.0-dev** is a development snapshot of `dev/1.2`, made before the 1.2.0
+release for testing and demonstrating the 1.2 work (command console, PDF content search,
+…). It is **not an official release**; use 1.2.0 above instead. What it contains, its
+limitations and its packages (`StudyBoard-1.2.0-dev-…`):
+[docs/releases/v1.2.0-dev.md](docs/releases/v1.2.0-dev.md). On GitHub it can only appear
+as a *pre-release*, never as the latest release.
 
 ## Current release
 
 | | |
 |---|---|
-| Latest stable release | **1.0.0** (tag `v1.0.0`) |
-| Status | First stable release |
+| Latest stable release | **1.2.0** (tag `v1.2.0`, published 2026-10-13; [release notes](docs/releases/v1.2.0.md)) |
+| Previous release | **1.0.0** (tag `v1.0.0`), the first stable release |
 | Platforms | Windows x64 · Linux x86_64 · macOS arm64 |
 | Signing | Unsigned; signing and notarisation are prepared for when certificates exist |
 | Development / test build | **1.2.0-dev** (tag `v1.2.0-dev`) — not a release (see [Versions and branches](#versions-and-branches)) |
-| Release candidate | **1.2.0** — a release once the tag `v1.2.0` and its GitHub release are published; the [releases page](https://github.com/polaariiis/studying-app/releases) shows the current state ([notes](docs/releases/v1.2.0.md)) |
 
 ## Versions and branches
 
 | Reference | What it is |
 |---|---|
-| Tag `v1.0.0` | The **latest stable release**, 1.0.0. The packages above are built from it; it never moves. |
+| Tag `v1.2.0` | The **latest stable release**, 1.2.0, tagged on `main`. The packages above are built from it; it never moves. |
+| Branch `release/1.2` | The 1.2 release line, which contains `v1.2.0`. It receives 1.2 fixes only, never 2.0 features. |
+| Tag `v1.0.0` | The previous stable release, 1.0.0. It never moves. |
 | Branch `release/1.0` | The 1.0 release line, starting exactly at `v1.0.0`. It receives 1.0 fixes only, never 1.2 features. |
-| Branch `main` | The integration line. It holds the 1.2.0 release candidate, integrated from `dev/1.2` in single "Integrate …" commits. It is **not** a release until `v1.2.0` is tagged and published: build from `v1.0.0` (or download the packages) for the stable version. |
-| Branch `dev/1.2` | 1.2 development with the detailed history: every 1.2 feature branch was merged here first. Builds report version **1.2.0**, without a development label. Now that `dev/2.0` exists it receives no new feature work, only changes that finalise the 1.2.0 release. |
+| Branch `main` | The integration line: it receives the state of a development or release line in single "Integrate …" commits, and the tag `v1.2.0` is on it. A commit on `main` without a release tag is **not** a release: build from `v1.2.0` (or download the packages) for the stable version. |
+| Branch `dev/1.2` | 1.2 development with the detailed history: every 1.2 feature branch was merged here first. Retired: it receives no new work now that 1.2.0 is released; 1.2 fixes go to `release/1.2`. |
 | Tag `v1.2.0-dev` | A **development / test build** of `dev/1.2`, version 1.2.0-dev — not a release ([notes](docs/releases/v1.2.0-dev.md)). It never moves; a later snapshot gets a new tag. |
-| Branch `release/1.2` | The 1.2 release line, created at the release-candidate commit on `main`. Until `v1.2.0` is tagged it follows the candidate; afterwards it receives 1.2 fixes only. |
-| Tag `v1.2.0` | **Does not exist while 1.2.0 is a release candidate.** It is made on the candidate commit on `main` after final verification. Until a `v1.2.0` release is published, 1.0.0 stays the latest stable release. |
 | Branch `dev/2.0` | The development line of the next version, 2.0, created at the tip of `dev/1.2` with its full history. It reports 1.2.0 until its first change sets 2.0.0-dev. |
 
-Short-lived `feature/…` branches exist while a feature is in progress and are merged into
-the development line (`dev/1.2` for 1.2, `dev/2.0` for the next version); a merged feature
-branch, and later `dev/1.2` itself, is deleted only when the maintainer decides. Versions,
-tags and development builds are described in [docs/RELEASE.md](docs/RELEASE.md).
+Short-lived `feature/…` branches exist while a change is in progress and are merged into
+the development line (`dev/2.0`; `dev/1.2` for 1.2) or, for a fix of a released version,
+into its release line (`release/1.2`); a merged feature branch, and `dev/1.2` itself, is
+deleted only when the maintainer decides. Versions, tags and development builds are
+described in [docs/RELEASE.md](docs/RELEASE.md).
 
 ## Features
 
@@ -80,13 +81,12 @@ tags and development builds are described in [docs/RELEASE.md](docs/RELEASE.md).
   Save a Copy when a disk keeps failing.
 * **Accessibility** — every control is named for screen readers; F6 moves between panes.
 
-New in 1.2.0, the release candidate on `main` and `release/1.2` (a release once the tag
-`v1.2.0` and its GitHub release are published): a **command console** (View ▸ Command
-Console, Ctrl+Shift+C) for typing StudyBoard commands — open pages, search, import,
-export, diagnostics — for **searching the text inside imported PDFs** (`pdf search "…"`)
-and for **exporting a whole notebook**, one PDF per section, in the background
-(`export notebook pdf <folder>`); see [docs/COMMAND_CONSOLE.md](docs/COMMAND_CONSOLE.md)
-and the [release notes](docs/releases/v1.2.0.md).
+New in 1.2.0: a **command console** (View ▸ Command Console, Ctrl+Shift+C) for typing
+StudyBoard commands — open pages, search, import, export, diagnostics — for **searching
+the text inside imported PDFs** (`pdf search "…"`) and for **exporting a whole notebook**,
+one PDF per section, in the background (`export notebook pdf <folder>`); see
+[docs/COMMAND_CONSOLE.md](docs/COMMAND_CONSOLE.md) and the
+[release notes](docs/releases/v1.2.0.md).
 
 ## System requirements
 
@@ -145,7 +145,7 @@ More in [docs/ROADMAP.md](docs/ROADMAP.md) (Phase 9, "Not in Phase 9").
 |---|---|
 | Building from source | [docs/BUILDING.md](docs/BUILDING.md) |
 | Releases, packages, signing | [docs/RELEASE.md](docs/RELEASE.md) |
-| Release notes of 1.2.0 (the release candidate until `v1.2.0` is published) | [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md) |
+| Release notes of 1.2.0 | [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md) |
 | Development build 1.2.0-dev (not a release) | [docs/releases/v1.2.0-dev.md](docs/releases/v1.2.0-dev.md) |
 | Architecture and decisions | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Data model | [docs/DATA_MODEL.md](docs/DATA_MODEL.md) |
@@ -166,9 +166,8 @@ More in [docs/ROADMAP.md](docs/ROADMAP.md) (Phase 9, "Not in Phase 9").
 ## Building from source
 
 C++20, CMake 3.25+ with Ninja, Qt 6.8 LTS (with the Qt PDF add-on). Tested toolchains: MSVC
-2022, GCC 13, AppleClang 15. Check out `v1.0.0` to build the stable release; `main` or
-`release/1.2` builds the 1.2.0 release candidate (a release once `v1.2.0` is published),
-and `v1.2.0-dev` the earlier development build, version 1.2.0-dev.
+2022, GCC 13, AppleClang 15. Check out `v1.2.0` to build the stable release (`v1.0.0` for
+the previous one); `v1.2.0-dev` builds the earlier development build, version 1.2.0-dev.
 
 ```sh
 cmake --preset release
