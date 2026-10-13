@@ -51,7 +51,12 @@ enough C++ runtime (§8).
    [aqtinstall](https://github.com/miurahr/aqtinstall):
    `pip install aqtinstall` then `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtpdf -O C:\Qt`.
    Since Phase 8 the add-on module **Qt PDF** (`qtpdf`) is required besides the default
-   modules (Qt Svg and Qt Print Support are part of them).
+   modules (Qt Svg and Qt Print Support are part of them). That command installs the whole
+   kit together with Qt PDF, for a machine without Qt 6.8.3. To add Qt PDF to a kit that is
+   already installed, add `--noarchives`:
+   `aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtpdf --noarchives -O C:\Qt`
+   downloads the module only, not the base kit again. The option has the same meaning in
+   the macOS and Linux commands below.
 3. Build from a **Developer PowerShell / Developer Command Prompt for VS 2022** (so `cl.exe`
    and `ninja` are on `PATH`), or open the folder in Visual Studio, which uses the presets
    directly.
