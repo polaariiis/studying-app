@@ -655,7 +655,7 @@ details: [DATA_MODEL.md §6](DATA_MODEL.md#6-editing-commands-and-undoredo--impl
 Threading is introduced **incrementally, when a phase actually needs it**. The module
 boundaries below are designed so that each step is additive and does not change the domain.
 
-### 10.1 State in 1.0
+### 10.1 State in 1.0 and 1.2
 
 The domain, the canvas controller, SQLite and OpenGL stay on the Qt GUI thread; there is
 no executor infrastructure and no connection pool. Persistence is synchronous:

@@ -474,7 +474,7 @@ Not in Phase 7: recurrence, reminders, study sessions, notebook ↔ course links
 details beyond the name, drag-and-drop reordering in the planner (Move is by command), a
 multi-column week grid.
 
-## Phase 8 — Search, PDF, export
+## Phase 8 — Search, PDF, export ✅
 
 * FTS5 search (page titles, text boxes, tasks) with jump-to-result.
 * PDF import (one bounded page per PDF page, `DocumentRasterizer` tiles) and annotation.
@@ -507,7 +507,7 @@ pages (`/Rotate` is rendered as QtPdf reports the page), vector PDF pages in exp
 as 200 dpi images), zip64 bundles (> 4 GiB), importing a bundle's planner data (tasks,
 courses) — notebook bundles carry notebooks and their tags only.
 
-## Phase 9 — Hardening & release
+## Phase 9 — Hardening & release ✅
 
 * Profiling-driven optimisation (batching/arenas, LOD, texture budgets, page-load
   streaming), backup rotation and integrity check UI, crash-safe startup checks.
@@ -636,7 +636,7 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
 | 1.2-CMD-03 | First batch commands (e.g. `export notebook pdf <folder>`) with progress and `cancel`, off the GUI thread | Implemented as `export notebook pdf <folder>`, see below; `export section png [folder]` and a folder dialog are still open |
 | 1.2-PDF-03 | Persisted PDF text index (e.g. FTS5 rows per PDF page, filled through the worker) so the first search of a session is instant for large libraries | Moved to [Version 2.0](#version-20-not-started-dev20), where the reason is kept |
 
-### 1.2-CMD-03 — Batch PDF export from the command console
+### 1.2-CMD-03 — Batch PDF export from the command console ✅
 
 * **Status:** done (feature branch `feature/1.2-CMD-03-batch-pdf-export`, merged into
   `dev/1.2` as `8b6a60b`).
