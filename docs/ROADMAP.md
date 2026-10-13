@@ -1,7 +1,7 @@
 # Roadmap
 
-> Status: **Phases 0–5 complete.** Phases are ordered by dependency; each ends
-> with explicit exit criteria. Durations are intentionally not given yet.
+> Status: **Phases 0–9 complete, released as 1.0.0.** Phases are ordered by dependency;
+> each ends with explicit exit criteria. Durations are intentionally not given yet.
 >
 > **Rule:** functionality is implemented only in its phase, even when the architecture
 > documents already describe it. A phase adds the smallest foundations it needs and no
@@ -17,7 +17,8 @@
 | 5 — Application shell & navigation | ✅ Done |
 | 6 — Rich canvas content | ✅ Done (final audit: non-blocking follow-ups only) |
 | 7 — Study & planning | ✅ Done (see the Phase 7 section) |
-| 8–9 | Planned |
+| 8 — Search, PDF, export | ✅ Done |
+| 9 — Hardening & release | ✅ Done (released as 1.0.0) |
 
 ## Phase 0 — Architecture ✅
 
@@ -567,21 +568,26 @@ so linuxdeploy-plugin-qt's optional GTK theme hint is not applied.
 
 ## Version 1.2 (in development, `dev/1.2`)
 
-Development of 1.2 is complete and its release is in preparation; 1.2 is **not released**.
-The detailed history is on `dev/1.2`; `main` receives its state as single "Integrate …"
-commits (branch model: [RELEASE.md](RELEASE.md#branches-and-tags)). The latest stable
-release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`).
+Development of 1.2 is complete and 1.2.0 is the release candidate on `main`. It is a
+release once the tag `v1.2.0` and its GitHub release are published; until then the latest
+stable release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`). The detailed history is
+on `dev/1.2`; `main` receives its state as single "Integrate …" commits (branch model:
+[RELEASE.md](RELEASE.md#branches-and-tags)).
 
 **Development build 1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`): a packaged snapshot of the
 tasks below that are marked done, for testing and demonstration — not a release
 ([releases/v1.2.0-dev.md](releases/v1.2.0-dev.md)).
 
 **Release preparation (1.2-REL-03).** The open follow-ups are decided: 1.2-CMD-02 and
-1.2-PDF-03 are moved to [Version 2.0](#version-20-planned-dev20). The version label is
+1.2-PDF-03 are moved to [Version 2.0](#version-20-not-started-dev20). The version label is
 removed, so `dev/1.2` reports 1.2.0. CI and the package workflow also run on pushes to
-`release/**`. Still to be done, and none of it exists yet: the integration of the
-completed 1.2 state into `main`, the branch `release/1.2` at that commit, and the tag
-`v1.2.0` with its release (RELEASE.md, "Branches and tags").
+`release/**`.
+
+**Release candidate (1.2-REL-04).** The completed 1.2 state is integrated into `main` as
+the release candidate; `release/1.2` was created at that commit and `dev/2.0` at the tip
+of `dev/1.2`. The release notes are [releases/v1.2.0.md](releases/v1.2.0.md). Still to be
+done: the tag `v1.2.0`, which does not exist while 1.2.0 is a candidate, and the
+publication of its release (RELEASE.md, "Branches and tags").
 
 Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-CI-01,
 1.2-REL-01, 1.2-TXT-01, 1.2-TXT-02, 1.2-IMP-01, 1.2-PDF-01, 1.2-PDF-02, 1.2-PERF-01,
@@ -623,9 +629,9 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
 
 | Task | What | Why not now |
 |---|---|---|
-| 1.2-CMD-02 | Highlight PDF search matches on the page (character boxes from the worker, drawn as an overlay) | Moved to [Version 2.0](#version-20-planned-dev20), where the reason is kept |
+| 1.2-CMD-02 | Highlight PDF search matches on the page (character boxes from the worker, drawn as an overlay) | Moved to [Version 2.0](#version-20-not-started-dev20), where the reason is kept |
 | 1.2-CMD-03 | First batch commands (e.g. `export notebook pdf <folder>`) with progress and `cancel`, off the GUI thread | Implemented as `export notebook pdf <folder>`, see below; `export section png [folder]` and a folder dialog are still open |
-| 1.2-PDF-03 | Persisted PDF text index (e.g. FTS5 rows per PDF page, filled through the worker) so the first search of a session is instant for large libraries | Moved to [Version 2.0](#version-20-planned-dev20), where the reason is kept |
+| 1.2-PDF-03 | Persisted PDF text index (e.g. FTS5 rows per PDF page, filled through the worker) so the first search of a session is instant for large libraries | Moved to [Version 2.0](#version-20-not-started-dev20), where the reason is kept |
 
 ### 1.2-CMD-03 — Batch PDF export from the command console
 
@@ -659,11 +665,11 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
   between the last check and the final rename is replaced; a killed process can leave a
   temporary file in the target folder (COMMAND_CONSOLE.md §10.1, "Limits").
 
-## Version 2.0 (planned, `dev/2.0`)
+## Version 2.0 (not started, `dev/2.0`)
 
-Not started. `dev/2.0` is planned as the next development line and does not exist yet; it
-is to be created at the tip of `dev/1.2` (branch model:
-[RELEASE.md](RELEASE.md#branches-and-tags)).
+Not started. `dev/2.0`, the next development line, was created at the tip of `dev/1.2`
+(branch model: [RELEASE.md](RELEASE.md#branches-and-tags)); it reports 1.2.0 until its
+first change sets 2.0.0-dev.
 
 The tasks below were recorded for 1.2 as
 [follow-ups of 1.2-CMD-01](#follow-ups-recorded-by-12-cmd-01) and moved here when 1.2 was
