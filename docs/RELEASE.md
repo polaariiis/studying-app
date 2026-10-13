@@ -13,12 +13,15 @@ each release's packages. Building the packages locally is described in
 | Platforms | Windows x64, Linux x86_64, macOS arm64 (Apple silicon) |
 | Signing | **Unsigned / signing-ready** — see [Signing](#signing) |
 | Downloads | [GitHub releases](https://github.com/polaariiis/studying-app/releases) |
+| Release candidate | **1.2.0** — the current release once the tag `v1.2.0` and its GitHub release are published; until then 1.0.0 ([notes](releases/v1.2.0.md)) |
 
-The next version, 1.2, is being prepared for release and is **not released**: there is no
-`v1.2.0` tag or release, and 1.0.0 stays the current release until a `v1.2.0` release is
-published. `dev/1.2` builds report **1.2.0**, without a development label; the earlier
+**1.2.0 is the stable release candidate, awaiting final tagging and publication.** It is
+not a release: 1.0.0 stays the current release, and the only one to download, until the
+tag `v1.2.0` and its GitHub release are published. The candidate is the "Integrate …"
+commit on `main` that `release/1.2` points to; it reports **1.2.0**, without a
+development label. The tag `v1.2.0` does not exist while 1.2.0 is a candidate. The earlier
 development build 1.2.0-dev is described under [Development builds](#development-builds),
-and what is still to be done under [Branches and tags](#branches-and-tags).
+and how the candidate becomes the release under [Branches and tags](#branches-and-tags).
 
 ## Development builds
 
@@ -28,7 +31,7 @@ demonstration. It is **not a release**: no support, no upgrade promise, and it i
 
 | | |
 |---|---|
-| Current development build | **1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`) |
+| Development build | **1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`) |
 | Release notes | [releases/v1.2.0-dev.md](releases/v1.2.0-dev.md) |
 | Packages | `StudyBoard-1.2.0-dev-…` (the names of [Packages](#packages) with version `1.2.0-dev`) |
 | Workspaces | Compatible both ways with 1.0.0 (1.2 has no schema migration) |
@@ -37,9 +40,9 @@ The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION 1.
 `STUDYAPP_VERSION_LABEL` (`dev` for a development build; empty for a release). Together
 they give `STUDYAPP_VERSION`, the one value shown by `--version`, About, the status bar
 and `diagnostics`, recorded in workspaces, and used for the package and installer names:
-`1.2.0-dev` with the label `dev`, as in the build above. The label is empty now, in
-preparation for the 1.2.0 release, so `dev/1.2` reports `1.2.0`. Only the macOS bundle
-version stays numeric (`1.2.0`), because macOS requires digits there.
+`1.2.0-dev` with the label `dev`, as in the build above. The label is empty now, so the
+1.2.0 release candidate reports `1.2.0`. Only the macOS bundle version stays numeric
+(`1.2.0`), because macOS requires digits there.
 
 A development build is made like a release (below), with these differences: the tag is made
 on the development branch (`v1.2.0-dev` on `dev/1.2`), never on `main`; `release.yml` marks
@@ -53,18 +56,24 @@ moved once pushed; a later snapshot gets a new tag (`v1.2.0-dev.2`).
 |---|---|---|
 | `v<version>` tags (`v1.0.0`) | The released source of each version | Immutable: never moved, deleted or recreated; the GitHub release and its packages belong to the tag |
 | `v<version>-dev[.<n>]` tags (`v1.2.0-dev`) | A [development build](#development-builds) of a development branch | Immutable like release tags; a GitHub *pre-release* at most, never Latest |
-| `release/<major>.<minor>` (`release/1.0`; `release/1.2` is planned, not created) | Maintenance line of a version, created at its release-candidate commit on `main` before the tag; the tag is then made on that same commit on `main` | Fixes for that version only; a fix release is tagged here |
+| `release/<major>.<minor>` (`release/1.0`, `release/1.2`) | Maintenance line of a version, created at its release-candidate commit on `main` before the tag; the tag is then made on the candidate on `main` | Before the tag it follows the candidate: fast-forwarded if the candidate is replaced, never moved otherwise. After the tag: fixes for that version only; a fix release is tagged here |
 | `main` | Integration line, the default branch | Receives the state of the development branch as one "Integrate …" commit (squash merge), so its history stays short; never force-pushed |
-| `dev/<major>.<minor>` (`dev/1.2`; `dev/2.0` is planned, not created) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; a merged feature branch is deleted only when the maintainer decides. Retired (no new work) once the next development line exists, and deleted only when the maintainer decides |
+| `dev/<major>.<minor>` (`dev/1.2`, `dev/2.0`) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; a merged feature branch is deleted only when the maintainer decides. Once the next development line exists it receives no new feature work, only changes that finalise its release, and it is deleted only when the maintainer decides |
 
-`release/1.2`, `dev/2.0` and the tag `v1.2.0` are **planned and do not exist yet**. For
-the 1.2 release, the completed state of `dev/1.2` is integrated into `main` as one
-"Integrate …" commit, the release candidate; `release/1.2` is created at that commit
-before the tag, and `v1.2.0` is then made on that same commit on `main`. The next
-version's development continues on `dev/2.0` (not `dev/1.3`), created at the tip of
-`dev/1.2` so that it keeps the full history; from then on `dev/1.2` receives no new work.
-A `dev/2.0` created there reports `1.2.0` until its first change sets its own version,
-`2.0.0-dev`.
+For 1.2: the completed state of `dev/1.2` is integrated into `main` as one "Integrate …"
+commit, the release candidate, and `release/1.2` was created at that commit, before the
+tag. The tag `v1.2.0` is made on the candidate on `main` after final verification, by the
+maintainer's decision; it does not exist while 1.2.0 is a candidate. A change that only
+finalises the 1.2.0 release (documentation, release notes) still goes through `dev/1.2`
+and one more "Integrate …" commit on `main`, which replaces the candidate; `release/1.2`
+is then fast-forwarded to the new candidate, and never moved otherwise. After the tag,
+1.2 fixes belong to `release/1.2`.
+
+The next version's development is on `dev/2.0` (not `dev/1.3`), created at the tip of
+`dev/1.2` so that it keeps the full history. Now that it exists, `dev/1.2` receives no new
+feature work. `dev/2.0` is fast-forwarded to include the changes that finalise 1.2.0, so
+that the next integration from `dev/2.0` does not undo them. It reports `1.2.0` until its
+first own change sets its version, `2.0.0-dev`.
 
 ## Packages
 
