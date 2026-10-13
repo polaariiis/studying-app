@@ -34,13 +34,14 @@ demonstration. It is **not a release**: no support, no upgrade promise, and it i
 | Packages | `StudyBoard-1.2.0-dev-…` (the names of [Packages](#packages) with version `1.2.0-dev`) |
 | Workspaces | Compatible both ways with 1.0.0 (1.2 has no schema migration) |
 
-The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION 1.2.0)` and
+The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION …)` and
 `STUDYAPP_VERSION_LABEL` (`dev` for a development build; empty for a release). Together
 they give `STUDYAPP_VERSION`, the one value shown by `--version`, About, the status bar
 and `diagnostics`, recorded in workspaces, and used for the package and installer names:
-`1.2.0-dev` with the label `dev`, as in the build above. The label is empty in a release:
-1.2.0 reports `1.2.0`. Only the macOS bundle version stays numeric (`1.2.0`), because
-macOS requires digits there.
+`1.2.0-dev` with version 1.2.0 and the label `dev`, as in the build above. The label is
+empty in a release: 1.2.0 reports `1.2.0`. `dev/2.0` has version 2.0.0 and the label
+`dev`, so its builds report `2.0.0-dev`. Only the macOS bundle version stays numeric
+(`1.2.0`, `2.0.0`), because macOS requires digits there.
 
 A development build is made like a release (below), with these differences: the tag is made
 on the development branch (`v1.2.0-dev` on `dev/1.2`), never on `main`; `release.yml` marks
@@ -69,7 +70,7 @@ merging the release line.
 
 The next version's development is on `dev/2.0` (not `dev/1.3`), created at the tip of
 `dev/1.2` so that it keeps the full history; `dev/1.2` is retired and receives no new
-work. `dev/2.0` reports `1.2.0` until its first own change sets its version, `2.0.0-dev`.
+work. `dev/2.0` reports its own version, `2.0.0-dev`.
 
 ## Packages
 
