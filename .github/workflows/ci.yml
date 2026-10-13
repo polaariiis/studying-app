@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    # Integration branches of a phase run CI before they are merged to main.
-    branches: [main, 'phase-*', 'migration/**', 'dev/**']
+    # Integration branches of a phase run CI before they are merged to main; release lines
+    # run it for every fix.
+    branches: [main, 'phase-*', 'migration/**', 'dev/**', 'release/**']
   pull_request:
   workflow_dispatch:
 

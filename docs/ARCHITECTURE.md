@@ -246,6 +246,9 @@ How the boundaries are enforced (implemented in Phase 1):
 * Command console language (1.2, D54): `CommandRegistry`, `tokenizeCommandLine`,
   `CommandHistory`; PDF text matching and its bounded cache (D55): `findInPdfText`,
   `pdfSourcesOf`, `PdfTextCache` — all Qt-free, tested in every CI configuration (§3.6).
+* Batch export (1.2, D56): `exportFileName`, `planNotebookExport`, `runBatchExport` — which
+  files a notebook export writes and a sequential runner with a stop flag; Qt-free. The
+  job that paints and writes is in `ui` (§3.6).
 
 ### `platform` — Qt and OS adapters
 * Implements ports with Qt: `QtExecutor` (QThreadPool), `QtMainThreadDispatcher`,
@@ -430,7 +433,7 @@ MainWindow (ui)                      owns the open workspace; recreated per work
   repaint the canvas (focus changes no longer repaint the `QOpenGLWidget`); opening a
   page is one frame. Measured in ROADMAP.md, Phase 5.
 
-### 3.6 Command console *(1.2, D54/D55)*
+### 3.6 Command console *(1.2, D54/D55/D56)*
 
 A dock panel in which StudyBoard commands are typed ([COMMAND_CONSOLE.md](COMMAND_CONSOLE.md)).
 It is one more UI layer over the operations the window already has; it adds no mutation
@@ -472,6 +475,38 @@ flowchart TD
     match -->|"GUI thread"| results["results in the console"]
     results --> navigation["go n or a click<br/>openPage"]
 ```
+
+* **Batch export** (`export notebook pdf <folder>`, D56) is the first command whose file
+  work runs off the GUI thread. The GUI thread decides everything and hands over values;
+  the pool thread only paints and writes:
+
+```mermaid
+flowchart TD
+    console["Command console<br/>export notebook pdf folder"] --> start["MainWindow::startNotebookExport<br/>GUI thread"]
+    start -->|"folder checks, existing files"| plan["application::planNotebookExport<br/>sections, pages, file names"]
+    plan --> data["plain data<br/>Workspace copy, asset files, text style, stop flag"]
+    data --> pool["window pool thread<br/>application::runBatchExport"]
+    pool --> pages["ui::exportPages per section<br/>QPdfWriter into QSaveFile"]
+    pages -->|"queued, if the workspace is still open"| lines["progress lines and summary<br/>GUI thread, console"]
+    stop["cancel, close, quit"] -->|"stop flag"| pool
+```
+
+  * `application::planNotebookExport` (Qt-free) lists the sections of the notebook with
+    their pages and file names (`exportFileName`: characters, length, device names, unique
+    ignoring ASCII case); `application::runBatchExport` runs them in order, continues after
+    a failed section and ends when the stop flag is set or a section reports a cancel.
+  * The job owns a **copy of the `Workspace`** made on the GUI thread, a map of the stored
+    files of the assets the pages show (`ui::exportAssets`, resolved through the session)
+    and the text style (`ui::exportTextStyle`: the application font and a paint context
+    built on the GUI thread). It never holds a reference to the session, its workspace, the
+    console or a widget.
+  * Progress lines are posted to the GUI thread and written only if the window and the
+    same open workspace still exist — the guards of `runInBackground`'s finishing steps.
+  * Closing the workspace and destroying the window set the stop flag before they wait for
+    the pool (`releaseWorkspace`, `~MainWindow`), so they wait for one page, not for the
+    notebook. The file in progress is discarded by `QSaveFile`.
+  * The existing export commands, File ▸ Export and printing still run on the GUI thread,
+    through the same `ui::exportPages`.
 
 ## 4. Directory structure
 
@@ -636,6 +671,7 @@ Worker threads were added only where a measurement showed a stall, each owning p
 | Import copy + hash (staging) | The window's `QThreadPool`; closing a workspace waits for it | Phase 9 (D48) |
 | PDF inspection at import | A separate process, `studyapp --pdf-worker`, one per import, supervised from the import's pool thread; killed on timeout, crash or workspace close | 1.2 (D53) |
 | PDF text for `pdf search` | The same worker process, one per PDF not yet in the workspace's text cache, started one after another from a thread of the window's pool; matching on that thread; killed on timeout, crash, `cancel`, a newer search or workspace close | 1.2 (D55) |
+| Batch export (`export notebook pdf`) | One thread of the window's pool per export, one export at a time: it paints and writes every section from a copy of the workspace and other plain data taken on the GUI thread, and owns every Qt object it creates (`QPdfWriter`, `QPainter`, `QTextDocument`, `QPdfDocument`, `QSaveFile`); stopped before its next page by `cancel` or workspace close, which waits for it | 1.2 (D56) |
 
 The persistence writer thread and reader pool below were not needed for 1.0. `core`, `document` and `study` contain no threading
 primitives and no locks. The only process-wide state, the log sink, is installed once at
@@ -931,6 +967,7 @@ No plugin system is planned: it would freeze internal APIs too early.
 | D53 | Isolated PDF inspection (1.2; [PDF_WORKER.md](PDF_WORKER.md)): an imported PDF is staged first, then its page count and sizes are read by `studyapp --pdf-worker <job-directory>` — the same executable in a window-less mode — one process per import, supervised from the import's pool thread with blocking calls (the GUI thread never waits); each job has its own directory in the system temp with two one-way `ipc::FileChannel`s (request, reply), a `core::JobId` (UUIDv7, never persisted) in both messages, a fixed binary protocol without free text, a 30 s wall-clock deadline, kill on timeout, crash, protocol error or workspace close (a per-workspace stop flag), no retry, and cleanup of the job directory on every terminal path; StudyBoard re-validates the reply with the existing limits. Tile rendering stays in-process | A second worker executable; a persistent worker or pool; one shared or bidirectional channel; PDF bytes over IPC; automatic retries; a generic job framework; out-of-process tile rendering | A PDF that crashes or hangs PDFium during import fails that import instead of ending StudyBoard, without a new binary, signature or package change. Per-job channels make correlation and cleanup trivial; the deadline and kill bound waits that IPCFileLab's timeouts do not (lock waits). Not a sandbox: same user, same rights; rendering imported PDFs is not isolated until a measurement justifies it |
 | D54 | Command console (1.2-CMD-01; [COMMAND_CONSOLE.md](COMMAND_CONSOLE.md)): a dock panel whose lines are matched against a registry of named commands with typed arguments (`application::CommandRegistry`, Qt-free: tokenizer, lookup, aliases, help, completion, bounded history). Handlers call the window's existing operations and application services, so edits keep the one mutation path and stay undoable; output and history are bounded and never persisted; nothing is built until the console is first opened | A scripting language (Lua, JS); a shell or terminal widget; QProcess for commands; a giant if/else parser; a command palette over QActions only | Power users get a typed, keyboard-only way to reach existing operations and PDF content search without a second mutation path or any way to run programs. A registry keeps commands declarative (help, usage and completion come from the same entry) and makes future batch commands one entry each |
 | D55 | PDF content search through the PDF worker (1.2-CMD-01; [PDF_WORKER.md §23](PDF_WORKER.md#23-text-extraction)): a second request kind (`2`, extract text) and a text reply (`SBPT`: per-page UTF-8, ≤ 64 KiB per page, ≤ 8 MiB in all, validated) in the D53 protocol, run by the same client and worker; the text is cached per open workspace by asset id (assets are content-addressed, so entries never go stale) in a bounded LRU (32 MiB, 64 PDFs) and matched in-process by Qt-free code (case-folded, whitespace runs as one space) on a pool thread | Reading text with QtPdf in StudyBoard's process; a persistent text index in the database (FTS5); searching inside the worker per query; an unbounded cache; QPdfSearchModel | Searching PDF text parses untrusted PDFs, which D53 keeps out of the main process; one extraction per PDF and session keeps searches fast (a 2 000-page PDF: 0.48 s once, then 5 ms per search) without new schema, migration or persistence; a persisted index is a possible follow-up (1.2-PDF-03) once measurements on large libraries call for it |
+| D56 | Batch export on a pool thread from a value snapshot (1.2-CMD-03; [COMMAND_CONSOLE.md §10](COMMAND_CONSOLE.md#10-batch-operations)): `export notebook pdf <folder>` plans on the GUI thread (`application::planNotebookExport`, Qt-free), copies the `Workspace` there, resolves the stored files of the pages' assets and takes the text style, then paints and writes one PDF per section on one thread of the window's pool with the existing `ui::exportPages` (`QPdfWriter` into `QSaveFile`); one export at a time; a per-workspace stop flag read before each section and each page, set by `cancel`, workspace close and window destruction before they wait for the pool; progress and summary printed on the GUI thread only while the same workspace is open; existing files are never replaced (checked for all files first, and again before each section). **Thread-safety, as investigated for Qt 6.8.3 — to be re-checked when Qt is upgraded:** (1) `QPainter` on a non-GUI thread is documented for `QImage`, `QPrinter` and `QPicture`; **`QPdfWriter` is not named and has no reentrancy note. That it is safe is an inference from source, not a documented guarantee:** it paints through `QPdfEngine` (`gui/painting/qpdfwriter.cpp`), the engine the documented, reentrant `QPrinter` uses for PDF output (`QPdfPrintEngine`, `printsupport/kernel/qprintengine_pdf.cpp`), and neither it nor `gui/painting/qpdf.cpp` refers to the application object; the GUI-thread and other-thread exports are compared pixel by pixel in the tests on Windows, Linux and macOS. (2) `QTextDocument`, `QFont`, `QSaveFile`, `QImageReader` and `QSvgGenerator` are documented reentrant; the font cache is per thread (`gui/text/qfont.cpp`). (3) A hazard found and removed: `QAbstractTextDocumentLayout::PaintContext` holds a `QPalette` whose default constructor copies the application palette without a lock (`gui/kernel/qpalette.cpp`), and the theme switch replaces that palette (`ThemeManager`); so the paint context is built on the GUI thread and passed in with the font (`ExportSources::text`), and the fallback that reads the application asserts the GUI thread in debug builds. (4) Residual reads of application state on the export thread, accepted: `QGuiApplication::layoutDirection()`, read without a lock by every `QPainter` and `QTextOption` — it must not be set at run time while exports can run (StudyBoard never sets it); and the application font, read under Qt's mutex by `QFont`'s default constructor inside `QTextDocument`. (5) QtPdf serialises PDFium with one process-wide recursive mutex (`pdf/qpdfdocument.cpp`), so the export thread and the tile rasterizer thread (D44) never run it at once; each `QPdfDocument` still belongs to one thread, the export's live inside one `exportPages` call. The cost is responsiveness: a page render on one thread delays the other by one PDFium call. (6) Measured (Release, MSVC, a Windows 11 development machine): copying a workspace of 10 000 strokes takes about 1 ms (7 ms in a Debug build), 100 000 strokes about 11 ms; stroke points are shared between copies. (7) The pool has Qt's default thread count; an export holds one of its threads for its whole run, so imports started meanwhile are delayed only when all other threads are busy. (8) `QSaveFile` writes a temporary file next to the target and renames it; a killed process can leave one on Windows and macOS (documented, no cleanup code) | Painting on the GUI thread in slices between events; sharing the live `Workspace` under a lock; a reduced workspace holding only the notebook (a `creationPatch`-style extract); a `QPrinter` in PDF mode on the worker — the documented route, rejected because `QPrinter` takes only an output file name, not a device, so it cannot write through `QSaveFile` ("complete or not at all" would be lost) and it would change the output path of every existing export; rendering in the PDF worker process; several exports at once or a job queue; replacing existing files; moving the existing export commands off the GUI thread | A notebook of many sections must not block the window. The domain stays single-threaded and lock-free (§10): the copy is cheap at the measured sizes, cannot observe later edits (the output is the notebook as it was when the command was entered) and needs no change to `document`. One code path paints every export, so a batch file equals `export section pdf` of the same section (tested). Stopping at page boundaries bounds what a close waits for. Never replacing files keeps an unattended command from destroying data |
 | D41 | Copy/paste of canvas elements uses a clipboard inside the workspace's `CanvasController` (copies of the `Element` values); paste is one `commands::pasteElements` patch with new ids | The system clipboard with a serialized element format | Elements reference workspace-local assets and elements; a per-workspace clipboard guarantees every pasted image's asset exists in the target (the `image.asset_id` foreign key) and needs no format or import path yet. Pasting into another workspace or application is deferred (it needs asset import alongside the elements) |
 
 New significant decisions should be appended here (or moved to `docs/adr/` once the list

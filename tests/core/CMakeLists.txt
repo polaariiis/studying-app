@@ -1,5 +1,6 @@
 studyapp_add_gtest(core_tests
     SOURCES
+        BuildInfoTest.cpp
         ColorTest.cpp
         ErrorTest.cpp
         GeometryTest.cpp

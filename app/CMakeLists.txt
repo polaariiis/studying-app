@@ -27,6 +27,7 @@ set_target_properties(studyapp PROPERTIES
     OUTPUT_NAME studyapp
     MACOSX_BUNDLE_BUNDLE_NAME "${STUDYAPP_PRODUCT_NAME}"
     MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.polaariiis.studyboard"
+    # Numeric: macOS accepts only digits and dots here, so a pre-release label is left out.
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
 

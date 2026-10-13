@@ -14,21 +14,57 @@ each release's packages. Building the packages locally is described in
 | Signing | **Unsigned / signing-ready** — see [Signing](#signing) |
 | Downloads | [GitHub releases](https://github.com/polaariiis/studying-app/releases) |
 
-The next version, 1.2, is in development and **not released**: no `v1.2.0` tag or package
-exists yet. Builds of `main` and `dev/1.2` still report 1.0.0 until step 2 below sets the
-1.2 version.
+The next version, 1.2, is being prepared for release and is **not released**: there is no
+`v1.2.0` tag or release, and 1.0.0 stays the current release until a `v1.2.0` release is
+published. `dev/1.2` builds report **1.2.0**, without a development label; the earlier
+development build 1.2.0-dev is described under [Development builds](#development-builds),
+and what is still to be done under [Branches and tags](#branches-and-tags).
+
+## Development builds
+
+A development build is a tagged, packaged snapshot of a development branch for testing and
+demonstration. It is **not a release**: no support, no upgrade promise, and it is never the
+"Latest" release on GitHub.
+
+| | |
+|---|---|
+| Current development build | **1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`) |
+| Release notes | [releases/v1.2.0-dev.md](releases/v1.2.0-dev.md) |
+| Packages | `StudyBoard-1.2.0-dev-…` (the names of [Packages](#packages) with version `1.2.0-dev`) |
+| Workspaces | Compatible both ways with 1.0.0 (1.2 has no schema migration) |
+
+The version has two parts in the top-level `CMakeLists.txt`: `project(VERSION 1.2.0)` and
+`STUDYAPP_VERSION_LABEL` (`dev` for a development build; empty for a release). Together
+they give `STUDYAPP_VERSION`, the one value shown by `--version`, About, the status bar
+and `diagnostics`, recorded in workspaces, and used for the package and installer names:
+`1.2.0-dev` with the label `dev`, as in the build above. The label is empty now, in
+preparation for the 1.2.0 release, so `dev/1.2` reports `1.2.0`. Only the macOS bundle
+version stays numeric (`1.2.0`), because macOS requires digits there.
+
+A development build is made like a release (below), with these differences: the tag is made
+on the development branch (`v1.2.0-dev` on `dev/1.2`), never on `main`; `release.yml` marks
+the draft as a **pre-release** and never as Latest for any tag that contains a `-`; and its
+notes say *development / test build — not an official release*. A development tag is not
+moved once pushed; a later snapshot gets a new tag (`v1.2.0-dev.2`).
 
 ## Branches and tags
 
 | Reference | Role | Rules |
 |---|---|---|
 | `v<version>` tags (`v1.0.0`) | The released source of each version | Immutable: never moved, deleted or recreated; the GitHub release and its packages belong to the tag |
-| `release/<major>.<minor>` (`release/1.0`) | Maintenance line of a released version, created at its tag | Fixes for that version only; a fix release is tagged here |
+| `v<version>-dev[.<n>]` tags (`v1.2.0-dev`) | A [development build](#development-builds) of a development branch | Immutable like release tags; a GitHub *pre-release* at most, never Latest |
+| `release/<major>.<minor>` (`release/1.0`; `release/1.2` is planned, not created) | Maintenance line of a version, created at its release-candidate commit on `main` before the tag; the tag is then made on that same commit on `main` | Fixes for that version only; a fix release is tagged here |
 | `main` | Integration line, the default branch | Receives the state of the development branch as one "Integrate …" commit (squash merge), so its history stays short; never force-pushed |
-| `dev/<major>.<minor>` (`dev/1.2`) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; then the feature branch is deleted |
+| `dev/<major>.<minor>` (`dev/1.2`; `dev/2.0` is planned, not created) | Development of the next version with the full history | Every `feature/…` branch is merged here (`--no-ff`) after CI and package runs pass; a merged feature branch is deleted only when the maintainer decides. Retired (no new work) once the next development line exists, and deleted only when the maintainer decides |
 
-When 1.2 is released, its tag is made on `main`, `release/1.2` is created at it, and the
-next version's development continues on `dev/1.3`.
+`release/1.2`, `dev/2.0` and the tag `v1.2.0` are **planned and do not exist yet**. For
+the 1.2 release, the completed state of `dev/1.2` is integrated into `main` as one
+"Integrate …" commit, the release candidate; `release/1.2` is created at that commit
+before the tag, and `v1.2.0` is then made on that same commit on `main`. The next
+version's development continues on `dev/2.0` (not `dev/1.3`), created at the tip of
+`dev/1.2` so that it keeps the full history; from then on `dev/1.2` receives no new work.
+A `dev/2.0` created there reports `1.2.0` until its first change sets its own version,
+`2.0.0-dev`.
 
 ## Packages
 
@@ -56,9 +92,11 @@ never touches them.
    a clean runner without Qt or a compiler (`studyapp --self-test`: Qt plugins, OpenGL 3.3
    rendering, fonts, workspaces, search, Qt PDF, export, printing; on Windows the installer
    is installed and uninstalled; on Linux the launcher's runtime choice is checked).
-2. The version is set in the top-level `CMakeLists.txt` (`project(VERSION …)`); the
-   packages, the application's About box and the workspace metadata take it from there.
-3. Pushing a tag `v<version>` on `main` runs `release.yml`: the same package and
+2. The version is set in the top-level `CMakeLists.txt` (`project(VERSION …)`, and
+   `STUDYAPP_VERSION_LABEL` emptied for a release); the packages, the application's About
+   box and the workspace metadata take it from there.
+3. `release/<major>.<minor>` is created at the release-candidate commit. Pushing a tag
+   `v<version>` on that same commit on `main` runs `release.yml`: the same package and
    smoke-test jobs, the optional signing jobs, then a **draft** GitHub release with every
    package, its `.sha256` file and `SHA256SUMS.txt`. Every package's size and SHA-256, and
    the version each packaged application reports, are also published as notices on the
@@ -128,3 +166,30 @@ OpenGL offers only 3.0). The same source was also built locally on the reference
 its ZIP unpacked from a path with a space, with no Qt or compiler on `PATH`, reported
 1.0.0 and passed `--self-test` including OpenGL rendering on the Radeon 760M
 ([HARDWARE_MATRIX.md](HARDWARE_MATRIX.md)).
+
+### 1.2.0-dev (development build — not a release)
+
+Tag `v1.2.0-dev` on commit `2418261` (branch `dev/1.2`), built by the
+[release workflow run](https://github.com/polaariiis/studying-app/actions/runs/37562701698)
+on 2026-10-07 into a **draft pre-release** (not Latest; [notes](releases/v1.2.0-dev.md)).
+All packages **unsigned**. The same commit passed CI (all jobs; 559–560 tests in the full
+suites, 553 in the Qt-free suites and under ASan + UBSan) and the package workflow on
+`dev/1.2` before it was tagged.
+
+| File | Platform | Architecture | Size (bytes) | SHA-256 | Validation |
+|---|---|---|---:|---|---|
+| `StudyBoard-1.2.0-dev-windows-AMD64.exe` | Windows 10 22H2+ | x64 | 50 518 743 | `e2ba426198b9ceb27780e727bd6731c0c92fdc1aa744d63f779c5435fb472209` | Silent install, `--self-test`, uninstall — clean `windows-2022` runner; on a Windows 11 PC with an Intel UHD 730: installed (Apps & Features "StudyBoard 1.2.0-dev"), version, `--self-test` 25/25 with OpenGL 3.3, and the manual console and PDF search checks below |
+| `StudyBoard-1.2.0-dev-windows-AMD64.zip` | Windows 10 22H2+ | x64 | 60 475 514 | `ebb4581e7074d226c160a28cb66fa55c2fac25802796aca43f27b0f0e5062f76` | `--self-test`, version 1.2.0-dev — clean runner; on the same PC with no Qt or compiler on `PATH`: `--self-test` 25/25 with OpenGL 3.3, every Qt and MSVC DLL loaded from the package |
+| `StudyBoard-1.2.0-dev-linux-x86_64.AppImage` | Ubuntu 22.04+ | x86_64 | 41 830 904 | `348ff1fd230c7e8930cf317c78ec9df774d04fc0fb6fb257b53565d6c4b5b356` | `--self-test` with OpenGL rendering (Mesa) through the launcher — clean Ubuntu 22.04 and 24.04 runners |
+| `StudyBoard-1.2.0-dev-linux-x86_64.tar.gz` | Ubuntu 22.04+ | x86_64 | 45 943 995 | `db22c9530c8b5343d9c95c54bbb59c1aea07e773d67f6d3a3a2f8fa3d952ad9a` | As the AppImage; version 1.2.0-dev; the launcher chose the bundled C++ runtime on 22.04 and the system's on 24.04 |
+| `StudyBoard-1.2.0-dev-macos-arm64.dmg` | macOS 13+ | arm64 | 33 430 895 | `6aab8ddb84ac7ba930690718a72c221086ef59a0ffaf83642aaf84230f3fd0b1` | Mounted, `--self-test` with OpenGL rendering (Apple software renderer), version 1.2.0-dev — clean `macos-14` runner only |
+
+Manual checks of the installed Windows package (all passed): the version in the status bar,
+Help ▸ About and `diagnostics`; the command console (shortcut and menu, `help`,
+autocomplete, history); `import pdf` of a 120-page PDF from a path with a space and Cyrillic
+letters; `list`, `open page`, `go`, `search`; `pdf search` with results on the right pages
+and their context, a phrase across a line break, no match, `go <n>` and a click opening the
+page; `export page pdf` and the refusal to overwrite; six shell-like inputs answered
+"Unknown command" with no process started; a damaged PDF reported by the worker with the
+application still running; a closed and reopened workspace keeping the import, with the
+PDF text read again by a short-lived worker and no temporary job folders left.
