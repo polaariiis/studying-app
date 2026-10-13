@@ -566,13 +566,13 @@ shown — `--self-test` reports it; the Linux launcher compares `GLIBCXX` versio
 `CXXABI`/`GCC_` versions, which rise with them); the AppImage's `AppRun` is the launcher,
 so linuxdeploy-plugin-qt's optional GTK theme hint is not applied.
 
-## Version 1.2 (in development, `dev/1.2`)
+## Version 1.2 (released as 1.2.0)
 
-Development of 1.2 is complete and 1.2.0 is the release candidate on `main`. It is a
-release once the tag `v1.2.0` and its GitHub release are published; until then the latest
-stable release remains 1.0.0 (tag `v1.0.0`, branch `release/1.0`). The detailed history is
-on `dev/1.2`; `main` receives its state as single "Integrate …" commits (branch model:
-[RELEASE.md](RELEASE.md#branches-and-tags)).
+Development of 1.2 is complete and **1.2.0 is released**: tag `v1.2.0` on `main`,
+published 2026-10-13 ([RELEASE.md](RELEASE.md#current-release); notes:
+[releases/v1.2.0.md](releases/v1.2.0.md)). The previous release is 1.0.0 (tag `v1.0.0`,
+branch `release/1.0`). The detailed history is on `dev/1.2`; `main` received its state as
+single "Integrate …" commits (branch model: [RELEASE.md](RELEASE.md#branches-and-tags)).
 
 **Development build 1.2.0-dev** (tag `v1.2.0-dev` on `dev/1.2`): a packaged snapshot of the
 tasks below that are marked done, for testing and demonstration — not a release
@@ -583,11 +583,14 @@ tasks below that are marked done, for testing and demonstration — not a releas
 removed, so `dev/1.2` reports 1.2.0. CI and the package workflow also run on pushes to
 `release/**`.
 
-**Release candidate (1.2-REL-04).** The completed 1.2 state is integrated into `main` as
+**Release candidate (1.2-REL-04).** The completed 1.2 state was integrated into `main` as
 the release candidate; `release/1.2` was created at that commit and `dev/2.0` at the tip
-of `dev/1.2`. The release notes are [releases/v1.2.0.md](releases/v1.2.0.md). Still to be
-done: the tag `v1.2.0`, which does not exist while 1.2.0 is a candidate, and the
-publication of its release (RELEASE.md, "Branches and tags").
+of `dev/1.2`. The release notes are [releases/v1.2.0.md](releases/v1.2.0.md).
+
+**Release (1.2-REL-05).** The tag `v1.2.0` was made on `main` (commit `345edb5`) and the
+release published on 2026-10-13; its packages are recorded in
+[RELEASE.md, Release records](RELEASE.md#release-records). 1.2 fixes belong to
+`release/1.2`.
 
 Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-CI-01,
 1.2-REL-01, 1.2-TXT-01, 1.2-TXT-02, 1.2-IMP-01, 1.2-PDF-01, 1.2-PDF-02, 1.2-PERF-01,
