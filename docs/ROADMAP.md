@@ -671,8 +671,7 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
 ## Version 2.0 (not started, `dev/2.0`)
 
 Not started. `dev/2.0`, the next development line, was created at the tip of `dev/1.2`
-(branch model: [RELEASE.md](RELEASE.md#branches-and-tags)); it reports 1.2.0 until its
-first change sets 2.0.0-dev.
+(branch model: [RELEASE.md](RELEASE.md#branches-and-tags)); it reports 2.0.0-dev.
 
 The tasks below were recorded for 1.2 as
 [follow-ups of 1.2-CMD-01](#follow-ups-recorded-by-12-cmd-01) and moved here when 1.2 was
