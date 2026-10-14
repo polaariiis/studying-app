@@ -670,8 +670,29 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
 
 ## Version 2.0 (not started, `dev/2.0`)
 
-Not started. `dev/2.0`, the next development line, was created at the tip of `dev/1.2`
-(branch model: [RELEASE.md](RELEASE.md#branches-and-tags)); it reports 2.0.0-dev.
+Not started: no 2.0 feature is implemented. `dev/2.0`, the next development line, was
+created at the tip of `dev/1.2` (branch model: [RELEASE.md](RELEASE.md#branches-and-tags));
+it reports 2.0.0-dev.
+
+**Plan (M1 decisions approved in principle on 2026-10-14; nothing implemented):**
+[VERSION_2_0.md](VERSION_2_0.md) — study plans linked to notebook pages, with an optional,
+bounded AI assistant that only proposes; StudyBoard validates, previews, saves and
+navigates. It holds the repository findings, the milestones with acceptance criteria and
+tests, the decisions P1–P8 (P1–P4 and P8 approved, P5–P7 open) and the decisions needed
+from the user (O1–O10; O4 decided). Task IDs are `2.0-<AREA>-NN`.
+
+| Milestone | Tasks | Priority | Depends on | Status |
+|---|---|---|---|---|
+| M1 — Study plans without AI | 2.0-PLAN-01 highlight a task's pages in the tree · 2.0-PLAN-02 edit estimates and plan totals · 2.0-PLAN-03 make a plan from chosen sections (one undoable edit) | First | — (PLAN-03 after PLAN-02) | Approved in principle; next: 2.0-PLAN-01 (`feature/2.0-PLAN-01-tree-highlight`), not started |
+| M2 — AI foundation (development builds, `STUDYAPP_ENABLE_AI` off by default) | 2.0-AI-01 provider port and fake provider · 2.0-AI-02 network adapter, settings, key | Second | P5–P7 | Proposed |
+| M3 — AI study plans | 2.0-AI-03 the AI proposes the plan M1 previews and saves | Third | M1, M2 | Proposed |
+| M4 — Later study tools | 2.0-AI-04 revise a plan · 2.0-AI-05 summarize/explain · 2.0-RES-01 find real resources · 2.0-AI-06 relevance notes | Later | M2/M3; O7, O8 | Proposed |
+| M5 — Pages and PDFs | 2.0-SRC-01 link a page to a PDF page · 2.0-WS-01 source and notes side by side | Later | O5 (schema migration), O9 | To investigate |
+| M6 — Release readiness | 2.0-REL-02 provider, key storage, packaging, privacy documentation | Before 2.0.0 | The features chosen | — |
+
+Deferred beyond 2.0: revision questions and flashcards, recurring plans, OCR and image
+understanding, other AI adapters, automatic rescheduling ([VERSION_2_0.md
+§12](VERSION_2_0.md#12-deferred-beyond-20-unless-re-decided)).
 
 The tasks below were recorded for 1.2 as
 [follow-ups of 1.2-CMD-01](#follow-ups-recorded-by-12-cmd-01) and moved here when 1.2 was

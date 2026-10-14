@@ -911,6 +911,11 @@ No plugin system is planned: it would freeze internal APIs too early.
 
 ## 18. Decision log
 
+Accepted decisions only. The 2.0 decisions P1–P8 (proposed, or approved but not yet
+implemented) are in [VERSION_2_0.md §10](VERSION_2_0.md#10-decision-log-none-implemented-yet);
+each gets the next free D-number here only once it is implemented and that implementation is
+approved.
+
 | # | Decision | Alternatives considered | Reason |
 |---|---|---|---|
 | D1 | Domain, canvas, render API, persistence and application are Qt-free | Allow QtCore everywhere | Headless tests, replaceable UI/renderer, clean boundaries; cost is small |
