@@ -56,7 +56,7 @@ as a *pre-release*, never as the latest release.
 | Branch `main` | The integration line: it receives the state of a development or release line in single "Integrate …" commits, and the tag `v1.2.0` is on it. A commit on `main` without a release tag is **not** a release: build from `v1.2.0` (or download the packages) for the stable version. |
 | Branch `dev/1.2` | 1.2 development with the detailed history: every 1.2 feature branch was merged here first. Retired: it receives no new work now that 1.2.0 is released; 1.2 fixes go to `release/1.2`. |
 | Tag `v1.2.0-dev` | A **development / test build** of `dev/1.2`, version 1.2.0-dev — not a release ([notes](docs/releases/v1.2.0-dev.md)). It never moves; a later snapshot gets a new tag. |
-| Branch `dev/2.0` | The development line of the next version, 2.0, created at the tip of `dev/1.2` with its full history. It reports 1.2.0 until its first change sets 2.0.0-dev. |
+| Branch `dev/2.0` | The development line of the next version, 2.0, created at the tip of `dev/1.2` with its full history. Its builds report version **2.0.0-dev**, a development version, not a release. |
 
 Short-lived `feature/…` branches exist while a change is in progress and are merged into
 the development line (`dev/2.0`; `dev/1.2` for 1.2) or, for a fix of a released version,
