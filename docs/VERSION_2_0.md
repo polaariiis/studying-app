@@ -1,8 +1,8 @@
 # StudyBoard 2.0 — Plan
 
 > Status: **plan; the M1 decisions (P1–P4, P8, O4) were approved in principle on
-> 2026-10-14; 2.0-PLAN-01 is implemented and awaiting the user's approval; nothing else in
-> it is implemented.**
+> 2026-10-14; 2.0-PLAN-01 is implemented and was accepted on 2026-10-14 (D57); nothing else
+> in it is implemented.**
 > This is the canonical planning reference for StudyBoard 2.0. It consolidates and
 > replaces the two working drafts "StudyBoard 2.0 — AI-Assisted Study Plans" (v1.1,
 > 2026-10-12) and "StudyBoard — AI study plans (plan)" (§2.1). The short roadmap with
@@ -257,7 +257,7 @@ by value, not by dependency.
 Every task below carries a status line: **implemented** (with evidence), **investigate**
 (open technical questions before the task document), **proposed** (ready for a task
 document once approved), **blocked** (needs a decision, named). Today one task is
-implemented: 2.0-PLAN-01, awaiting the user's approval.
+implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57).
 
 ## 5. Milestone M1 — study plans without AI
 
@@ -265,7 +265,8 @@ implemented: 2.0-PLAN-01, awaiting the user's approval.
 
 * **Status:** implemented on `feature/2.0-PLAN-01-tree-highlight` (tree model, window
   wiring and markers; tests in [TESTING.md §0](TESTING.md#0-test-suites-10-12-and-20), "2.0
-  additions"), awaiting the user's approval. The look (O4) costs every row 2 px of height
+  additions"), accepted on 2026-10-14 as
+  [D57](ARCHITECTURE.md#18-decision-log). The look (O4) costs every row 2 px of height
   and moves titles one marker width to the right, whether or not anything is marked
   (accepted by the user, 2026-10-14).
 * **Branch:** `feature/2.0-PLAN-01-tree-highlight` from `dev/2.0`.
@@ -775,7 +776,7 @@ are insufficient (QtNetwork in 2.0-AI-02 and a keychain library in 2.0-REL-02 ar
 foreseen); no chatbot or agent loop as a shortcut; reports name changed files, commands,
 test results and blockers, and never claim tests that did not run.
 
-## 10. Decision log (none accepted yet)
+## 10. Decision log
 
 Accepted decisions this plan builds on (unchanged): D20/D25/D36 one workspace undo history;
 D37 shell state not persisted; D38 hard deletes; D42 study records in the document
@@ -791,9 +792,9 @@ the worker; D54 console rules.
 | P5 | AI compiled only with `STUDYAPP_ENABLE_AI` (default OFF) until the release gate | AI always compiled, disabled at run time | Packages gain no QtNetwork/TLS until the feature is worth shipping | Open until the AI milestone |
 | P6 | The AI port lives in `application` (Qt-free); one `platform` adapter for OpenAI-compatible chat completions; Gemini as the development preset | A new `ai` module (draft B); the native Gemini API; several adapters | Ports belong to their users (ARCHITECTURE.md §3); one adapter covers several services | Open until the AI milestone |
 | P7 | Key from an environment variable during development; OS credential store, or no AI in packages, before a public release | Key in `QSettings`; key in the workspace | No plain-text secret on disk; the workspace is bundled and shared | Open until the AI milestone |
-| P8 | Plan highlight is derived UI state in `WorkspaceTreeModel`, never stored | A stored "active plan" | Draft A and B agree; no document change | Approved 2026-10-14; implemented in 2.0-PLAN-01, awaiting approval (then a D-number) |
+| P8 | Plan highlight is derived UI state in `WorkspaceTreeModel`, never stored | A stored "active plan" | Draft A and B agree; no document change | Accepted 2026-10-14 as D57 (2.0-PLAN-01) |
 
-An approved decision gets the next free D-number in ARCHITECTURE.md §18 (D57 onwards) only
+An approved decision gets the next free D-number in ARCHITECTURE.md §18 (D58 onwards; P8 is D57) only
 after its implementation is completed and that implementation is approved; until then it
 is recorded here only.
 

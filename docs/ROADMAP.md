@@ -670,23 +670,23 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
 
 ## Version 2.0 (not started, `dev/2.0`)
 
-2.0 work is in progress: 2.0-PLAN-01 is implemented on its feature branch
-(`feature/2.0-PLAN-01-tree-highlight`), pending acceptance; no other 2.0 feature is
-implemented. The heading keeps its name so that existing links to it stay valid.
+2.0 work is in progress: 2.0-PLAN-01 is implemented and was accepted on 2026-10-14 (D57);
+it is being integrated into `dev/2.0` from `feature/2.0-PLAN-01-tree-highlight`. No other
+2.0 feature is implemented. The heading keeps its name so that existing links to it stay valid.
 `dev/2.0`, the next development line, was
 created at the tip of `dev/1.2` (branch model: [RELEASE.md](RELEASE.md#branches-and-tags));
 it reports 2.0.0-dev.
 
-**Plan (M1 decisions approved in principle on 2026-10-14; P8 implemented by 2.0-PLAN-01):**
+**Plan (M1 decisions approved in principle on 2026-10-14; P8 accepted as D57 with 2.0-PLAN-01):**
 [VERSION_2_0.md](VERSION_2_0.md) — study plans linked to notebook pages, with an optional,
 bounded AI assistant that only proposes; StudyBoard validates, previews, saves and
 navigates. It holds the repository findings, the milestones with acceptance criteria and
-tests, the decisions P1–P8 (P1–P4 and P8 approved, P5–P7 open) and the decisions needed
-from the user (O1–O10; O4 decided). Task IDs are `2.0-<AREA>-NN`.
+tests, the decisions P1–P8 (P8 accepted as D57, P1–P4 approved, P5–P7 open) and the
+decisions needed from the user (O1–O10; O4 decided). Task IDs are `2.0-<AREA>-NN`.
 
 | Milestone | Tasks | Priority | Depends on | Status |
 |---|---|---|---|---|
-| M1 — Study plans without AI | 2.0-PLAN-01 highlight a task's pages in the tree · 2.0-PLAN-02 edit estimates and plan totals · 2.0-PLAN-03 make a plan from chosen sections (one undoable edit) | First | — (PLAN-03 after PLAN-02) | Approved in principle; 2.0-PLAN-01 implemented on `feature/2.0-PLAN-01-tree-highlight`, awaiting approval; PLAN-02 and PLAN-03 not started |
+| M1 — Study plans without AI | 2.0-PLAN-01 highlight a task's pages in the tree · 2.0-PLAN-02 edit estimates and plan totals · 2.0-PLAN-03 make a plan from chosen sections (one undoable edit) | First | — (PLAN-03 after PLAN-02) | Approved in principle; 2.0-PLAN-01 accepted (D57), being integrated into `dev/2.0`; PLAN-02 and PLAN-03 not started |
 | M2 — AI foundation (development builds, `STUDYAPP_ENABLE_AI` off by default) | 2.0-AI-01 provider port and fake provider · 2.0-AI-02 network adapter, settings, key | Second | P5–P7 | Proposed |
 | M3 — AI study plans | 2.0-AI-03 the AI proposes the plan M1 previews and saves | Third | M1, M2 | Proposed |
 | M4 — Later study tools | 2.0-AI-04 revise a plan · 2.0-AI-05 summarize/explain · 2.0-RES-01 find real resources · 2.0-AI-06 relevance notes | Later | M2/M3; O7, O8 | Proposed |
