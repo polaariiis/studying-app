@@ -405,7 +405,15 @@ MainWindow (ui)                      owns the open workspace; recreated per work
   mirrors the document's shape only (ids) and updates in place: renames emit
   `dataChanged`, structural changes become row inserts/removals/moves (a move keeps
   expansion and selection); element and layer changes do nothing. There is no copy of
-  the hierarchy in the UI.
+  the hierarchy in the UI. *(2.0-PLAN-01)* The window also derives the tree's link marks
+  after every patch, on a change of the planner's selected task and when the Planner panel
+  is shown or hidden: while the panel is shown, the pages linked to its selected task
+  (looked up again each time, so a deleted task or page marks nothing) and the sections
+  and notebooks that contain them. The tree model shows them as a filled dot or a hollow
+  ring in `textSecondary` and in the accessible description; nothing is stored. Escape in
+  the tree deselects the task. Every row has a decoration once the markers are set
+  (transparent unless marked), so marks never move a row; compared with 1.2, rows are
+  2 px taller and titles sit one small marker width further right.
 * **Active page.** `PageNavigator` holds the page on the canvas; opening a page is not an
   edit (D37). When the active page disappears (delete, undo of its creation) the
   neighbour opens: the page that took its place, else the one before it, else the first
@@ -912,7 +920,7 @@ No plugin system is planned: it would freeze internal APIs too early.
 ## 18. Decision log
 
 Accepted decisions only. The 2.0 decisions P1–P8 (proposed, or approved but not yet
-implemented) are in [VERSION_2_0.md §10](VERSION_2_0.md#10-decision-log-none-implemented-yet);
+implemented) are in [VERSION_2_0.md §10](VERSION_2_0.md#10-decision-log-none-accepted-yet);
 each gets the next free D-number here only once it is implemented and that implementation is
 approved.
 

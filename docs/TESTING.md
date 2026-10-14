@@ -3,7 +3,7 @@
 > Status: **Final baseline.** §0 lists what exists after Phase 5; the rest of this
 > document is the plan that later phases follow.
 
-## 0. Test suites (1.0 and 1.2)
+## 0. Test suites (1.0, 1.2 and 2.0)
 
 | Test target | Label | Framework | Covers |
 |---|---|---|---|
@@ -205,6 +205,28 @@ version shown to users is the numeric version, optionally followed by `-<label>`
 (`1.2.0-dev`), which package names depend on. Packages: the smoke tests compare
 `--version` with the version in the package's file name, label included
 (docs/RELEASE.md, "Development builds").
+
+**2.0 additions (a task's linked pages marked in the tree, 2.0-PLAN-01).** `ui.ShellTest`,
+tree model: the pages of a linked set and the sections and notebooks that contain them are
+marked (`LinkedRole`, `ContainsLinkedRole`, a dot or ring decoration, the suffix of the
+accessible description) with 0, 1 and many links across two notebooks; the same set again
+signals nothing, a new set signals only the rows whose marks changed; a page that does not
+exist marks nothing; the marks follow a page or section moved to another parent, go with a
+deleted page and come back with undo; a new workspace starts unmarked; once markers are set
+every unmarked row carries a transparent decoration, so rows keep their size and place when
+marks change; new markers redecorate the marked rows only. The window: selecting a task (in
+the planner's list, `selectTask`, a task search result, the console's `go`) marks its pages
+without changing the tree's selection, current row, expansion or the open page; another task
+replaces the marks, a task without links marks nothing, completing the task keeps them;
+linking and unlinking the open page in the task editor, deleting a linked page, undo and redo
+update them; a canvas stroke emits no `dataChanged` from the tree; hiding the Planner clears
+the marks and showing it shows them again; clicking a marked page opens it; after reopening
+nothing is marked; Escape in the tree deselects the task and clears the marks, during an F2
+rename it only cancels the rename; the markers (a filled dot, a hollow ring) are drawn in
+`textSecondary`, change with the theme and are no taller than the text line, and a grab
+shows the dot beside the marked page only. With the markers every row is 2 px taller than in
+1.2 (22 → 24 px with Windows fonts) and titles sit one marker width further right (+16 px),
+whether or not anything is marked; the light and dark look was checked by hand.
 
 ## 1. Principles
 
