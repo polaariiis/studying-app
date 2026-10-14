@@ -59,6 +59,8 @@ public:
     /// The page to open when a linked page is activated.
     void setOpenPageHandler(std::function<void(core::PageId)> handler);
     void setFailureHandler(std::function<void(const QString&, const QString&)> handler);
+    /// Called whenever the selected task changes (nullopt: none), by the user or not.
+    void setSelectionHandler(std::function<void(std::optional<core::TaskId>)> handler);
     /// Saves what is being typed in a planner field (before the workspace closes).
     void finishEditing();
 
@@ -100,6 +102,8 @@ private:
     void onItemChanged(QTreeWidgetItem* item, int column);
     void onCurrentItemChanged(QTreeWidgetItem* item);
     void restoreSelection(QTreeWidget* tree);
+    /// The only place `selected_` changes; tells the selection handler.
+    void setSelected(std::optional<core::TaskId> task);
 
     void createTaskFrom(QLineEdit* edit);
     void commitPageTags();
@@ -134,6 +138,7 @@ private:
     study::CalendarDate weekStart_{};
     std::function<void(core::PageId)> openPage_;
     std::function<void(const QString&, const QString&)> failed_;
+    std::function<void(std::optional<core::TaskId>)> selectionChanged_;
 
     QTabBar* tabs_ = nullptr;
     QStackedWidget* views_ = nullptr;

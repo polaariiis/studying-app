@@ -57,6 +57,10 @@ NavigationPanel::NavigationPanel(WorkspaceTreeModel& model, QWidget* parent) : Q
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
     tree_->setFrameShape(QFrame::NoFrame);
     tree_->setIndentation(14);
+    // Link marks (2.0-PLAN-01) are small, within the text line: the row height does not
+    // depend on them, and titles move right by little.
+    const int marker = tree_->fontMetrics().height() * 2 / 3;
+    tree_->setIconSize(QSize(marker, marker));
     tree_->setExpandsOnDoubleClick(true);
     tree_->installEventFilter(this);
 

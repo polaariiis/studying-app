@@ -599,7 +599,7 @@ void PlannerPanel::buildEditor() {
 void PlannerPanel::setPlanner(application::Planner* planner, const core::Clock* clock) {
     planner_ = planner;
     clock_ = clock;
-    selected_.reset();
+    setSelected(std::nullopt);
     activePage_.reset();
     weekStart_ = {};
     dirty_ = true;
@@ -657,6 +657,10 @@ void PlannerPanel::setFailureHandler(std::function<void(const QString&, const QS
     failed_ = std::move(handler);
 }
 
+void PlannerPanel::setSelectionHandler(std::function<void(std::optional<core::TaskId>)> handler) {
+    selectionChanged_ = std::move(handler);
+}
+
 void PlannerPanel::onPatch(const document::Patch& patch) {
     if (concernsPlanner(patch)) {
         scheduleRefresh();
@@ -669,8 +673,18 @@ void PlannerPanel::showView(View view) {
 }
 
 void PlannerPanel::selectTask(std::optional<core::TaskId> task) {
-    selected_ = task;
+    setSelected(task);
     refreshNow();
+}
+
+void PlannerPanel::setSelected(std::optional<core::TaskId> task) {
+    if (task == selected_) {
+        return;
+    }
+    selected_ = task;
+    if (selectionChanged_) {
+        selectionChanged_(selected_);
+    }
 }
 
 void PlannerPanel::scheduleRefresh() {
@@ -701,7 +715,7 @@ void PlannerPanel::refreshNow() {
     dirty_ = false;
     ++refreshes_;
     if (planner_ != nullptr && selected_ && planner_->workspace().findTask(*selected_) == nullptr) {
-        selected_.reset(); // deleted (or its creation undone)
+        setSelected(std::nullopt); // deleted (or its creation undone)
     }
     if (weekStart_ == study::CalendarDate{}) {
         weekStart_ = study::weekStart(today());
@@ -1073,7 +1087,7 @@ void PlannerPanel::onCurrentItemChanged(QTreeWidgetItem* item) {
     if (!id || id == selected_) {
         return;
     }
-    selected_ = id;
+    setSelected(id);
     loadEditor();
 }
 
@@ -1106,7 +1120,7 @@ void PlannerPanel::createTaskFrom(QLineEdit* edit) {
         return;
     }
     edit->clear();
-    selected_ = *created;
+    setSelected(*created);
 }
 
 void PlannerPanel::commit(core::Result<void> result, const QString& what) {

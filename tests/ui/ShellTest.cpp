@@ -40,16 +40,21 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
+#include <QFont>
 #include <QImage>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPdfDocument>
 #include <QPdfWriter>
+#include <QPointer>
 #include <QPrinter>
+#include <QPushButton>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSvgRenderer>
@@ -63,6 +68,7 @@
 #include <QTreeView>
 #include <QTreeWidget>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -1970,6 +1976,322 @@ private Q_SLOTS:
         scope->setCurrentIndex(0); // All tasks
         Q_EMIT scope->activated(0);
         QCOMPARE(titlesIn(tasks).size(), 2);
+    }
+
+    // 2.0-PLAN-01: the selected task's linked pages are marked in the tree (and the sections
+    // and notebooks containing them), derived from the planner's selection and the
+    // document after every patch; never stored, never moving the tree's state.
+    void linkHighlightThroughTheShell() {
+        Shell shell(settings(QStringLiteral("highlight")));
+        const auto path = freshPath(QStringLiteral("Highlight"));
+        QVERIFY(shell.window->createWorkspace(path));
+        const auto& ws = shell.ws();
+        const core::PageId p1 = *shell.window->activePage();
+        shell.action("actionNewPage")->trigger();
+        const core::PageId p2 = *shell.window->activePage();
+        shell.action("actionNewNotebook")->trigger();
+        const core::PageId p3 = *shell.window->activePage();
+        QVERIFY(shell.window->session()->execute(
+            *document::commands::renamePage(ws, p3, "Page 3", shell.clock)));
+        QVERIFY(ws.findSection(ws.findPage(p3)->section)->notebook !=
+                ws.findSection(ws.findPage(p1)->section)->notebook);
+        QVERIFY(shell.window->openPage(p2));
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        const core::TaskId across =
+            *planner.createTask({.title = "Across", .linkedPages = {p1, p3}});
+        const core::TaskId single = *planner.createTask({.title = "Single", .linkedPages = {p2}});
+        const core::TaskId none = *planner.createTask({.title = "None"});
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(panel != nullptr);
+        shell.action("actionPlanner")->trigger();
+        QVERIFY(panel->isVisible());
+        const auto settle = [&] {
+            QCoreApplication::processEvents(); // the planner's deferred refresh
+            panel->refreshNow();
+        };
+        QTreeView* tree = shell.tree();
+        const auto& model = *shell.model();
+        const auto title = [&](core::PageId page) {
+            return QString::fromStdString(ws.findPage(page)->title);
+        };
+        const auto linked = [&] {
+            std::vector<QString> pages = rowsWith(model, WorkspaceTreeModel::LinkedRole);
+            std::sort(pages.begin(), pages.end());
+            return pages;
+        };
+        const auto containing = [&] {
+            return rowsWith(model, WorkspaceTreeModel::ContainsLinkedRole).size();
+        };
+        // What the user sees of the tree besides the marks.
+        const auto treeState = [&] {
+            std::vector<QString> state{QString::number(tree->currentIndex().row()),
+                                       tree->currentIndex().data().toString()};
+            for (QModelIndex index = model.index(0, 0); index.isValid();
+                 index = tree->indexBelow(index)) {
+                state.push_back(index.data().toString() +
+                                (tree->isExpanded(index) ? u"+"_s : u""_s) +
+                                (tree->selectionModel()->isSelected(index) ? u"*"_s : u""_s));
+            }
+            return state;
+        };
+        QVERIFY(linked().empty());
+        const auto before = treeState();
+
+        // Selecting a task marks its pages in both notebooks and their containers; the
+        // selection, current row, expansion and the open page stay as they were.
+        panel->selectTask(across);
+        QCOMPARE(linked(), (std::vector<QString>{title(p1), title(p3)}));
+        QCOMPARE(containing(), std::size_t{4}); // two sections, two notebooks
+        QCOMPARE(treeState(), before);
+        QCOMPARE(*shell.window->activePage(), p2);
+        // The open page is told apart by its font, a linked page by its marker.
+        const QModelIndex open = shell.indexOf(p2);
+        const QModelIndex mark = shell.indexOf(p1);
+        QVERIFY(open.data(WorkspaceTreeModel::ActiveRole).toBool());
+        QVERIFY(!open.data(WorkspaceTreeModel::LinkedRole).toBool());
+        QVERIFY(open.data(Qt::FontRole).value<QFont>().bold());
+        QVERIFY(!mark.data(Qt::FontRole).isValid());
+        QVERIFY(mark.data(Qt::DecorationRole).value<QIcon>().cacheKey() !=
+                open.data(Qt::DecorationRole).value<QIcon>().cacheKey());
+
+        // Selecting another task in the planner's list replaces the marks.
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        settle();
+        auto* tasks = panel->findChild<QTreeWidget*>(QStringLiteral("plannerTasks"));
+        QVERIFY(tasks != nullptr);
+        const auto rowOf = [&](const QString& text) {
+            const auto found = tasks->findItems(text, Qt::MatchExactly | Qt::MatchRecursive);
+            return found.isEmpty() ? nullptr : found.front();
+        };
+        tasks->setCurrentItem(rowOf(u"Single"_s));
+        QCOMPARE(panel->selectedTask(), single);
+        QCOMPARE(linked(), (std::vector<QString>{title(p2)}));
+        QCOMPARE(treeState(), before);
+
+        // A task without links marks nothing.
+        tasks->setCurrentItem(rowOf(u"None"_s));
+        QCOMPARE(panel->selectedTask(), none);
+        QVERIFY(linked().empty());
+        QCOMPARE(containing(), std::size_t{0});
+
+        // Completing the selected task keeps its links and its marks.
+        panel->selectTask(across);
+        QVERIFY(planner.setTaskDone(across, true).has_value());
+        settle();
+        QCOMPARE(panel->selectedTask(), across);
+        QCOMPARE(linked(), (std::vector<QString>{title(p1), title(p3)}));
+
+        // Linking and unlinking the open page in the task editor: the marks follow.
+        auto* link = panel->findChild<QPushButton*>(QStringLiteral("plannerTaskLinkPage"));
+        auto* unlink = panel->findChild<QPushButton*>(QStringLiteral("plannerTaskUnlinkPage"));
+        auto* links = panel->findChild<QListWidget*>(QStringLiteral("plannerTaskLinks"));
+        QVERIFY(link != nullptr && unlink != nullptr && links != nullptr);
+        link->click();
+        QCOMPARE(linked(), (std::vector<QString>{title(p1), title(p2), title(p3)}));
+        settle();
+        for (int row = 0; row < links->count(); ++row) {
+            if (links->item(row)->text().contains(title(p2))) {
+                links->setCurrentRow(row);
+            }
+        }
+        unlink->click();
+        QCOMPARE(linked(), (std::vector<QString>{title(p1), title(p3)}));
+
+        // A canvas edit costs the tree nothing, also with marks shown.
+        SignalLog log(*shell.model());
+        shell.draw(p2);
+        QCOMPARE(log.changed.count(), 0);
+
+        // Deleting a linked page removes its mark (the patch unlinks it); undo brings both
+        // back, redo removes them again.
+        shell.select(HierarchyItem{p3});
+        QCOMPARE(*shell.window->activePage(), p3);
+        shell.action("actionDeleteItem")->trigger();
+        QVERIFY(ws.findPage(p3) == nullptr);
+        QCOMPARE(linked(), (std::vector<QString>{title(p1)}));
+        QCOMPARE(containing(), std::size_t{2});
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(linked(), (std::vector<QString>{title(p1), title(p3)}));
+        QCOMPARE(containing(), std::size_t{4});
+        shell.action("actionRedo")->trigger();
+        QCOMPARE(linked(), (std::vector<QString>{title(p1)}));
+        shell.action("actionUndo")->trigger();
+
+        // Hiding the planner clears the marks; showing it again shows them again.
+        shell.action("actionPlanner")->trigger();
+        QVERIFY(!panel->isVisible());
+        QVERIFY(linked().empty());
+        QCOMPARE(containing(), std::size_t{0});
+        shell.action("actionPlanner")->trigger();
+        QCOMPARE(linked(), (std::vector<QString>{title(p1), title(p3)}));
+
+        // Clicking a marked page opens it.
+        QVERIFY(shell.window->openPage(p2));
+        tree->scrollTo(shell.indexOf(p1));
+        QTest::mouseClick(tree->viewport(), Qt::LeftButton, {},
+                          tree->visualRect(shell.indexOf(p1)).center());
+        QCOMPARE(*shell.window->activePage(), p1);
+        QVERIFY(shell.indexOf(p1).data(WorkspaceTreeModel::LinkedRole).toBool());
+
+        // Deselecting clears the marks.
+        panel->selectTask(std::nullopt);
+        QVERIFY(linked().empty());
+
+        // A task found by search, or opened from the console, is selected and marked too.
+        auto* field = shell.window->findChild<QLineEdit*>(QStringLiteral("searchField"));
+        auto* results = shell.window->findChild<QTreeWidget*>(QStringLiteral("searchResults"));
+        field->setText(u"Single"_s);
+        Q_EMIT field->returnPressed();
+        QCOMPARE(panel->selectedTask(), single);
+        QCOMPARE(linked(), (std::vector<QString>{title(p2)}));
+        QVERIFY(results->isVisible()); // the results replace the tree; the marks wait in it
+        QTest::keyClick(field, Qt::Key_Escape);
+        QVERIFY(tree->isVisible());
+        ui::CommandConsole* console = openConsole(shell);
+        run(console, u"search across"_s);
+        run(console, u"go 1"_s);
+        QCOMPARE(panel->selectedTask(), across);
+        QCOMPARE(linked(), (std::vector<QString>{title(p1), title(p3)}));
+
+        // Nothing is stored: after reopening no row is marked.
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        QVERIFY(rowsWith(*shell.model(), WorkspaceTreeModel::LinkedRole).empty());
+        QVERIFY(rowsWith(*shell.model(), WorkspaceTreeModel::ContainsLinkedRole).empty());
+    }
+
+    // Escape in the tree deselects the planner's task, which clears the marks; during an
+    // inline rename it only cancels the rename.
+    void escapeInTheTreeClearsTheLinkHighlight() {
+        Shell shell(settings(QStringLiteral("highlightEscape")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("HighlightEscape"))));
+        const core::PageId page = *shell.window->activePage();
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        const core::TaskId task = *planner.createTask({.title = "Read", .linkedPages = {page}});
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        shell.action("actionPlanner")->trigger();
+        panel->selectTask(task);
+        QTreeView* tree = shell.tree();
+        const QModelIndex index = shell.indexOf(page);
+        QVERIFY(index.data(WorkspaceTreeModel::LinkedRole).toBool());
+        tree->setFocus();
+        QCOMPARE(tree->currentIndex(), index);
+
+        // F2, then Escape in the editor: the rename is cancelled, the task stays selected.
+        QTest::keyClick(tree, Qt::Key_F2);
+        const QPointer<QLineEdit> editor = tree->findChild<QLineEdit*>();
+        QVERIFY(editor != nullptr && editor->isVisible());
+        QTest::keyClicks(editor, u"Renamed"_s);
+        QTest::keyClick(editor, Qt::Key_Escape);
+        QVERIFY(editor.isNull() || !editor->isVisible());
+        QCOMPARE(shell.ws().findPage(page)->title, std::string("Page 1"));
+        QCOMPARE(panel->selectedTask(), task);
+        QVERIFY(index.data(WorkspaceTreeModel::LinkedRole).toBool());
+
+        // Escape in the tree itself: deselected, no marks; the tree's state is unchanged.
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QVERIFY(QCoreApplication::sendEvent(tree, &escape));
+        QVERIFY(!panel->selectedTask().has_value());
+        QVERIFY(rowsWith(*shell.model(), WorkspaceTreeModel::LinkedRole).empty());
+        QVERIFY(rowsWith(*shell.model(), WorkspaceTreeModel::ContainsLinkedRole).empty());
+        QCOMPARE(tree->currentIndex(), index);
+        QCOMPARE(*shell.window->activePage(), page);
+    }
+
+    // The markers: a dot and a ring in the theme's secondary text colour, rebuilt when the
+    // theme switches; rows keep their size, and the dot is drawn on the marked row only.
+    void linkMarkersFollowTheTheme() {
+        Shell shell(settings(QStringLiteral("highlightTheme")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("HighlightTheme"))));
+        const core::PageId marked = *shell.window->activePage();
+        shell.action("actionNewPage")->trigger();
+        const core::PageId plain = *shell.window->activePage();
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        const core::TaskId task = *planner.createTask({.title = "Read", .linkedPages = {marked}});
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        auto* model = static_cast<WorkspaceTreeModel*>(shell.model());
+        QTreeView* tree = shell.tree();
+        const QModelIndex markedIndex = shell.indexOf(marked);
+        const QModelIndex section = markedIndex.parent();
+        const auto icon = [](const QModelIndex& index) {
+            return index.data(Qt::DecorationRole).value<QIcon>();
+        };
+        // The colour of a marker, or nothing if it has no opaque pixel.
+        const auto ink = [&](const QIcon& marker) -> std::optional<QColor> {
+            const QImage image = marker.pixmap(QSize(40, 40)).toImage();
+            for (int y = 0; y < image.height(); ++y) {
+                for (int x = 0; x < image.width(); ++x) {
+                    if (qAlpha(image.pixel(x, y)) == 255) {
+                        return image.pixelColor(x, y);
+                    }
+                }
+            }
+            return std::nullopt;
+        };
+        const auto rows = [&] {
+            QApplication::processEvents();
+            std::vector<std::pair<QRect, QSize>> out;
+            for (QModelIndex index = model->index(0, 0); index.isValid();
+                 index = tree->indexBelow(index)) {
+                out.emplace_back(tree->visualRect(index), tree->sizeHintForIndex(index));
+            }
+            return out;
+        };
+        shell.action("actionPlanner")->trigger();
+        const auto unmarked = rows();
+        panel->selectTask(task);
+        QCOMPARE(rows(), unmarked); // no row moves or changes size
+
+        const QColor light = ui::toQColor(shell.themes.tokens().textSecondary);
+        const QIcon lightDot = icon(markedIndex);
+        const QIcon lightRing = icon(section);
+        QCOMPARE(ink(lightDot), std::optional<QColor>(light));
+        QCOMPARE(ink(lightRing), std::optional<QColor>(light));
+        QVERIFY(!ink(icon(shell.indexOf(plain))).has_value()); // the blank
+        // A dot is filled, a ring is not: their centres differ.
+        const auto centre = [&](const QIcon& marker) {
+            const QImage image = marker.pixmap(QSize(40, 40)).toImage();
+            return qAlpha(image.pixel(20, 20));
+        };
+        QCOMPARE(centre(lightDot), 255);
+        QCOMPARE(centre(lightRing), 0);
+
+        // The markers are not taller than the text line: the rows are as high as with the
+        // smallest decoration.
+        const QSize iconSize = tree->iconSize();
+        tree->setIconSize(QSize(2, 2));
+        const auto tiny = rows();
+        tree->setIconSize(iconSize);
+        QCOMPARE(rows().front().first.height(), tiny.front().first.height());
+
+        shell.action("actionToggleTheme")->trigger(); // to dark, and the markers with it
+        QVERIFY(shell.themes.isDark());
+
+        // The dark theme's markers: other pixels, same shapes.
+        const QColor dark = ui::toQColor(shell.themes.tokens().textSecondary);
+        QVERIFY(dark != light);
+        QVERIFY(icon(markedIndex).cacheKey() != lightDot.cacheKey());
+        QCOMPARE(ink(icon(markedIndex)), std::optional<QColor>(dark));
+        QCOMPARE(ink(icon(section)), std::optional<QColor>(dark));
+
+        // Rendered: the dot's colour appears beside the marked page's title only.
+        QApplication::processEvents();
+        const QImage grab = tree->viewport()->grab().toImage();
+        const auto drawnIn = [&](const QModelIndex& index) {
+            const QRect row = tree->visualRect(index);
+            const int width = tree->iconSize().width() + 6;
+            for (int y = row.top(); y <= row.bottom(); ++y) {
+                for (int x = row.left(); x < row.left() + width; ++x) {
+                    if (grab.pixelColor(x * grab.width() / tree->viewport()->width(),
+                                        y * grab.height() / tree->viewport()->height()) == dark) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        QVERIFY(drawnIn(markedIndex));
+        QVERIFY(!drawnIn(shell.indexOf(plain)));
     }
 
     // Phase 8: search from the navigation panel. Results replace the tree while a query is
