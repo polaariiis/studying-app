@@ -2,6 +2,7 @@
 
 #include <QFont>
 #include <QMimeData>
+#include <QPixmap>
 
 #include <algorithm>
 #include <cassert>
@@ -65,6 +66,8 @@ void WorkspaceTreeModel::setWorkspace(const document::Workspace* workspace) {
     root_ = std::make_unique<Node>();
     nodes_.clear();
     activePage_.reset();
+    linkedPages_.clear();
+    marked_.clear();
     endResetModel();
     if (workspace_ != nullptr) {
         sync(*root_); // fills the tree with insert signals (cheap on an empty model)
@@ -88,6 +91,79 @@ void WorkspaceTreeModel::setActivePage(std::optional<core::PageId> page) {
             }
         }
     }
+}
+
+void WorkspaceTreeModel::setLinkedPages(const std::vector<core::PageId>& pages) {
+    linkedPages_ = std::unordered_set<core::PageId>(pages.begin(), pages.end());
+    updateLinkMarks();
+}
+
+void WorkspaceTreeModel::setLinkMarkers(const QIcon& page, const QIcon& container) {
+    const bool reserved = !linkedMarker_.isNull();
+    linkedMarker_ = page;
+    containerMarker_ = container;
+    if (blankMarker_.isNull()) {
+        QPixmap blank(64, 64);
+        blank.fill(Qt::transparent);
+        blankMarker_ = QIcon(blank);
+    }
+    if (reserved != !linkedMarker_.isNull()) {
+        decorationsChanged(*root_); // every row gains or loses its blank decoration
+        return;
+    }
+    for (const Item& item : marked_) {
+        if (const QModelIndex index = indexOf(item); index.isValid()) {
+            Q_EMIT dataChanged(index, index, {Qt::DecorationRole});
+        }
+    }
+}
+
+void WorkspaceTreeModel::decorationsChanged(const Node& node) {
+    if (node.children.empty()) {
+        return;
+    }
+    const QModelIndex parentIndex = indexOfNode(&node);
+    Q_EMIT dataChanged(index(0, 0, parentIndex),
+                       index(static_cast<int>(node.children.size()) - 1, 0, parentIndex),
+                       {Qt::DecorationRole});
+    for (const auto& child : node.children) {
+        decorationsChanged(*child);
+    }
+}
+
+void WorkspaceTreeModel::updateLinkMarks() {
+    std::unordered_set<Item, ItemHash> marked;
+    if (workspace_ != nullptr) {
+        for (const core::PageId page : linkedPages_) {
+            const document::PageInfo* info = workspace_->findPage(page);
+            if (info == nullptr) {
+                continue;
+            }
+            marked.emplace(page);
+            marked.emplace(info->section);
+            if (const document::SectionInfo* section = workspace_->findSection(info->section)) {
+                marked.emplace(section->notebook);
+            }
+        }
+    }
+    const auto changed = [this](const Item& item) {
+        if (const QModelIndex index = indexOf(item); index.isValid()) {
+            Q_EMIT dataChanged(index, index,
+                               {Qt::DecorationRole, Qt::AccessibleDescriptionRole, LinkedRole,
+                                ContainsLinkedRole});
+        }
+    };
+    for (const Item& item : marked_) {
+        if (!marked.contains(item)) {
+            changed(item);
+        }
+    }
+    for (const Item& item : marked) {
+        if (!marked_.contains(item)) {
+            changed(item);
+        }
+    }
+    marked_ = std::move(marked);
 }
 
 bool WorkspaceTreeModel::isStructural(const document::Patch& patch) {
@@ -121,6 +197,7 @@ void WorkspaceTreeModel::onPatch(const document::Patch& patch) {
     }
     if (isStructural(patch)) {
         sync(*root_);
+        updateLinkMarks(); // a page or section that moved changes its containers
     }
     // Titles (and anything else shown) of updated records.
     for (const document::AnyChange& change : patch.changes()) {
@@ -305,6 +382,8 @@ QVariant WorkspaceTreeModel::data(const QModelIndex& index, int role) const {
         return {};
     }
     const bool active = activePage_ && *item == Item{*activePage_};
+    const bool marked = marked_.contains(*item);
+    const bool isPage = std::holds_alternative<core::PageId>(*item);
     switch (role) {
     case Qt::DisplayRole:
         return toQString(WorkspaceStructure::displayTitle(*workspace_, *item));
@@ -332,13 +411,31 @@ QVariant WorkspaceTreeModel::data(const QModelIndex& index, int role) const {
         font.setWeight(active ? QFont::Bold : QFont::DemiBold);
         return font;
     }
-    case Qt::AccessibleDescriptionRole:
-        return active ? tr("%1, open").arg(QString::fromLatin1(kindOf(*item)))
-                      : QString::fromLatin1(kindOf(*item));
+    case Qt::DecorationRole:
+        if (linkedMarker_.isNull()) {
+            return {};
+        }
+        if (!marked) {
+            return blankMarker_;
+        }
+        return isPage ? linkedMarker_ : containerMarker_;
+    case Qt::AccessibleDescriptionRole: {
+        QString description = active ? tr("%1, open").arg(QString::fromLatin1(kindOf(*item)))
+                                     : QString::fromLatin1(kindOf(*item));
+        if (marked) {
+            description = isPage ? tr("%1, linked to the selected task").arg(description)
+                                 : tr("%1, contains linked pages").arg(description);
+        }
+        return description;
+    }
     case KindRole:
         return QString::fromLatin1(kindOf(*item));
     case ActiveRole:
         return active;
+    case LinkedRole:
+        return marked && isPage;
+    case ContainsLinkedRole:
+        return marked && !isPage;
     default:
         return {};
     }

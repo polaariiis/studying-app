@@ -17,6 +17,7 @@
 #include <studyapp/canvas/ElementGeometry.hpp>
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/document/Editor.hpp>
+#include <studyapp/document/StudyCommands.hpp>
 #include <studyapp/persistence/Database.hpp>
 #include <studyapp/platform/QtTextLayout.hpp>
 #include <studyapp/platform/QtWorkspaceLocker.hpp>
@@ -275,6 +276,28 @@ std::vector<QString> childTitles(const QAbstractItemModel& model, const QModelIn
     return titles;
 }
 
+/// Rows (by title) whose `role` is true, in tree order.
+std::vector<QString> rowsWith(const QAbstractItemModel& model, int role,
+                              const QModelIndex& parent = {}) {
+    std::vector<QString> titles;
+    for (int row = 0; row < model.rowCount(parent); ++row) {
+        const QModelIndex index = model.index(row, 0, parent);
+        if (index.data(role).toBool()) {
+            titles.push_back(index.data().toString());
+        }
+        const std::vector<QString> below = rowsWith(model, role, index);
+        titles.insert(titles.end(), below.begin(), below.end());
+    }
+    return titles;
+}
+
+/// A one-colour icon (any two of them are distinguishable link markers for the model).
+QIcon solidIcon(const QColor& color) {
+    QPixmap pixmap(16, 16);
+    pixmap.fill(color);
+    return QIcon(pixmap);
+}
+
 /// The notebook `export notebook pdf` is tested on, in notebook order: the start section
 /// with a second page; "Week 2: Series" (one page, with a text box); a section named
 /// like the first one (one page). Every page has ink.
@@ -500,6 +523,323 @@ private Q_SLOTS:
         QVERIFY(!model.indexOf(HierarchyItem{a}).data(WorkspaceTreeModel::ActiveRole).toBool());
         QVERIFY(model.indexOf(HierarchyItem{b}).data(WorkspaceTreeModel::ActiveRole).toBool());
         QCOMPARE(changed.count(), 3); // a on; a off + b on
+    }
+
+    void linkMarksFollowTheLinkedPages() {
+        Document doc;
+        const auto n1 = doc.notebook("N1");
+        const auto s1 = doc.section(n1, "S1");
+        const auto p1 = doc.page(s1, "P1");
+        const auto p2 = doc.page(s1, "P2");
+        const auto s2 = doc.section(n1, "S2");
+        const auto p3 = doc.page(s2, "P3");
+        const auto n2 = doc.notebook("N2");
+        const auto p4 = doc.page(doc.section(n2, "S3"), "P4");
+        WorkspaceTreeModel model;
+        QAbstractItemModelTester tester(&model,
+                                        QAbstractItemModelTester::FailureReportingMode::QtTest);
+        model.setWorkspace(&doc.workspace);
+        const QIcon dot = solidIcon(Qt::black);
+        const QIcon ring = solidIcon(Qt::gray);
+        model.setLinkMarkers(dot, ring);
+        SignalLog log(model);
+        const auto linked = [&] {
+            return rowsWith(model, WorkspaceTreeModel::LinkedRole);
+        };
+        const auto containing = [&] {
+            return rowsWith(model, WorkspaceTreeModel::ContainsLinkedRole);
+        };
+        const auto at = [&](const HierarchyItem& item) {
+            return model.indexOf(item);
+        };
+        const auto description = [&](const HierarchyItem& item) {
+            return at(item).data(Qt::AccessibleDescriptionRole).toString();
+        };
+
+        // No links: nothing is marked and nothing is signalled.
+        model.setLinkedPages({});
+        QVERIFY(linked().empty());
+        QVERIFY(containing().empty());
+        QCOMPARE(log.changed.count(), 0);
+
+        // One link: the page, its section and its notebook; one dataChanged per row.
+        model.setLinkedPages({p1});
+        QCOMPARE(linked(), (std::vector<QString>{u"P1"_s}));
+        QCOMPARE(containing(), (std::vector<QString>{u"N1"_s, u"S1"_s}));
+        QCOMPARE(log.changed.count(), 3);
+        for (const QList<QVariant>& signal : log.changed) {
+            QCOMPARE(signal.at(0), signal.at(1)); // one row each
+            const auto roles = signal.at(2).value<QList<int>>();
+            QVERIFY(roles.contains(Qt::DecorationRole));
+            QVERIFY(roles.contains(Qt::AccessibleDescriptionRole));
+            QVERIFY(roles.contains(WorkspaceTreeModel::LinkedRole));
+            QVERIFY(roles.contains(WorkspaceTreeModel::ContainsLinkedRole));
+        }
+        QCOMPARE(at(p1).data(Qt::DecorationRole).value<QIcon>().cacheKey(), dot.cacheKey());
+        QCOMPARE(at(s1).data(Qt::DecorationRole).value<QIcon>().cacheKey(), ring.cacheKey());
+        QCOMPARE(at(n1).data(Qt::DecorationRole).value<QIcon>().cacheKey(), ring.cacheKey());
+        const qint64 blank = at(p2).data(Qt::DecorationRole).value<QIcon>().cacheKey();
+        QVERIFY(blank != dot.cacheKey() && blank != ring.cacheKey());
+        QVERIFY(!at(p1).data(WorkspaceTreeModel::ContainsLinkedRole).toBool());
+        QVERIFY(!at(s1).data(WorkspaceTreeModel::LinkedRole).toBool());
+        QCOMPARE(description(p1), u"page, linked to the selected task"_s);
+        QCOMPARE(description(s1), u"section, contains linked pages"_s);
+        QCOMPARE(description(n1), u"notebook, contains linked pages"_s);
+        QCOMPARE(description(p2), u"page"_s);
+
+        // The same set again: no signal at all.
+        log.clear();
+        model.setLinkedPages({p1});
+        QCOMPARE(log.changed.count(), 0);
+
+        // Many links across two notebooks: only the rows whose marks changed are signalled
+        // (P3, S2, P4, S3, N2; P1, S1 and N1 stay marked).
+        model.setLinkedPages({p1, p3, p4});
+        QCOMPARE(linked(), (std::vector<QString>{u"P1"_s, u"P3"_s, u"P4"_s}));
+        QCOMPARE(containing(), (std::vector<QString>{u"N1"_s, u"S1"_s, u"S2"_s, u"N2"_s, u"S3"_s}));
+        QCOMPARE(log.changed.count(), 5);
+
+        // Another set replaces the marks: P1, P3, S2, P4, S3, N2 off; P2 on.
+        log.clear();
+        model.setLinkedPages({p2});
+        QCOMPARE(linked(), (std::vector<QString>{u"P2"_s}));
+        QCOMPARE(containing(), (std::vector<QString>{u"N1"_s, u"S1"_s}));
+        QCOMPARE(log.changed.count(), 7);
+        QCOMPARE(at(p1).data(Qt::DecorationRole).value<QIcon>().cacheKey(), blank);
+
+        // The open page keeps its description and gains the link.
+        model.setActivePage(p2);
+        QCOMPARE(description(p2), u"page, open, linked to the selected task"_s);
+
+        // A page that is not in the workspace marks nothing.
+        model.setLinkedPages({core::PageId::generate(doc.ids)});
+        QVERIFY(linked().empty());
+        QVERIFY(containing().empty());
+
+        // Clearing removes every mark and the description suffixes.
+        model.setLinkedPages({p1});
+        log.clear();
+        model.setLinkedPages({});
+        QVERIFY(linked().empty());
+        QVERIFY(containing().empty());
+        QCOMPARE(log.changed.count(), 3);
+        QCOMPARE(description(p1), u"page"_s);
+        QCOMPARE(description(s1), u"section"_s);
+        QCOMPARE(description(p2), u"page, open"_s);
+        QCOMPARE(log.inserted.count() + log.removed.count() + log.moved.count() +
+                     log.reset.count() + log.layout.count(),
+                 0);
+    }
+
+    void linkMarksFollowStructuralPatches() {
+        Document doc;
+        const auto n1 = doc.notebook("N1");
+        const auto s1 = doc.section(n1, "S1");
+        const auto p1 = doc.page(s1, "P1");
+        doc.page(s1, "P2");
+        const auto n2 = doc.notebook("N2");
+        const auto s2 = doc.section(n2, "S2");
+        const core::TaskId task = doc.run(document::commands::createTask(
+            doc.workspace, {.title = "Revise", .linkedPages = {p1}}, doc.clock, doc.ids));
+        WorkspaceTreeModel model;
+        doc.model = &model;
+        QAbstractItemModelTester tester(&model,
+                                        QAbstractItemModelTester::FailureReportingMode::QtTest);
+        model.setWorkspace(&doc.workspace);
+        model.setLinkMarkers(solidIcon(Qt::black), solidIcon(Qt::gray));
+        const auto links = [&] {
+            return doc.workspace.findTask(task)->linkedPages;
+        };
+        const auto linked = [&] {
+            return rowsWith(model, WorkspaceTreeModel::LinkedRole);
+        };
+        const auto containing = [&] {
+            return rowsWith(model, WorkspaceTreeModel::ContainsLinkedRole);
+        };
+        model.setLinkedPages(links());
+        const QPersistentModelIndex p1Index = model.indexOf(HierarchyItem{p1});
+        QCOMPARE(containing(), (std::vector<QString>{u"N1"_s, u"S1"_s}));
+        SignalLog log(model);
+
+        // Canvas edits cost nothing, also with marks.
+        doc.run(document::commands::createElement(
+            doc.workspace, doc.workspace.layersOf(p1).front(),
+            {.payload =
+                 document::Stroke{.points = document::makeStrokePoints({{0, 0, 1}, {1, 1, 1}})}},
+            doc.ids));
+        QCOMPARE(log.changed.count(), 0);
+
+        // The linked page moves to another notebook: still marked at its new row, and the
+        // container marks move with it.
+        doc.run(document::commands::movePage(doc.workspace, p1, s2, 0, doc.clock));
+        QCOMPARE(log.moved.count(), 1);
+        QVERIFY(p1Index.isValid());
+        QVERIFY(p1Index.data(WorkspaceTreeModel::LinkedRole).toBool());
+        QCOMPARE(linked(), (std::vector<QString>{u"P1"_s}));
+        QCOMPARE(containing(), (std::vector<QString>{u"N2"_s, u"S2"_s}));
+
+        // Its section moves to the first notebook: the notebook marks follow.
+        doc.run(document::commands::moveSection(doc.workspace, s2, n1, 1, doc.clock));
+        QCOMPARE(containing(), (std::vector<QString>{u"N1"_s, u"S2"_s}));
+
+        // Deleting the linked page unlinks it from the task; the owner passes the new links.
+        doc.run(document::commands::deletePage(doc.workspace, p1));
+        QVERIFY(links().empty());
+        QVERIFY(linked().empty());
+        QVERIFY(containing().empty());
+        log.clear();
+        model.setLinkedPages(links());
+        QCOMPARE(log.changed.count(), 0); // nothing was marked any more
+
+        // Undo restores the page and its link, and the mark with them.
+        const document::Patch undo = doc.editor.history().nextUndo()->patch.inverted();
+        QVERIFY(doc.editor.undo().has_value());
+        model.onPatch(undo);
+        model.setLinkedPages(links());
+        QCOMPARE(linked(), (std::vector<QString>{u"P1"_s}));
+        QCOMPARE(containing(), (std::vector<QString>{u"N1"_s, u"S2"_s}));
+
+        // Redo removes both again. The mark goes with the row even before the owner
+        // passes the new links.
+        const document::Patch redo = doc.editor.history().nextRedo()->patch;
+        QVERIFY(doc.editor.redo().has_value());
+        model.onPatch(redo);
+        QVERIFY(linked().empty());
+        QVERIFY(containing().empty());
+        model.setLinkedPages(links());
+        QVERIFY(linked().empty());
+    }
+
+    void linkMarksAreClearedWithTheWorkspace() {
+        Document doc;
+        const auto p = doc.page(doc.section(doc.notebook("N"), "S"), "P");
+        WorkspaceTreeModel model;
+        QAbstractItemModelTester tester(&model,
+                                        QAbstractItemModelTester::FailureReportingMode::QtTest);
+        model.setWorkspace(&doc.workspace);
+        model.setLinkMarkers(solidIcon(Qt::black), solidIcon(Qt::gray));
+        model.setLinkedPages({p});
+        QCOMPARE(rowsWith(model, WorkspaceTreeModel::LinkedRole).size(), std::size_t{1});
+
+        // Reopening shows no marks (they are never stored).
+        model.setWorkspace(&doc.workspace);
+        QVERIFY(rowsWith(model, WorkspaceTreeModel::LinkedRole).empty());
+        QVERIFY(rowsWith(model, WorkspaceTreeModel::ContainsLinkedRole).empty());
+        model.setLinkedPages({p});
+        model.setWorkspace(nullptr);
+        QCOMPARE(model.rowCount(), 0);
+        model.setLinkedPages({p}); // no workspace: nothing to mark, no crash
+        model.setWorkspace(&doc.workspace);
+        QVERIFY(rowsWith(model, WorkspaceTreeModel::LinkedRole).empty());
+    }
+
+    void linkMarkersDecorateTheRows() {
+        Document doc;
+        const auto n = doc.notebook("N");
+        const auto s = doc.section(n, "S");
+        const auto p1 = doc.page(s, "P1");
+        const auto p2 = doc.page(s, "P2");
+        WorkspaceTreeModel model;
+        QAbstractItemModelTester tester(&model,
+                                        QAbstractItemModelTester::FailureReportingMode::QtTest);
+        model.setWorkspace(&doc.workspace);
+        const auto decoration = [&](const HierarchyItem& item) {
+            return model.indexOf(item).data(Qt::DecorationRole);
+        };
+        const std::vector<HierarchyItem> rows{HierarchyItem{n}, HierarchyItem{s}, HierarchyItem{p1},
+                                              HierarchyItem{p2}};
+
+        // Without markers no row has a decoration (the tree as before 2.0), marked or not.
+        model.setLinkedPages({p1});
+        for (const HierarchyItem& row : rows) {
+            QVERIFY(!decoration(row).isValid());
+        }
+
+        // The first markers decorate every row: unmarked rows get a transparent one of the
+        // same kind, so titles do not move when marks change.
+        SignalLog log(model);
+        const QIcon lightDot = solidIcon(Qt::black);
+        const QIcon lightRing = solidIcon(Qt::darkGray);
+        model.setLinkMarkers(lightDot, lightRing);
+        QVERIFY(log.changed.count() > 0);
+        for (const QList<QVariant>& signal : log.changed) {
+            QCOMPARE(signal.at(2).value<QList<int>>(), QList<int>{Qt::DecorationRole});
+        }
+        for (const HierarchyItem& row : rows) {
+            QVERIFY(!decoration(row).value<QIcon>().isNull());
+        }
+        const QImage blank = decoration(p2).value<QIcon>().pixmap(16, 16).toImage();
+        QVERIFY(!blank.isNull());
+        for (int y = 0; y < blank.height(); ++y) {
+            for (int x = 0; x < blank.width(); ++x) {
+                QCOMPARE(qAlpha(blank.pixel(x, y)), 0);
+            }
+        }
+
+        // New markers (a theme switch) redecorate the marked rows only.
+        log.clear();
+        const QIcon darkDot = solidIcon(Qt::white);
+        const QIcon darkRing = solidIcon(Qt::lightGray);
+        model.setLinkMarkers(darkDot, darkRing);
+        QCOMPARE(log.changed.count(), 3); // P1, S, N
+        for (const QList<QVariant>& signal : log.changed) {
+            QCOMPARE(signal.at(0), signal.at(1));
+            QCOMPARE(signal.at(2).value<QList<int>>(), QList<int>{Qt::DecorationRole});
+        }
+        QCOMPARE(decoration(p1).value<QIcon>().cacheKey(), darkDot.cacheKey());
+        QCOMPARE(decoration(s).value<QIcon>().cacheKey(), darkRing.cacheKey());
+
+        // Nothing marked: new markers signal nothing.
+        model.setLinkedPages({});
+        log.clear();
+        model.setLinkMarkers(lightDot, lightRing);
+        QCOMPARE(log.changed.count(), 0);
+
+        // Null markers: no decoration again.
+        model.setLinkMarkers({}, {});
+        QVERIFY(log.changed.count() > 0);
+        for (const HierarchyItem& row : rows) {
+            QVERIFY(!decoration(row).isValid());
+        }
+    }
+
+    void linkMarksKeepTheRowGeometry() {
+        Document doc;
+        const auto n = doc.notebook("N");
+        const auto s = doc.section(n, "S");
+        const auto p1 = doc.page(s, "P1");
+        doc.page(s, "P2");
+        WorkspaceTreeModel model;
+        model.setWorkspace(&doc.workspace);
+        model.setLinkMarkers(solidIcon(Qt::black), solidIcon(Qt::gray));
+        QTreeView view; // configured like the navigation tree
+        view.setModel(&model);
+        view.setHeaderHidden(true);
+        view.setUniformRowHeights(true);
+        view.setIndentation(14);
+        view.resize(240, 200);
+        view.expandAll();
+        view.show();
+        view.setCurrentIndex(model.indexOf(HierarchyItem{s}));
+        const auto geometry = [&] {
+            QApplication::processEvents();
+            std::vector<std::pair<QRect, QSize>> rows;
+            for (QModelIndex index = model.index(0, 0); index.isValid();
+                 index = view.indexBelow(index)) {
+                rows.emplace_back(view.visualRect(index), view.sizeHintForIndex(index));
+            }
+            return rows;
+        };
+        const auto before = geometry();
+        QCOMPARE(before.size(), std::size_t{4});
+
+        model.setLinkedPages({p1});
+        QCOMPARE(geometry(), before);
+        QCOMPARE(view.currentIndex(), model.indexOf(HierarchyItem{s}));
+        QVERIFY(view.isExpanded(model.indexOf(HierarchyItem{s})));
+        model.setLinkedPages({});
+        QCOMPARE(geometry(), before);
+        QCOMPARE(view.currentIndex(), model.indexOf(HierarchyItem{s}));
     }
 
     void dragAndDropRequestsValidMoves() {
