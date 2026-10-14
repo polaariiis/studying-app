@@ -2177,8 +2177,9 @@ private Q_SLOTS:
         tree->setFocus();
         QCOMPARE(tree->currentIndex(), index);
 
-        // F2, then Escape in the editor: the rename is cancelled, the task stays selected.
-        QTest::keyClick(tree, Qt::Key_F2);
+        // Rename (F2; the tree's own edit key differs by platform), then Escape in the
+        // editor: the rename is cancelled, the task stays selected.
+        shell.action("actionRename")->trigger();
         const QPointer<QLineEdit> editor = tree->findChild<QLineEdit*>();
         QVERIFY(editor != nullptr && editor->isVisible());
         QTest::keyClicks(editor, u"Renamed"_s);
