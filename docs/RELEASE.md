@@ -69,7 +69,7 @@ merging the release line.
 
 The next version's development is on `dev/2.0` (not `dev/1.3`), created at the tip of
 `dev/1.2` so that it keeps the full history; `dev/1.2` is retired and receives no new
-work. `dev/2.0` reports `1.2.0` until its first own change sets its version, `2.0.0-dev`.
+work. `dev/2.0` reports its own version, `2.0.0-dev`.
 
 ## Packages
 
