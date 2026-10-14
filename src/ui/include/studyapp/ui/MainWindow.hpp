@@ -226,6 +226,9 @@ private:
     void revealPage(std::optional<core::PageId> page);
     void syncTreeToActivePage();
     void onTreeCurrentChanged();
+    /// Marks the selected task's linked pages in the tree (2.0-PLAN-01): only while the
+    /// Planner panel is shown; derived, never stored.
+    void updateLinkHighlight();
     void showTreeContextMenu(const QPoint& position);
 
     // User actions.
@@ -315,6 +318,7 @@ private:
 
     // Chrome.
     void syncThemeActions();
+    void syncLinkMarkers();
     void applyCanvasTheme();
     void updateActions();
     void scheduleStatusUpdate();

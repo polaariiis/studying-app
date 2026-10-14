@@ -6,12 +6,14 @@
 #include <studyapp/document/Workspace.hpp>
 
 #include <QAbstractItemModel>
+#include <QIcon>
 
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace studyapp::ui {
@@ -25,6 +27,12 @@ namespace studyapp::ui {
 /// delete, reorder, move to another parent) are mirrored with row insert/remove/move
 /// signals, so views keep their expansion and selection. Canvas edits (element and layer
 /// changes) cost nothing here.
+///
+/// Link marks (2.0-PLAN-01) are UI state, never stored: the owner sets the pages linked to
+/// the selected task; the model marks those pages and the sections and notebooks that
+/// contain them, and keeps the marks on the right rows after structural patches. Once the
+/// markers are set, every unmarked row has a transparent decoration of the same size, so
+/// titles never shift when marks appear or disappear.
 ///
 /// The model never changes the document: renaming (inline editing) and drag-and-drop call
 /// the handlers set by the owner, which run commands through the session.
@@ -43,6 +51,8 @@ public:
     enum Roles {
         KindRole = Qt::UserRole + 1, ///< "notebook", "section" or "page"
         ActiveRole,                  ///< true for the active page
+        LinkedRole,                  ///< true for a page in the linked set
+        ContainsLinkedRole,          ///< true for a section or notebook containing one
     };
 
     static constexpr const char* kMimeType = "application/x-studyboard-hierarchy-item";
@@ -61,6 +71,12 @@ public:
 
     void setReadOnly(bool readOnly);
     void setActivePage(std::optional<core::PageId> page);
+    /// Marks `pages` as linked (empty: no marks). Pages not in the workspace are ignored
+    /// until they exist (e.g. restored by undo).
+    void setLinkedPages(const std::vector<core::PageId>& pages);
+    /// The decorations of a linked page and of a section or notebook containing one (null
+    /// icons: no decoration on any row).
+    void setLinkMarkers(const QIcon& page, const QIcon& container);
     void setRenameHandler(RenameHandler handler) { rename_ = std::move(handler); }
     void setMoveHandler(MoveHandler handler) { move_ = std::move(handler); }
 
@@ -97,6 +113,11 @@ private:
     [[nodiscard]] bool isChildOf(const Item& item, const Node& parent) const;
     void sync(Node& node);
     void unregister(Node& node);
+    /// Derives the marked rows from the linked pages and emits dataChanged for the rows
+    /// whose marks changed (nothing if none did).
+    void updateLinkMarks();
+    /// Emits dataChanged for the decoration of every row below `node`.
+    void decorationsChanged(const Node& node);
     [[nodiscard]] static bool isStructural(const document::Patch& patch);
     [[nodiscard]] std::optional<Item> decode(const QMimeData* data) const;
     /// Where a drop of `item` at (row, parent) goes: parent item (nullopt: top level) and
@@ -112,6 +133,11 @@ private:
     std::unique_ptr<Node> root_;
     std::unordered_map<Item, Node*, ItemHash> nodes_;
     std::optional<core::PageId> activePage_;
+    std::unordered_set<core::PageId> linkedPages_;
+    std::unordered_set<Item, ItemHash> marked_; ///< linked pages and their ancestors
+    QIcon linkedMarker_;
+    QIcon containerMarker_;
+    QIcon blankMarker_; ///< transparent; keeps the titles of unmarked rows in place
     bool readOnly_ = false;
     RenameHandler rename_;
     MoveHandler move_;

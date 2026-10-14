@@ -67,6 +67,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace studyapp::ui {
 
@@ -270,7 +271,9 @@ void MainWindow::setUp() {
 
     connect(themes_, &ThemeManager::themeChanged, this, &MainWindow::syncThemeActions);
     connect(themes_, &ThemeManager::themeChanged, this, &MainWindow::applyCanvasTheme);
+    connect(themes_, &ThemeManager::themeChanged, this, &MainWindow::syncLinkMarkers);
     syncThemeActions();
+    syncLinkMarkers();
     applyCanvasTheme();
     updateRecentMenu();
     updateActions();
@@ -605,6 +608,7 @@ void MainWindow::createActions() {
     connect(plannerAction_, &QAction::toggled, this, [this](bool visible) {
         if (planner_ != nullptr) {
             planner_->setVisible(visible);
+            updateLinkHighlight();
         }
     });
     createConsoleAction();
@@ -883,6 +887,7 @@ void MainWindow::createCentralWidget() {
     planner_->setFailureHandler([this](const QString& summary, const QString& details) {
         reportFailure(summary, details);
     });
+    planner_->setSelectionHandler([this](std::optional<core::TaskId>) { updateLinkHighlight(); });
     shell_->addWidget(navigation_);
     shell_->addWidget(canvasArea_);
     shell_->addWidget(planner_);
@@ -913,6 +918,7 @@ void MainWindow::createCentralWidget() {
         }
     });
     navigation_->searchField()->installEventFilter(this);
+    tree->installEventFilter(this); // Escape deselects the planner's task
     connect(navigation_->searchResults(), &QTreeWidget::itemActivated, this,
             &MainWindow::activateSearchResult);
     connect(navigation_->searchResults(), &QTreeWidget::itemClicked, this,
@@ -1319,6 +1325,7 @@ void MainWindow::attach(std::unique_ptr<OpenWorkspace> workspace,
     open_->controller->setDocumentRasterizer(open_->documents.get());
     planner_->setReadOnly(session.isReadOnly());
     planner_->setPlanner(&open_->planner, open_->clock);
+    updateLinkHighlight();
 
     if (!page) {
         page = application::firstPage(session.workspace());
@@ -1399,6 +1406,7 @@ void MainWindow::onPatchApplied(const document::Patch& patch) {
     applyingPatch_ = true;
     open_->controller->onDocumentChanged(patch);
     treeModel_->onPatch(patch);
+    updateLinkHighlight(); // links, deleted pages and tasks, undo: after the rows follow
     planner_->onPatch(patch);
     if (navigation_->isShowingSearchResults() && affectsSearch(patch)) {
         searchDelay_->start(); // results follow the workspace (never stale or dangling)
@@ -1546,7 +1554,29 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         }
         return true;
     }
+    // Escape in the tree clears the link marks by deselecting the planner's task. Not
+    // consumed when there is nothing to clear. (An inline rename's editor gets its keys
+    // first: there Escape only cancels the rename.)
+    if (watched == navigation_->tree() && event->type() == QEvent::KeyPress &&
+        static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape && !planner_->isHidden() &&
+        planner_->selectedTask()) {
+        planner_->selectTask(std::nullopt);
+        return true;
+    }
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::updateLinkHighlight() {
+    std::vector<core::PageId> pages;
+    if (open_ && !planner_->isHidden()) {
+        // The panel refreshes lazily, so its selection may name a task deleted meanwhile.
+        if (const auto task = planner_->selectedTask()) {
+            if (const study::Task* found = open_->session->workspace().findTask(*task)) {
+                pages = found->linkedPages;
+            }
+        }
+    }
+    treeModel_->setLinkedPages(pages);
 }
 
 void MainWindow::finishTextEditing() {
@@ -2682,6 +2712,11 @@ void MainWindow::syncThemeActions() {
     toggleThemeAction_->setStatusTip(tip);
     refreshInkIcons(); // swatch borders follow the theme
     syncInkActions();
+}
+
+void MainWindow::syncLinkMarkers() {
+    const QColor color = toQColor(themes_->tokens().textSecondary);
+    treeModel_->setLinkMarkers(linkedPageMarker(color), linkContainerMarker(color));
 }
 
 void MainWindow::applyCanvasTheme() {

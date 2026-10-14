@@ -24,4 +24,10 @@ namespace studyapp::ui {
 [[nodiscard]] QIcon textSizeIcon(float fontSize, const QColor& color);
 /// A shape kind as line art in `color` (optionally with a light fill).
 
+/// Navigation tree link marks (2.0-PLAN-01): a filled dot on a page linked to the selected
+/// task, and a ring on a section or notebook that contains one. Drawn in `color` (a text
+/// token), so they differ by shape, not by colour.
+[[nodiscard]] QIcon linkedPageMarker(const QColor& color);
+[[nodiscard]] QIcon linkContainerMarker(const QColor& color);
+
 } // namespace studyapp::ui

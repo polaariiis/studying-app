@@ -137,6 +137,30 @@ QIcon textSizeIcon(float fontSize, const QColor& color) {
     return QIcon(pixmap);
 }
 
+QIcon linkedPageMarker(const QColor& color) {
+    QPixmap pixmap = blank();
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawEllipse(QPointF(kLogicalSize / 2.0, kLogicalSize / 2.0), 6.0, 6.0);
+    }
+    return QIcon(pixmap);
+}
+
+QIcon linkContainerMarker(const QColor& color) {
+    QPixmap pixmap = blank();
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(color, 2.4));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(QPointF(kLogicalSize / 2.0, kLogicalSize / 2.0), 5.6, 5.6);
+    }
+    return QIcon(pixmap);
+}
+
 QIcon themeToggleIcon(bool darkThemeShown, const QColor& color) {
     QPixmap pixmap(static_cast<int>(kLogicalSize * kScale),
                    static_cast<int>(kLogicalSize * kScale));
