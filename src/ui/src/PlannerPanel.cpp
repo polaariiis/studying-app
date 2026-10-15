@@ -77,6 +77,17 @@ QString clockText(minutes time) {
         .arg(count % 60, 2, 10, QLatin1Char('0'));
 }
 
+/// A length of time for the narrow lists: "45 min", "1 h 30 min", "2 h".
+QString durationText(minutes length) {
+    const auto hours = length.count() / 60;
+    const auto rest = length.count() % 60;
+    if (hours == 0) {
+        return PlannerPanel::tr("%1 min").arg(rest);
+    }
+    return rest == 0 ? PlannerPanel::tr("%1 h").arg(hours)
+                     : PlannerPanel::tr("%1 h %2 min").arg(hours).arg(rest);
+}
+
 /// Whether a patch changes what the planner shows: study records or pages (titles, tags).
 bool concernsPlanner(const document::Patch& patch) {
     return std::any_of(patch.changes().begin(), patch.changes().end(), [](const auto& change) {
@@ -163,6 +174,8 @@ void PlannerPanel::applyAccessibleNames() {
         {"plannerTaskDueTime", tr("Due time")},
         {"plannerTaskScheduled", tr("Scheduled")},
         {"plannerTaskBlockStart", tr("Scheduled start")},
+        {"plannerTaskHasEstimate", tr("Has an estimate")},
+        {"plannerTaskEstimate", tr("Estimated minutes")},
         {"plannerTaskLinks", tr("Linked pages")},
         {"plannerTaskNotes", tr("Notes")},
     };
@@ -382,6 +395,14 @@ void PlannerPanel::buildEditor() {
     blockMinutes_->setRange(5, 24 * 60);
     blockMinutes_->setSingleStep(15);
     blockMinutes_->setSuffix(tr(" min"));
+    // The time the task needs, which is not the length of its time block.
+    hasEstimate_ = new QCheckBox(editor_);
+    hasEstimate_->setObjectName(QStringLiteral("plannerTaskHasEstimate"));
+    estimate_ = new QSpinBox(editor_);
+    estimate_->setObjectName(QStringLiteral("plannerTaskEstimate"));
+    estimate_->setRange(0, 9999);
+    estimate_->setSingleStep(5);
+    estimate_->setSuffix(tr(" min"));
     course_ = new QComboBox(editor_);
     course_->setObjectName(QStringLiteral("plannerTaskCourse"));
     project_ = new QComboBox(editor_);
@@ -417,7 +438,8 @@ void PlannerPanel::buildEditor() {
         row->addWidget(field, 1);
         return row;
     };
-    for (QWidget* field : std::initializer_list<QWidget*>{dueDate_, dueTime_, blockStart_}) {
+    for (QWidget* field :
+         std::initializer_list<QWidget*>{dueDate_, dueTime_, blockStart_, estimate_}) {
         field->setMinimumWidth(0);
         field->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     }
@@ -438,6 +460,7 @@ void PlannerPanel::buildEditor() {
     form->addRow(tr("Time"), checkedRow(hasDueTime_, dueTime_));
     form->addRow(tr("Scheduled"), checkedRow(scheduled_, blockStart_));
     form->addRow(tr("Length"), blockMinutes_);
+    form->addRow(tr("Estimate"), checkedRow(hasEstimate_, estimate_));
     form->addRow(tr("Course"), course_);
     form->addRow(tr("Project"), project_);
     form->addRow(tr("Tags"), tags_);
@@ -532,6 +555,19 @@ void PlannerPanel::buildEditor() {
     connect(blockMinutes_, &QSpinBox::editingFinished, this, [this, saveBlock] {
         if (scheduled_->isChecked()) {
             saveBlock();
+        }
+    });
+    // Unchecked is no estimate, which is not 0 minutes.
+    const auto saveEstimate = [this] {
+        editSelected([&](study::Task& t) {
+            t.estimate = hasEstimate_->isChecked() ? std::optional(minutes{estimate_->value()})
+                                                   : std::nullopt;
+        });
+    };
+    connect(hasEstimate_, &QCheckBox::clicked, this, saveEstimate);
+    connect(estimate_, &QSpinBox::editingFinished, this, [this, saveEstimate] {
+        if (hasEstimate_->isChecked()) {
+            saveEstimate();
         }
     });
     connect(course_, &QComboBox::activated, this, [this] {
@@ -791,7 +827,13 @@ QTreeWidgetItem* PlannerPanel::addTaskItem(QTreeWidget* tree, QTreeWidgetItem* p
                                            const study::Task& task, const QString& detail) {
     auto* item = parent != nullptr ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
     item->setText(0, toQString(task.title));
-    item->setText(1, detail);
+    // The estimate after the list's own detail, so that a task reads the same in every list.
+    if (task.estimate) {
+        const QString estimate = durationText(*task.estimate);
+        item->setText(1, detail.isEmpty() ? estimate : detail + QStringLiteral(" · ") + estimate);
+    } else {
+        item->setText(1, detail);
+    }
     item->setData(0, kIdRole, idText(task.id));
     item->setToolTip(0, toQString(task.title));
     Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
@@ -1044,6 +1086,9 @@ void PlannerPanel::loadEditor() {
     }
     blockStart_->setEnabled(task->scheduled.has_value());
     blockMinutes_->setEnabled(task->scheduled.has_value());
+    hasEstimate_->setChecked(task->estimate.has_value());
+    estimate_->setValue(static_cast<int>(task->estimate.value_or(minutes{60}).count()));
+    estimate_->setEnabled(task->estimate.has_value());
     course_->clear();
     course_->addItem(tr("No course"), QString());
     for (const core::CourseId id : ws.courses()) {

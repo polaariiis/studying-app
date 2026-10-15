@@ -1,6 +1,7 @@
 // Phase 7 application layer: the Planner against a real WorkspaceSession (SQLite). Every
 // operation is one undoable, persisted edit; tags by name reuse or create tags in the same
-// edit; scope queries; the full workflow survives close and reopen.
+// edit; scope queries; the full workflow survives close and reopen. 2.0-PLAN-02: a task's
+// estimate is set, changed and cleared through updateTask, and refused when read-only.
 
 #include <studyapp/application/Planner.hpp>
 
@@ -12,7 +13,9 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,10 +52,10 @@ struct PlannerTest : ::testing::Test {
         session = std::move(*created);
     }
 
-    void reopen() {
+    void reopen(OpenOptions options = {}) {
         ASSERT_OK(session->close());
         session.reset();
-        auto opened = WorkspaceSession::open(dir / "ws", {}, services());
+        auto opened = WorkspaceSession::open(dir / "ws", options, services());
         ASSERT_OK(opened);
         session = std::move(*opened);
     }
@@ -167,6 +170,76 @@ TEST_F(PlannerTest, PageLinksAndDeletesAcrossTheShell) {
     const document::Workspace saved = ws();
     reopen();
     EXPECT_TRUE(ws() == saved);
+}
+
+// 2.0-PLAN-02: the task editor's Estimate field saves through updateTask. No estimate
+// (nullopt) and 0 minutes are different values, and both are stored.
+TEST_F(PlannerTest, EstimateIsSetChangedAndClearedInOneStepEach) {
+    using std::chrono::minutes;
+    auto task = planner().createTask({.title = "Revise"});
+    ASSERT_OK(task);
+    const auto estimate = [&] {
+        return ws().findTask(*task)->estimate;
+    };
+    // A planner of the current session: reopen() replaces the session.
+    const auto edit = [&](std::optional<minutes> value) {
+        study::Task edited = *ws().findTask(*task);
+        edited.estimate = value;
+        return planner().updateTask(std::move(edited));
+    };
+    EXPECT_EQ(estimate(), std::nullopt);
+
+    const auto before = steps();
+    ASSERT_OK(edit(minutes{45})); // set
+    EXPECT_EQ(steps(), before + 1);
+    EXPECT_EQ(session->history().nextUndo()->label, "Edit task");
+    ASSERT_OK(edit(minutes{90})); // changed
+    EXPECT_EQ(steps(), before + 2);
+    ASSERT_OK(edit(minutes{90})); // unchanged: nothing recorded
+    EXPECT_EQ(steps(), before + 2);
+    ASSERT_OK(edit(minutes{0}));
+    EXPECT_EQ(steps(), before + 3);
+    EXPECT_EQ(estimate(), minutes{0});
+    ASSERT_OK(edit(std::nullopt)); // cleared
+    EXPECT_EQ(steps(), before + 4);
+    EXPECT_EQ(estimate(), std::nullopt);
+
+    ASSERT_OK(session->undo());
+    EXPECT_EQ(estimate(), minutes{0});
+    ASSERT_OK(session->undo());
+    EXPECT_EQ(estimate(), minutes{90});
+    ASSERT_OK(session->redo());
+    EXPECT_EQ(estimate(), minutes{0});
+    EXPECT_EQ(session->pendingWriteCount(), 0U);
+
+    reopen(); // 0 minutes is stored as 0, not as no estimate
+    EXPECT_EQ(estimate(), minutes{0});
+    ASSERT_OK(edit(std::nullopt));
+    reopen();
+    EXPECT_EQ(estimate(), std::nullopt);
+    ASSERT_OK(ws().validate());
+}
+
+TEST_F(PlannerTest, AReadOnlyWorkspaceRefusesAnEstimate) {
+    using std::chrono::minutes;
+    auto task = planner().createTask({.title = "Revise"});
+    ASSERT_OK(task);
+    study::Task edited = *ws().findTask(*task);
+    edited.estimate = minutes{30};
+    ASSERT_OK(planner().updateTask(edited));
+
+    reopen({.mode = AccessMode::ReadOnly});
+    ASSERT_TRUE(session->isReadOnly());
+    const auto before = steps();
+    edited = *ws().findTask(*task);
+    edited.estimate = minutes{60};
+    auto refused = planner().updateTask(edited);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().message, "the workspace is open read-only");
+    edited.estimate.reset();
+    EXPECT_FALSE(planner().updateTask(edited).has_value()); // nor cleared
+    EXPECT_EQ(steps(), before);
+    EXPECT_EQ(ws().findTask(*task)->estimate, minutes{30});
 }
 
 } // namespace

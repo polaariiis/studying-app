@@ -96,7 +96,8 @@ private:
     void loadEditor();
     void updateEnabled();
 
-    /// Fills `tree` with task rows; returns the item of each task by id text.
+    /// Fills `tree` with task rows; returns the item of each task by id text. The task's
+    /// estimate, if any, follows `detail` in the second column.
     QTreeWidgetItem* addTaskItem(QTreeWidget* tree, QTreeWidgetItem* parent,
                                  const study::Task& task, const QString& detail);
     void onItemChanged(QTreeWidgetItem* item, int column);
@@ -173,6 +174,8 @@ private:
     QCheckBox* scheduled_ = nullptr;
     QDateTimeEdit* blockStart_ = nullptr;
     QSpinBox* blockMinutes_ = nullptr;
+    QCheckBox* hasEstimate_ = nullptr;
+    QSpinBox* estimate_ = nullptr;
     QComboBox* course_ = nullptr;
     QComboBox* project_ = nullptr;
     QLineEdit* tags_ = nullptr;

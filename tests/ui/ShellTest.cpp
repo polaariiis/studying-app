@@ -57,6 +57,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QSvgRenderer>
 #include <QTemporaryDir>
 #include <QTest>
@@ -1976,6 +1977,165 @@ private Q_SLOTS:
         scope->setCurrentIndex(0); // All tasks
         Q_EMIT scope->activated(0);
         QCOMPARE(titlesIn(tasks).size(), 2);
+    }
+
+    // 2.0-PLAN-02: the task editor's Estimate sets, changes and clears a task's estimate,
+    // one undoable, persisted edit each; unchecked is no estimate, 0 is 0 minutes. Every
+    // list shows it after its own detail. A read-only workspace's field is disabled.
+    void plannerEstimateThroughTheShell() {
+        // Declared before the shells: the windows use the zone until they are destroyed.
+        const study::FixedOffsetZone zone{std::chrono::minutes{120}};
+        Shell shell(settings(QStringLiteral("estimate")));
+        const auto path = freshPath(QStringLiteral("Estimate"));
+        QVERIFY(shell.window->createWorkspace(path));
+        shell.window->setTimeZone(&zone);
+        const core::PageId page = *shell.window->activePage();
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        const core::TaskId task =
+            *planner.createTask({.title = "Read",
+                                 .dueDate = study::localDate(shell.clock.now(), zone),
+                                 .linkedPages = {page}});
+        const core::TaskId plain = *planner.createTask({.title = "Plain", .linkedPages = {page}});
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(panel != nullptr);
+        shell.action("actionPlanner")->trigger();
+        QVERIFY(panel->isVisible());
+        const auto settle = [&] {
+            QCoreApplication::processEvents(); // the planner's deferred refresh
+            panel->refreshNow();
+        };
+        const auto steps = [&] {
+            return shell.window->session()->history().undoCount();
+        };
+        const auto estimate = [&] {
+            return shell.ws().findTask(task)->estimate;
+        };
+        // The detail column of a task's row in the list `name`.
+        const auto detail = [&](const char* name, const QString& title) {
+            auto* tree = panel->findChild<QTreeWidget*>(QString::fromLatin1(name));
+            const auto found = tree->findItems(title, Qt::MatchExactly | Qt::MatchRecursive);
+            return found.size() == 1 ? found.front()->text(1) : u"(no single row)"_s;
+        };
+        auto* hasEstimate = panel->findChild<QCheckBox*>(QStringLiteral("plannerTaskHasEstimate"));
+        auto* field = panel->findChild<QSpinBox*>(QStringLiteral("plannerTaskEstimate"));
+        QVERIFY(hasEstimate != nullptr && field != nullptr);
+        QCOMPARE(field->accessibleName(), u"Estimated minutes"_s);
+        QCOMPARE(field->minimum(), 0);
+        QCOMPARE(field->maximum(), 9999);
+        QCOMPARE(field->singleStep(), 5);
+        const auto type = [&](int value) {
+            field->setValue(value);
+            Q_EMIT field->editingFinished();
+        };
+
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        panel->selectTask(task);
+        QVERIFY(!hasEstimate->isChecked());
+        QVERIFY(!field->isEnabled());
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today"_s); // no estimate text
+
+        // Set (the field's value), changed, 0, cleared: one step each.
+        const auto before = steps();
+        hasEstimate->click();
+        QCOMPARE(estimate(), std::chrono::minutes{60});
+        QCOMPARE(steps(), before + 1);
+        settle();
+        QVERIFY(field->isEnabled());
+        type(90);
+        QCOMPARE(estimate(), std::chrono::minutes{90});
+        QCOMPARE(steps(), before + 2);
+        type(90); // unchanged: nothing recorded
+        QCOMPARE(steps(), before + 2);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 1 h 30 min"_s);
+        QCOMPARE(detail("plannerTasks", u"Plain"_s), QString());
+        type(0);
+        QCOMPARE(estimate(), std::chrono::minutes{0});
+        QCOMPARE(steps(), before + 3);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 0 min"_s);
+        hasEstimate->click();
+        QCOMPARE(estimate(), std::nullopt);
+        QCOMPARE(steps(), before + 4);
+        settle();
+        QVERIFY(!field->isEnabled());
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today"_s);
+
+        // Undo and redo restore the previous and the next value, in the editor too.
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(estimate(), std::chrono::minutes{0});
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(estimate(), std::chrono::minutes{90});
+        settle();
+        QVERIFY(hasEstimate->isChecked());
+        QCOMPARE(field->value(), 90);
+        shell.action("actionRedo")->trigger();
+        QCOMPARE(estimate(), std::chrono::minutes{0});
+        shell.action("actionRedo")->trigger();
+        QCOMPARE(estimate(), std::nullopt);
+        settle();
+        QVERIFY(!hasEstimate->isChecked());
+
+        // The formats: minutes, hours and minutes, whole hours.
+        hasEstimate->click();
+        settle();
+        type(45);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 45 min"_s);
+        type(120);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 2 h"_s);
+        type(90);
+
+        // All four lists, after their own detail; a task without an estimate shows none.
+        panel->showView(ui::PlannerPanel::View::Today);
+        settle();
+        QCOMPARE(detail("plannerAgenda", u"Read"_s), u"Today · 1 h 30 min"_s);
+        QCOMPARE(detail("plannerAgenda", u"Plain"_s), QString());
+        panel->showView(ui::PlannerPanel::View::Week);
+        settle();
+        QCOMPARE(detail("plannerWeek", u"Read"_s), u"due · 1 h 30 min"_s);
+        panel->showView(ui::PlannerPanel::View::Page);
+        settle();
+        QCOMPARE(detail("plannerBacklinks", u"Read"_s), u"Today · 1 h 30 min"_s);
+        QCOMPARE(detail("plannerBacklinks", u"Plain"_s), QString());
+
+        // Stored: the editor shows it after reopening.
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        QCOMPARE(estimate(), std::chrono::minutes{90});
+        QCOMPARE(shell.ws().findTask(plain)->estimate, std::nullopt);
+        panel->selectTask(task);
+        settle();
+        QVERIFY(hasEstimate->isChecked());
+        QCOMPARE(field->value(), 90);
+
+        // Read-only (the workspace is in use): shown, disabled, nothing recorded.
+        Shell other(settings(QStringLiteral("estimateReadOnly")));
+        QVERIFY(other.window->openWorkspace(path));
+        QVERIFY(other.window->session()->isReadOnly());
+        other.window->setTimeZone(&zone);
+        auto* readOnly = other.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        other.action("actionPlanner")->trigger();
+        readOnly->showView(ui::PlannerPanel::View::Tasks);
+        readOnly->selectTask(task);
+        QCoreApplication::processEvents();
+        readOnly->refreshNow();
+        auto* roCheck = readOnly->findChild<QCheckBox*>(QStringLiteral("plannerTaskHasEstimate"));
+        auto* roField = readOnly->findChild<QSpinBox*>(QStringLiteral("plannerTaskEstimate"));
+        QVERIFY(roCheck->isChecked());
+        QVERIFY(!roCheck->isEnabled());
+        QVERIFY(!roField->isEnabled());
+        const auto roRows = readOnly->findChild<QTreeWidget*>(QStringLiteral("plannerTasks"))
+                                ->findItems(u"Read"_s, Qt::MatchExactly | Qt::MatchRecursive);
+        QCOMPARE(roRows.size(), 1);
+        QCOMPARE(roRows.front()->text(1), u"Today · 1 h 30 min"_s);
+        roCheck->click(); // a disabled button ignores it
+        roField->setValue(30);
+        Q_EMIT roField->editingFinished(); // the panel refuses it too
+        QCOMPARE(other.window->session()->history().undoCount(), std::size_t{0});
+        QCOMPARE(other.ws().findTask(task)->estimate, std::chrono::minutes{90});
+        QCOMPARE(other.dialogs->errors.size(), 0);
     }
 
     // 2.0-PLAN-01: the selected task's linked pages are marked in the tree (and the sections
