@@ -108,4 +108,34 @@ struct Progress {
 /// Done / total over `tasks` (e.g. a project's), cancelled tasks excluded.
 [[nodiscard]] Progress progressOf(std::span<const Task* const> tasks) noexcept;
 
+/// Estimated minutes of some tasks, and how many of them have no estimate (so that a sum
+/// is never silently low). An estimate of 0 is an estimate.
+struct EstimateSum {
+    std::chrono::minutes minutes{0};
+    std::size_t withoutEstimate = 0;
+
+    [[nodiscard]] friend bool operator==(const EstimateSum&, const EstimateSum&) = default;
+};
+
+struct DayEstimate {
+    CalendarDate date{};
+    EstimateSum sum;
+
+    [[nodiscard]] friend bool operator==(const DayEstimate&, const DayEstimate&) = default;
+};
+
+struct EstimateTotals {
+    std::vector<DayEstimate> days; ///< by due date, earliest first; only days with a task
+    EstimateSum noDueDate;         ///< tasks without a due date
+    EstimateSum total;
+
+    [[nodiscard]] friend bool operator==(const EstimateTotals&, const EstimateTotals&) = default;
+};
+
+/// Estimates of `tasks` per due date and in total, cancelled tasks excluded; done tasks
+/// count (the total is the size of the work). Grouped by due date only: a task with just
+/// a time block counts under no due date. Subtasks are not added to their task: pass the
+/// set to count (e.g. a project's top-level tasks, as for progressOf). O(n log n).
+[[nodiscard]] EstimateTotals estimateTotals(std::span<const Task* const> tasks);
+
 } // namespace studyapp::study

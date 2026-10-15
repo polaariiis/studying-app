@@ -1,5 +1,6 @@
 // Study domain: record value checks, local time in fixed and daylight-saving zones, and the
-// agenda / week / progress logic across time zones (ROADMAP.md Phase 7 exit criterion).
+// agenda / week / progress logic across time zones (ROADMAP.md Phase 7 exit criterion);
+// estimate totals (2.0-PLAN-02).
 
 #include <studyapp/study/Planning.hpp>
 
@@ -7,6 +8,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <span>
 #include <vector>
 
 namespace studyapp::study {
@@ -309,6 +313,85 @@ TEST(StudyWeekTest, ProgressCountsDoneAmongNotCancelled) {
     tasks[2].status = TaskStatus::Cancelled;
     EXPECT_EQ(progressOf(pointers(tasks)), (Progress{.done = 1, .total = 3}));
     EXPECT_EQ(progressOf({}), (Progress{}));
+}
+
+// ---------------------------------------------------------------------------- estimates
+
+TEST(StudyEstimateTest, TotalsPerDueDateAndOverall) {
+    const CalendarDate monday = date(2026, 10, 12);
+    const CalendarDate tuesday = date(2026, 10, 13);
+    const CalendarDate friday = date(2026, 10, 16);
+    std::vector<Task> tasks{task(1, "read"),    task(2, "notes"),   task(3, "exercises"),
+                            task(4, "review"),  task(5, "summary"), task(6, "done"),
+                            task(7, "dropped"), task(8, "zero"),    task(9, "blocked")};
+    tasks[0].dueDate = tuesday;
+    tasks[0].estimate = 30min;
+    tasks[1].dueDate = tuesday; // no estimate
+    tasks[2].dueDate = friday;
+    tasks[2].estimate = 45min;
+    tasks[3].estimate = 20min; // no due date
+    // tasks[4]: no due date, no estimate
+    tasks[5].dueDate = friday; // done tasks count
+    tasks[5].estimate = 15min;
+    tasks[5].status = TaskStatus::Done;
+    tasks[6].dueDate = tuesday; // cancelled tasks do not
+    tasks[6].estimate = 100min;
+    tasks[6].status = TaskStatus::Cancelled;
+    tasks[7].dueDate = monday; // 0 is an estimate, not a missing one
+    tasks[7].estimate = 0min;
+    tasks[8].scheduled = TimeBlock{.start = utc(friday, 9), .end = utc(friday, 10)};
+    tasks[8].estimate = 60min; // a time block alone is not a due date
+    tasks[8].status = TaskStatus::InProgress;
+
+    const EstimateTotals totals = estimateTotals(pointers(tasks));
+    EXPECT_EQ(totals.days, (std::vector<DayEstimate>{
+                               {.date = monday, .sum = {.minutes = 0min, .withoutEstimate = 0}},
+                               {.date = tuesday, .sum = {.minutes = 30min, .withoutEstimate = 1}},
+                               {.date = friday, .sum = {.minutes = 60min, .withoutEstimate = 0}},
+                           }));
+    EXPECT_EQ(totals.noDueDate, (EstimateSum{.minutes = 80min, .withoutEstimate = 1}));
+    EXPECT_EQ(totals.total, (EstimateSum{.minutes = 170min, .withoutEstimate = 2}));
+
+    // The order of the tasks does not matter.
+    std::vector<const Task*> reversed = pointers(tasks);
+    std::reverse(reversed.begin(), reversed.end());
+    EXPECT_EQ(estimateTotals(reversed), totals);
+}
+
+TEST(StudyEstimateTest, OnlyTheGivenTasksCount) {
+    EXPECT_EQ(estimateTotals({}), EstimateTotals{});
+
+    // A subtask is not added to its task: whatever the caller passes is counted once.
+    std::vector<Task> tasks{task(1, "task"), task(2, "subtask")};
+    tasks[0].estimate = 90min;
+    tasks[1].estimate = 30min;
+    tasks[1].parent = tasks[0].id;
+    const std::vector<const Task*> all = pointers(tasks);
+    EXPECT_EQ(estimateTotals(std::span(all).first(1)).total,
+              (EstimateSum{.minutes = 90min, .withoutEstimate = 0}));
+    EXPECT_EQ(estimateTotals(all).total, (EstimateSum{.minutes = 120min, .withoutEstimate = 0}));
+
+    // Only cancelled tasks: nothing counted, no day listed.
+    tasks[0].status = TaskStatus::Cancelled;
+    tasks[0].dueDate = date(2026, 10, 14);
+    EXPECT_TRUE(estimateTotals(std::span(all).first(1)).days.empty());
+    EXPECT_EQ(estimateTotals(std::span(all).first(1)), EstimateTotals{});
+}
+
+TEST(StudyEstimateTest, LargeSumsAreExact) {
+    std::vector<Task> tasks;
+    for (std::uint64_t i = 0; i < 2000; ++i) {
+        tasks.push_back(task(i + 1, "t"));
+        tasks.back().estimate = 9999min;
+        tasks.back().dueDate =
+            CalendarDate{sys_days(date(2026, 1, 1)) + days{static_cast<int>(i % 366)}};
+    }
+    const EstimateTotals totals = estimateTotals(pointers(tasks));
+    EXPECT_EQ(totals.total.minutes, 2000 * 9999min);
+    EXPECT_EQ(totals.days.size(), 366U);
+    EXPECT_TRUE(
+        std::is_sorted(totals.days.begin(), totals.days.end(),
+                       [](const DayEstimate& a, const DayEstimate& b) { return a.date < b.date; }));
 }
 
 } // namespace
