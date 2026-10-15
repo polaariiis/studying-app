@@ -156,7 +156,9 @@ private:
     QToolButton* scopeMore_ = nullptr;
     QLabel* progress_ = nullptr;
     QLabel* projectDates_ = nullptr;
-    QLabel* projectTotals_ = nullptr;
+    QScrollArea* projectDaysArea_ = nullptr; ///< the day lines, capped at a few lines
+    QLabel* projectDays_ = nullptr;
+    QLabel* projectTotals_ = nullptr; ///< the total, always shown
     QTreeWidget* tasks_ = nullptr;
     QLineEdit* taskAdd_ = nullptr;
     // Week

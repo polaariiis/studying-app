@@ -166,6 +166,7 @@ void PlannerPanel::applyAccessibleNames() {
         {"plannerBacklinks", tr("Tasks linked to this page")},
         {"plannerPageAdd", tr("New task for this page")},
         {"plannerEditorArea", tr("Task details")},
+        {"plannerProjectDaysArea", tr("Estimates by due date")},
         {"plannerTaskTitle", tr("Task title")},
         {"plannerTaskPriority", tr("Priority")},
         {"plannerTaskHasDue", tr("Has a due date")},
@@ -250,11 +251,26 @@ void PlannerPanel::buildLayout() {
     // Project scope only: shown, not edited.
     projectDates_ = new QLabel(list);
     projectDates_->setObjectName(QStringLiteral("plannerProjectDates"));
+    // The day lines scroll after a few lines (a project may have many due dates); the total
+    // stays below them. Not a focus stop: the wheel scrolls it.
+    projectDaysArea_ = new QScrollArea(list);
+    projectDaysArea_->setObjectName(QStringLiteral("plannerProjectDaysArea"));
+    projectDaysArea_->setFrameShape(QFrame::NoFrame);
+    projectDaysArea_->setFocusPolicy(Qt::NoFocus);
+    projectDaysArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    projectDaysArea_->setWidgetResizable(true);
+    projectDays_ = new QLabel(projectDaysArea_);
+    projectDays_->setObjectName(QStringLiteral("plannerProjectDays"));
+    projectDays_->setContentsMargins(10, 0, 8, 0);
+    projectDays_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    projectDaysArea_->setWidget(projectDays_);
     projectTotals_ = new QLabel(list);
     projectTotals_->setObjectName(QStringLiteral("plannerProjectTotals"));
-    projectTotals_->setToolTip(
+    const QString counting =
         tr("Estimates of the project's tasks by due date. Subtasks and cancelled tasks are not "
-           "counted; a task with only a scheduled time counts under No date."));
+           "counted; a task with only a scheduled time counts under No date.");
+    projectDays_->setToolTip(counting);
+    projectTotals_->setToolTip(counting);
     tasks_ = makeTaskTree(list, QStringLiteral("plannerTasks"));
     taskAdd_ = makeQuickAdd(list, QStringLiteral("plannerTaskAdd"), tr("Add a task…"));
     auto* scopeRow = new QHBoxLayout;
@@ -267,11 +283,15 @@ void PlannerPanel::buildLayout() {
     listLayout->setContentsMargins(0, 0, 0, 0);
     listLayout->setSpacing(2);
     listLayout->addLayout(scopeRow);
-    for (QLabel* label : {progress_, projectDates_, projectTotals_}) {
+    for (QLabel* label : {progress_, projectDates_}) {
         label->setContentsMargins(10, 0, 8, 0);
         listLayout->addWidget(label);
     }
+    listLayout->addWidget(projectDaysArea_);
+    projectTotals_->setContentsMargins(10, 0, 8, 0);
+    listLayout->addWidget(projectTotals_);
     projectDates_->hide();
+    projectDaysArea_->hide();
     projectTotals_->hide();
     listLayout->addWidget(tasks_, 1);
     listLayout->addWidget(taskAdd_);
@@ -948,6 +968,7 @@ void PlannerPanel::refreshTasks() {
     tasks_->clear();
     progress_->clear();
     projectDates_->hide();
+    projectDaysArea_->hide();
     projectTotals_->hide();
     if (planner_ != nullptr) {
         const auto course = scopeCourse();
@@ -999,7 +1020,7 @@ void PlannerPanel::showProjectSummary(const study::Project& project,
         projectDates_->setText(tr("No dates"));
     }
 
-    // One line per due date, then the tasks without one, then the total.
+    // One line per due date, then the tasks without one; the total below them.
     const study::EstimateTotals totals = study::estimateTotals(counted);
     const auto sumText = [](const study::EstimateSum& sum) {
         QString text = durationText(sum.minutes);
@@ -1021,9 +1042,20 @@ void PlannerPanel::showProjectSummary(const study::Project& project,
         })) {
         lines << tr("No date") + QStringLiteral(" · ") + sumText(totals.noDueDate);
     }
-    lines << tr("Total") + QStringLiteral(" · ") + sumText(totals.total);
-    projectTotals_->setText(lines.join(QLatin1Char('\n')));
+    projectDays_->setText(lines.join(QLatin1Char('\n')));
+    projectTotals_->setText(tr("Total") + QStringLiteral(" · ") + sumText(totals.total));
+    // As tall as its lines, up to five of them; wide enough for them, as a label would be.
+    const QSize content = projectDays_->sizeHint();
+    const int cap = 5 * projectDays_->fontMetrics().lineSpacing() +
+                    projectDays_->contentsMargins().top() +
+                    projectDays_->contentsMargins().bottom();
+    const bool scrolls = content.height() > cap;
+    projectDaysArea_->setFixedHeight(std::min(content.height(), cap));
+    projectDaysArea_->setMinimumWidth(
+        content.width() +
+        (scrolls ? projectDaysArea_->verticalScrollBar()->sizeHint().width() : 0));
     projectDates_->show();
+    projectDaysArea_->setVisible(!lines.isEmpty());
     projectTotals_->show();
 }
 

@@ -57,6 +57,8 @@
 #include <QPointer>
 #include <QPrinter>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSpinBox>
@@ -2248,17 +2250,29 @@ private Q_SLOTS:
         auto* tasks = panel->findChild<QTreeWidget*>(QStringLiteral("plannerTasks"));
         auto* progress = panel->findChild<QLabel*>(QStringLiteral("plannerProgress"));
         auto* dates = panel->findChild<QLabel*>(QStringLiteral("plannerProjectDates"));
+        auto* daysArea = panel->findChild<QScrollArea*>(QStringLiteral("plannerProjectDaysArea"));
+        auto* days = panel->findChild<QLabel*>(QStringLiteral("plannerProjectDays"));
         auto* totals = panel->findChild<QLabel*>(QStringLiteral("plannerProjectTotals"));
         QVERIFY(scope != nullptr && tasks != nullptr && progress != nullptr && dates != nullptr &&
-                totals != nullptr);
+                daysArea != nullptr && days != nullptr && totals != nullptr);
+        QCOMPARE(daysArea->accessibleName(), u"Estimates by due date"_s);
+        QCOMPARE(daysArea->focusPolicy(), Qt::NoFocus); // not a stop in the tab order
         const auto choose = [&](const QString& data) {
             const int index = scope->findData(data);
             QVERIFY(index >= 0);
             scope->setCurrentIndex(index);
             Q_EMIT scope->activated(index);
         };
+        // The day lines (when shown), then the total.
         const auto lines = [&] {
-            return totals->text().split(QLatin1Char('\n'));
+            QStringList out;
+            if (!daysArea->isHidden()) {
+                out = days->text().split(QLatin1Char('\n'));
+            }
+            return out << totals->text();
+        };
+        const auto hidden = [&] {
+            return dates->isHidden() && daysArea->isHidden() && totals->isHidden();
         };
         const auto rows = [&] {
             QStringList out;
@@ -2268,10 +2282,10 @@ private Q_SLOTS:
             return out;
         };
         settle();
-        QVERIFY(dates->isHidden() && totals->isHidden()); // all tasks: no project
+        QVERIFY(hidden()); // all tasks: no project
 
         choose(u"p:"_s + QString::fromStdString(project.toString()));
-        QVERIFY(!dates->isHidden() && !totals->isHidden());
+        QVERIFY(!dates->isHidden() && !daysArea->isHidden() && !totals->isHidden());
         QCOMPARE(dates->text(), u"No dates"_s);
         QCOMPARE(lines(), (QStringList{dayText(day(1)) + u" · 30 min (1 without estimate)"_s,
                                        dayText(day(3)) + u" · 1 h"_s,
@@ -2280,14 +2294,18 @@ private Q_SLOTS:
         // Under the progress line, above the unchanged list.
         auto* layout = progress->parentWidget()->layout();
         QCOMPARE(layout->indexOf(dates), layout->indexOf(progress) + 1);
-        QCOMPARE(layout->indexOf(totals), layout->indexOf(dates) + 1);
+        QCOMPARE(layout->indexOf(daysArea), layout->indexOf(dates) + 1);
+        QCOMPARE(layout->indexOf(totals), layout->indexOf(daysArea) + 1);
         QCOMPARE(layout->indexOf(tasks), layout->indexOf(totals) + 1);
+        // Three lines: as tall as they are, nothing to scroll.
+        QCOMPARE(daysArea->height(), days->sizeHint().height());
+        QCOMPARE(daysArea->verticalScrollBar()->maximum(), 0);
         QCOMPARE(rows(), (QStringList{u"a"_s, u"a.1"_s, u"b"_s, u"c"_s, u"d"_s, u"e"_s, u"f"_s}));
         QCOMPARE(progress->text(), u"1 of 5 done"_s);
 
         // The course's scope shows no project summary.
         choose(u"c:"_s + QString::fromStdString(course.toString()));
-        QVERIFY(dates->isHidden() && totals->isHidden());
+        QVERIFY(hidden());
         choose(u"p:"_s + QString::fromStdString(project.toString()));
 
         // The dates follow updateProject: one side, the other, both.
@@ -2360,6 +2378,40 @@ private Q_SLOTS:
         shell.draw(*shell.window->activePage());
         QCoreApplication::processEvents();
         QCOMPARE(panel->refreshCount(), refreshes);
+
+        // Many due dates: the day lines scroll after about five lines, the total stays
+        // shown, and the window is not made taller than it is without any.
+        const core::ProjectId longer = *planner.createProject(course, "Long");
+        settle();
+        choose(u"p:"_s + QString::fromStdString(longer.toString()));
+        QVERIFY(daysArea->isHidden()); // no tasks: no day lines
+        QCOMPARE(totals->text(), u"Total · 0 min"_s);
+        const int height = shell.window->height();
+        QVERIFY(shell.window->minimumSizeHint().height() <= height);
+        QStringList expected;
+        for (int i = 1; i <= 30; ++i) {
+            const core::TaskId id = *planner.createTask(
+                {.title = "Day " + std::to_string(i), .project = longer, .dueDate = day(i)});
+            edit(id, [](study::Task& t) { t.estimate = minutes{60}; });
+            expected << dayText(day(i)) + u" · 1 h"_s;
+        }
+        settle();
+        QCoreApplication::processEvents();                         // the layout
+        QCOMPARE(days->text().split(QLatin1Char('\n')), expected); // every day
+        // Lines scrolled out of view are still read out: the label is not a focus stop.
+        QAccessibleInterface* readOut = QAccessible::queryAccessibleInterface(days);
+        QVERIFY(readOut != nullptr);
+        QCOMPARE(readOut->text(QAccessible::Name).split(QLatin1Char('\n')), expected);
+        const int cap = 5 * days->fontMetrics().lineSpacing() + days->contentsMargins().top() +
+                        days->contentsMargins().bottom();
+        QVERIFY(daysArea->height() <= cap);
+        QVERIFY(daysArea->height() < days->sizeHint().height());
+        QVERIFY(daysArea->verticalScrollBar()->maximum() > 0);
+        QVERIFY(totals->isVisible());
+        QVERIFY(totals->height() >= totals->sizeHint().height());
+        QCOMPARE(totals->text(), u"Total · 30 h"_s);
+        QVERIFY(shell.window->minimumSizeHint().height() <= height);
+        QCOMPARE(shell.window->height(), height);
     }
 
     // 2.0-PLAN-01: the selected task's linked pages are marked in the tree (and the sections
