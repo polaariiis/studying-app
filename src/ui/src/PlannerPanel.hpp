@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <optional>
+#include <vector>
 
 class QCheckBox;
 class QComboBox;
@@ -121,6 +122,9 @@ private:
     void setScopeProjectDone(bool done);
     [[nodiscard]] study::CalendarDate today() const;
     [[nodiscard]] QString dueText(const study::Task& task) const;
+    /// The project's start and due dates and its estimates (project scope only).
+    void showProjectSummary(const study::Project& project,
+                            const std::vector<const study::Task*>& counted);
 
     ShellDialogs* dialogs_;
     application::Planner* planner_ = nullptr;
@@ -151,6 +155,8 @@ private:
     QToolButton* scopeNew_ = nullptr;
     QToolButton* scopeMore_ = nullptr;
     QLabel* progress_ = nullptr;
+    QLabel* projectDates_ = nullptr;
+    QLabel* projectTotals_ = nullptr;
     QTreeWidget* tasks_ = nullptr;
     QLineEdit* taskAdd_ = nullptr;
     // Week

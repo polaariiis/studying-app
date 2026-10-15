@@ -247,6 +247,14 @@ void PlannerPanel::buildLayout() {
     scopeMore_->setMenu(moreMenu);
     progress_ = new QLabel(list);
     progress_->setObjectName(QStringLiteral("plannerProgress"));
+    // Project scope only: shown, not edited.
+    projectDates_ = new QLabel(list);
+    projectDates_->setObjectName(QStringLiteral("plannerProjectDates"));
+    projectTotals_ = new QLabel(list);
+    projectTotals_->setObjectName(QStringLiteral("plannerProjectTotals"));
+    projectTotals_->setToolTip(
+        tr("Estimates of the project's tasks by due date. Subtasks and cancelled tasks are not "
+           "counted; a task with only a scheduled time counts under No date."));
     tasks_ = makeTaskTree(list, QStringLiteral("plannerTasks"));
     taskAdd_ = makeQuickAdd(list, QStringLiteral("plannerTaskAdd"), tr("Add a task…"));
     auto* scopeRow = new QHBoxLayout;
@@ -259,8 +267,12 @@ void PlannerPanel::buildLayout() {
     listLayout->setContentsMargins(0, 0, 0, 0);
     listLayout->setSpacing(2);
     listLayout->addLayout(scopeRow);
-    progress_->setContentsMargins(10, 0, 8, 0);
-    listLayout->addWidget(progress_);
+    for (QLabel* label : {progress_, projectDates_, projectTotals_}) {
+        label->setContentsMargins(10, 0, 8, 0);
+        listLayout->addWidget(label);
+    }
+    projectDates_->hide();
+    projectTotals_->hide();
     listLayout->addWidget(tasks_, 1);
     listLayout->addWidget(taskAdd_);
     views_->addWidget(list);
@@ -935,6 +947,8 @@ void PlannerPanel::refreshTasks() {
     const int scroll = tasks_->verticalScrollBar()->value();
     tasks_->clear();
     progress_->clear();
+    projectDates_->hide();
+    projectTotals_->hide();
     if (planner_ != nullptr) {
         const auto course = scopeCourse();
         const auto project = scopeProject();
@@ -958,10 +972,59 @@ void PlannerPanel::refreshTasks() {
                                     ? tr(" · project done")
                                     : QString()));
         }
+        if (project) {
+            showProjectSummary(*planner_->workspace().findProject(*project), counted);
+        }
     }
     restoreSelection(tasks_);
     tasks_->verticalScrollBar()->setValue(scroll);
     updating_ = false;
+}
+
+void PlannerPanel::showProjectSummary(const study::Project& project,
+                                      const std::vector<const study::Task*>& counted) {
+    const QLocale locale;
+    const auto date = [&](study::CalendarDate day, const QString& format) {
+        return locale.toString(toQDate(day), format);
+    };
+    const QString full = QStringLiteral("d MMM yyyy");
+    if (project.start && project.due) {
+        projectDates_->setText(date(*project.start, full) + QStringLiteral(" – ") +
+                               date(*project.due, full));
+    } else if (project.start) {
+        projectDates_->setText(tr("From %1").arg(date(*project.start, full)));
+    } else if (project.due) {
+        projectDates_->setText(tr("Until %1").arg(date(*project.due, full)));
+    } else {
+        projectDates_->setText(tr("No dates"));
+    }
+
+    // One line per due date, then the tasks without one, then the total.
+    const study::EstimateTotals totals = study::estimateTotals(counted);
+    const auto sumText = [](const study::EstimateSum& sum) {
+        QString text = durationText(sum.minutes);
+        if (sum.withoutEstimate > 0) {
+            text += QLatin1Char(' ') +
+                    tr("(%n without estimate)", nullptr, static_cast<int>(sum.withoutEstimate));
+        }
+        return text;
+    };
+    QStringList lines;
+    for (const study::DayEstimate& day : totals.days) {
+        lines << date(day.date, QStringLiteral("ddd d MMM")) + QStringLiteral(" · ") +
+                     sumText(day.sum);
+    }
+    // Whenever a counted task has no due date: the sum alone cannot tell (an estimate of
+    // 0 minutes adds nothing).
+    if (std::any_of(counted.begin(), counted.end(), [](const study::Task* task) {
+            return task->status != study::TaskStatus::Cancelled && !task->dueDate;
+        })) {
+        lines << tr("No date") + QStringLiteral(" · ") + sumText(totals.noDueDate);
+    }
+    lines << tr("Total") + QStringLiteral(" · ") + sumText(totals.total);
+    projectTotals_->setText(lines.join(QLatin1Char('\n')));
+    projectDates_->show();
+    projectTotals_->show();
 }
 
 void PlannerPanel::refreshWeek() {
