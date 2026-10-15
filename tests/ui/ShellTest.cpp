@@ -1989,6 +1989,8 @@ private Q_SLOTS:
         const auto path = freshPath(QStringLiteral("Estimate"));
         QVERIFY(shell.window->createWorkspace(path));
         shell.window->setTimeZone(&zone);
+        shell.window->activateWindow(); // for the focus changes below
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
         const core::PageId page = *shell.window->activePage();
         application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
         const core::TaskId task =
@@ -2099,6 +2101,35 @@ private Q_SLOTS:
         settle();
         QCOMPARE(detail("plannerBacklinks", u"Read"_s), u"Today · 1 h 30 min"_s);
         QCOMPARE(detail("plannerBacklinks", u"Plain"_s), QString());
+
+        // An estimate above the field's maximum (the model has none) is shown as the maximum
+        // in the field; leaving the field unchanged, or editing another field, keeps it.
+        study::Task large = *shell.ws().findTask(task);
+        large.estimate = std::chrono::minutes{20000};
+        QVERIFY(planner.updateTask(large).has_value());
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 333 h 20 min"_s);
+        QCOMPARE(field->value(), 9999);
+        const auto unchanged = steps();
+        auto* title = panel->findChild<QLineEdit*>(QStringLiteral("plannerTaskTitle"));
+        field->setFocus();
+        QTRY_VERIFY(field->hasFocus());
+        title->setFocus(); // the field emits editingFinished
+        QTRY_VERIFY(title->hasFocus());
+        QTest::keyClick(field, Qt::Key_Return); // and on Enter
+        QCOMPARE(steps(), unchanged);
+        QCOMPARE(estimate(), std::chrono::minutes{20000});
+        auto* priority = panel->findChild<QComboBox*>(QStringLiteral("plannerTaskPriority"));
+        priority->setCurrentIndex(3);
+        Q_EMIT priority->activated(3);
+        QCOMPARE(steps(), unchanged + 1);
+        QCOMPARE(shell.ws().findTask(task)->priority, study::Priority::High);
+        QCOMPARE(estimate(), std::chrono::minutes{20000});
+        settle();
+        type(90); // a real change is stored
+        QCOMPARE(steps(), unchanged + 2);
+        QCOMPARE(estimate(), std::chrono::minutes{90});
 
         // Stored: the editor shows it after reopening.
         QVERIFY(shell.window->closeWorkspace());

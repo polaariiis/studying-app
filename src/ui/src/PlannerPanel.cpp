@@ -566,9 +566,18 @@ void PlannerPanel::buildEditor() {
     };
     connect(hasEstimate_, &QCheckBox::clicked, this, saveEstimate);
     connect(estimate_, &QSpinBox::editingFinished, this, [this, saveEstimate] {
-        if (hasEstimate_->isChecked()) {
-            saveEstimate();
+        const study::Task* task = selected();
+        if (task == nullptr || !hasEstimate_->isChecked()) {
+            return;
         }
+        // Also emitted when the field is left unchanged: a stored estimate above the field's
+        // maximum is shown as the maximum and must not be replaced by it.
+        if (task->estimate &&
+            std::clamp(task->estimate->count(), minutes::rep{estimate_->minimum()},
+                       minutes::rep{estimate_->maximum()}) == estimate_->value()) {
+            return;
+        }
+        saveEstimate();
     });
     connect(course_, &QComboBox::activated, this, [this] {
         const auto course = idFrom<core::CourseId>(course_->currentData().toString());
