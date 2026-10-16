@@ -306,8 +306,12 @@ D42), so they share the undo history and persistence. Differences from the sketc
 `CalendarDate` is `std::chrono::year_month_day`; a time block is `TimeBlock{start, end}` (UTC
 instants); subtasks are one level deep (a subtask has no subtasks); `linkedPages` and `tags`
 are kept sorted and unique; tags have a name unique ignoring ASCII case (as the database's
-`COLLATE NOCASE`) and an optional colour; pages carry their tags (`PageInfo::tags`). Course
-`archived` and project fields exist but the planner edits titles, status and links only.
+`COLLATE NOCASE`) and an optional colour; pages carry their tags (`PageInfo::tags`). The
+planner edits a task's title, status, priority, due date and time, time block, estimate
+(minutes, or none: no estimate is not 0 minutes; 2.0-PLAN-02), course, project, tags, linked
+pages and notes; a course's title; a project's title and status (done or active). A
+project's start and due are shown in its scope but not edited, and the other course and
+project fields (course `archived` among them) are not edited.
 
 Invariants (checked by `Workspace::apply`): titles are not blank; dates are real dates in
 years 1–9999; a due time needs a due date and lies within the day; a block does not end

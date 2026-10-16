@@ -228,6 +228,35 @@ shows the dot beside the marked page only. With the markers every row is 2 px ta
 1.2 (22 → 24 px with Windows fonts) and titles sit one marker width further right (+16 px),
 whether or not anything is marked; the light and dark look was checked by hand.
 
+**2.0 additions (task estimates and project totals, 2.0-PLAN-02).** `study_tests`
+(`StudyEstimateTest`): estimates summed per due date, without a due date and in total, with
+the count of tasks without an estimate; an estimate of 0 counts as one; Done tasks count,
+Cancelled ones do not; a task with only a time block counts under no due date; only the
+given tasks count (a subtask only when passed); an empty input; days in order; large sums
+exact. `application_tests` (`PlannerTest.EstimateIsSetChangedAndClearedInOneStepEach`,
+`AReadOnlyWorkspaceRefusesAnEstimate`): set, change and clear through `updateTask` are one
+undoable step each, an unchanged value records nothing, 0 and no estimate both survive
+reopening; a read-only workspace refuses the change and the clear. `ui.ShellTest`
+(`plannerEstimateThroughTheShell`): the Estimate field's range, step and accessible name;
+set, change, 0 and clear one step each, undo and redo in the model and the editor; the
+formats ("45 min", "1 h 30 min", "2 h") after each list's own detail in Today, Tasks, Week
+and Page, none for a task without an estimate; reopening; a read-only workspace shows the
+field disabled and records nothing; an estimate above the field's maximum is kept when the
+field is left unchanged, Enter is pressed or another field is edited. `ui.ShellTest`
+(`plannerProjectTotalsThroughTheShell`): in a project's scope the dates ("No dates", from,
+until, both; through `Planner::updateProject`, undo and redo) and the totals lines (per due
+date, No date, Total with "(N without estimate)"; subtasks, Done, Cancelled, scheduled-only
+and other projects' tasks) between the progress line and the unchanged list, hidden for all
+tasks and for a course; the totals after an estimate edit, a due date change, a task added,
+deleted or moved to another project, status changes, undo and redo; a canvas edit refreshes
+nothing. With 30 due dates every day line is present, the day lines scroll in an area of
+at most five lines (plus its 1 px border) while the Total line stays visible, and the window
+is not made taller; a screen reader gets all day lines from the label's accessible text;
+while it scrolls the area is a Tab stop between the scope row and the list (Tab, Shift+Tab),
+Down and PageDown scroll it, its focus mark differs from the unfocused look in the light and
+the dark theme, a refresh keeps the focus, and below the cap or outside a project the focus
+moves on; with three lines it is as tall as its lines and not a Tab stop.
+
 ## 1. Principles
 
 * **Most logic is testable without a GUI, a GPU or a display.** That is the payoff of the
