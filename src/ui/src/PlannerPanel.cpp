@@ -252,7 +252,8 @@ void PlannerPanel::buildLayout() {
     projectDates_ = new QLabel(list);
     projectDates_->setObjectName(QStringLiteral("plannerProjectDates"));
     // The day lines scroll after a few lines (a project may have many due dates); the total
-    // stays below them. Not a focus stop: the wheel scrolls it.
+    // stays below them. A tab stop only while it scrolls (showProjectSummary); the stylesheet
+    // marks its focus.
     projectDaysArea_ = new QScrollArea(list);
     projectDaysArea_->setObjectName(QStringLiteral("plannerProjectDaysArea"));
     projectDaysArea_->setFrameShape(QFrame::NoFrame);
@@ -967,9 +968,7 @@ void PlannerPanel::refreshTasks() {
     const int scroll = tasks_->verticalScrollBar()->value();
     tasks_->clear();
     progress_->clear();
-    projectDates_->hide();
-    projectDaysArea_->hide();
-    projectTotals_->hide();
+    bool summary = false;
     if (planner_ != nullptr) {
         const auto course = scopeCourse();
         const auto project = scopeProject();
@@ -995,7 +994,14 @@ void PlannerPanel::refreshTasks() {
         }
         if (project) {
             showProjectSummary(*planner_->workspace().findProject(*project), counted);
+            summary = true;
         }
+    }
+    if (!summary) {
+        // Not hidden and shown again on every refresh: that would take the focus away.
+        projectDates_->hide();
+        projectDaysArea_->hide();
+        projectTotals_->hide();
     }
     restoreSelection(tasks_);
     tasks_->verticalScrollBar()->setValue(scroll);
@@ -1045,17 +1051,24 @@ void PlannerPanel::showProjectSummary(const study::Project& project,
     projectDays_->setText(lines.join(QLatin1Char('\n')));
     projectTotals_->setText(tr("Total") + QStringLiteral(" · ") + sumText(totals.total));
     // As tall as its lines, up to five of them; wide enough for them, as a label would be.
+    // Plus the frame: the stylesheet's border that marks the focus.
     const QSize content = projectDays_->sizeHint();
     const int cap = 5 * projectDays_->fontMetrics().lineSpacing() +
                     projectDays_->contentsMargins().top() +
                     projectDays_->contentsMargins().bottom();
     const bool scrolls = content.height() > cap;
-    projectDaysArea_->setFixedHeight(std::min(content.height(), cap));
+    const int frame = 2 * projectDaysArea_->frameWidth();
+    projectDaysArea_->setFixedHeight(std::min(content.height(), cap) + frame);
     projectDaysArea_->setMinimumWidth(
-        content.width() +
+        content.width() + frame +
         (scrolls ? projectDaysArea_->verticalScrollBar()->sizeHint().width() : 0));
+    // A tab stop (arrow and page keys scroll it) only while there is something to scroll to.
+    projectDaysArea_->setFocusPolicy(scrolls ? Qt::StrongFocus : Qt::NoFocus);
+    if (!scrolls && projectDaysArea_->hasFocus()) {
+        tasks_->setFocus(Qt::OtherFocusReason);
+    }
     projectDates_->show();
-    projectDaysArea_->setVisible(!lines.isEmpty());
+    projectDaysArea_->setVisible(!lines.isEmpty()); // hidden, Qt moves its focus on
     projectTotals_->show();
 }
 

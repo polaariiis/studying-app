@@ -2256,7 +2256,6 @@ private Q_SLOTS:
         QVERIFY(scope != nullptr && tasks != nullptr && progress != nullptr && dates != nullptr &&
                 daysArea != nullptr && days != nullptr && totals != nullptr);
         QCOMPARE(daysArea->accessibleName(), u"Estimates by due date"_s);
-        QCOMPARE(daysArea->focusPolicy(), Qt::NoFocus); // not a stop in the tab order
         const auto choose = [&](const QString& data) {
             const int index = scope->findData(data);
             QVERIFY(index >= 0);
@@ -2297,8 +2296,11 @@ private Q_SLOTS:
         QCOMPARE(layout->indexOf(daysArea), layout->indexOf(dates) + 1);
         QCOMPARE(layout->indexOf(totals), layout->indexOf(daysArea) + 1);
         QCOMPARE(layout->indexOf(tasks), layout->indexOf(totals) + 1);
-        // Three lines: as tall as they are, nothing to scroll.
-        QCOMPARE(daysArea->height(), days->sizeHint().height());
+        // Three lines: as tall as they are (plus the 1 px border that marks the focus),
+        // nothing to scroll, not a stop in the tab order.
+        QCOMPARE(daysArea->frameWidth(), 1);
+        QCOMPARE(daysArea->height(), days->sizeHint().height() + 2);
+        QCOMPARE(daysArea->focusPolicy(), Qt::NoFocus);
         QCOMPARE(daysArea->verticalScrollBar()->maximum(), 0);
         QCOMPARE(rows(), (QStringList{u"a"_s, u"a.1"_s, u"b"_s, u"c"_s, u"d"_s, u"e"_s, u"f"_s}));
         QCOMPARE(progress->text(), u"1 of 5 done"_s);
@@ -2404,14 +2406,72 @@ private Q_SLOTS:
         QCOMPARE(readOut->text(QAccessible::Name).split(QLatin1Char('\n')), expected);
         const int cap = 5 * days->fontMetrics().lineSpacing() + days->contentsMargins().top() +
                         days->contentsMargins().bottom();
-        QVERIFY(daysArea->height() <= cap);
-        QVERIFY(daysArea->height() < days->sizeHint().height());
+        QVERIFY(daysArea->height() <= cap + 2);
+        QVERIFY(daysArea->height() - 2 < days->sizeHint().height());
         QVERIFY(daysArea->verticalScrollBar()->maximum() > 0);
         QVERIFY(totals->isVisible());
         QVERIFY(totals->height() >= totals->sizeHint().height());
         QCOMPARE(totals->text(), u"Total · 30 h"_s);
         QVERIFY(shell.window->minimumSizeHint().height() <= height);
         QCOMPARE(shell.window->height(), height);
+
+        // While it scrolls it is a tab stop, once, between the summary and the list; the
+        // arrow and page keys scroll it; its focus is drawn (in both themes).
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        QCOMPARE(daysArea->focusPolicy(), Qt::StrongFocus);
+        auto* more = panel->findChild<QToolButton*>(QStringLiteral("plannerScopeMore"));
+        more->setFocus();
+        QTRY_VERIFY(more->hasFocus());
+        QTest::keyClick(more, Qt::Key_Tab);
+        QCOMPARE(QApplication::focusWidget(), daysArea);
+        QTest::keyClick(daysArea, Qt::Key_Tab);
+        QCOMPARE(QApplication::focusWidget(), tasks);
+        QTest::keyClick(tasks, Qt::Key_Tab, Qt::ShiftModifier);
+        QCOMPARE(QApplication::focusWidget(), daysArea);
+        QScrollBar* bar = daysArea->verticalScrollBar();
+        QCOMPARE(bar->value(), 0);
+        QTest::keyClick(daysArea, Qt::Key_Down);
+        const int down = bar->value();
+        QVERIFY(down > 0);
+        QTest::keyClick(daysArea, Qt::Key_PageDown);
+        QVERIFY(bar->value() > down);
+        const auto focusMark = [&] {
+            daysArea->setFocus();
+            QCoreApplication::processEvents();
+            const QImage focused = daysArea->grab().toImage();
+            tasks->setFocus();
+            QCoreApplication::processEvents();
+            return focused != daysArea->grab().toImage();
+        };
+        QVERIFY(focusMark());
+        shell.action("actionToggleTheme")->trigger(); // to dark
+        settle();
+        QVERIFY(focusMark());
+        shell.action("actionToggleTheme")->trigger();
+        settle();
+
+        // A refresh keeps the focus; below the cap it moves to the list.
+        daysArea->setFocus();
+        QTRY_VERIFY(daysArea->hasFocus());
+        const auto longTasks = planner.tasksInScope(std::nullopt, longer);
+        edit(longTasks.front()->id, [](study::Task& t) { t.estimate = minutes{90}; });
+        settle();
+        QVERIFY(daysArea->hasFocus());
+        for (std::size_t i = 4; i < longTasks.size(); ++i) {
+            QVERIFY(planner.deleteTask(longTasks[i]->id).has_value());
+        }
+        settle();
+        QCOMPARE(lines().size(), 5); // four days and the total
+        QCOMPARE(daysArea->focusPolicy(), Qt::NoFocus);
+        QCOMPARE(QApplication::focusWidget(), tasks);
+        // Leaving project scope hides the area; the focus is not left on it.
+        daysArea->setFocusPolicy(Qt::StrongFocus); // as with many due dates
+        daysArea->setFocus();
+        QTRY_VERIFY(daysArea->hasFocus());
+        choose(u"c:"_s + QString::fromStdString(course.toString()));
+        QVERIFY(daysArea->isHidden());
+        QVERIFY(!daysArea->hasFocus());
     }
 
     // 2.0-PLAN-01: the selected task's linked pages are marked in the tree (and the sections
