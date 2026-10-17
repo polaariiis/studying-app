@@ -162,6 +162,14 @@ QSplitter#shellSplitter::handle:horizontal {
     width: 1px;
 }
 
+/* The planner's scrolling estimate lines: a focus mark that does not move the layout. */
+QScrollArea#plannerProjectDaysArea {
+    border: 1px solid transparent;
+}
+QScrollArea#plannerProjectDaysArea:focus {
+    border-color: @borderStrong@;
+}
+
 /* Inline rename in the tree. */
 QTreeView#workspaceTree QLineEdit {
     background: @background@;

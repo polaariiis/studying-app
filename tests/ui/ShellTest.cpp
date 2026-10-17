@@ -44,8 +44,10 @@
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
@@ -55,8 +57,11 @@
 #include <QPointer>
 #include <QPrinter>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QSvgRenderer>
 #include <QTemporaryDir>
 #include <QTest>
@@ -1976,6 +1981,497 @@ private Q_SLOTS:
         scope->setCurrentIndex(0); // All tasks
         Q_EMIT scope->activated(0);
         QCOMPARE(titlesIn(tasks).size(), 2);
+    }
+
+    // 2.0-PLAN-02: the task editor's Estimate sets, changes and clears a task's estimate,
+    // one undoable, persisted edit each; unchecked is no estimate, 0 is 0 minutes. Every
+    // list shows it after its own detail. A read-only workspace's field is disabled.
+    void plannerEstimateThroughTheShell() {
+        // Declared before the shells: the windows use the zone until they are destroyed.
+        const study::FixedOffsetZone zone{std::chrono::minutes{120}};
+        Shell shell(settings(QStringLiteral("estimate")));
+        const auto path = freshPath(QStringLiteral("Estimate"));
+        QVERIFY(shell.window->createWorkspace(path));
+        shell.window->setTimeZone(&zone);
+        shell.window->activateWindow(); // for the focus changes below
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        const core::PageId page = *shell.window->activePage();
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        const core::TaskId task =
+            *planner.createTask({.title = "Read",
+                                 .dueDate = study::localDate(shell.clock.now(), zone),
+                                 .linkedPages = {page}});
+        const core::TaskId plain = *planner.createTask({.title = "Plain", .linkedPages = {page}});
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(panel != nullptr);
+        shell.action("actionPlanner")->trigger();
+        QVERIFY(panel->isVisible());
+        const auto settle = [&] {
+            QCoreApplication::processEvents(); // the planner's deferred refresh
+            panel->refreshNow();
+        };
+        const auto steps = [&] {
+            return shell.window->session()->history().undoCount();
+        };
+        const auto estimate = [&] {
+            return shell.ws().findTask(task)->estimate;
+        };
+        // The detail column of a task's row in the list `name`.
+        const auto detail = [&](const char* name, const QString& title) {
+            auto* tree = panel->findChild<QTreeWidget*>(QString::fromLatin1(name));
+            const auto found = tree->findItems(title, Qt::MatchExactly | Qt::MatchRecursive);
+            return found.size() == 1 ? found.front()->text(1) : u"(no single row)"_s;
+        };
+        auto* hasEstimate = panel->findChild<QCheckBox*>(QStringLiteral("plannerTaskHasEstimate"));
+        auto* field = panel->findChild<QSpinBox*>(QStringLiteral("plannerTaskEstimate"));
+        QVERIFY(hasEstimate != nullptr && field != nullptr);
+        QCOMPARE(field->accessibleName(), u"Estimated minutes"_s);
+        QCOMPARE(field->minimum(), 0);
+        QCOMPARE(field->maximum(), 9999);
+        QCOMPARE(field->singleStep(), 5);
+        const auto type = [&](int value) {
+            field->setValue(value);
+            Q_EMIT field->editingFinished();
+        };
+
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        panel->selectTask(task);
+        QVERIFY(!hasEstimate->isChecked());
+        QVERIFY(!field->isEnabled());
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today"_s); // no estimate text
+
+        // Set (the field's value), changed, 0, cleared: one step each.
+        const auto before = steps();
+        hasEstimate->click();
+        QCOMPARE(estimate(), std::chrono::minutes{60});
+        QCOMPARE(steps(), before + 1);
+        settle();
+        QVERIFY(field->isEnabled());
+        type(90);
+        QCOMPARE(estimate(), std::chrono::minutes{90});
+        QCOMPARE(steps(), before + 2);
+        type(90); // unchanged: nothing recorded
+        QCOMPARE(steps(), before + 2);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 1 h 30 min"_s);
+        QCOMPARE(detail("plannerTasks", u"Plain"_s), QString());
+        type(0);
+        QCOMPARE(estimate(), std::chrono::minutes{0});
+        QCOMPARE(steps(), before + 3);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 0 min"_s);
+        hasEstimate->click();
+        QCOMPARE(estimate(), std::nullopt);
+        QCOMPARE(steps(), before + 4);
+        settle();
+        QVERIFY(!field->isEnabled());
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today"_s);
+
+        // Undo and redo restore the previous and the next value, in the editor too.
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(estimate(), std::chrono::minutes{0});
+        shell.action("actionUndo")->trigger();
+        QCOMPARE(estimate(), std::chrono::minutes{90});
+        settle();
+        QVERIFY(hasEstimate->isChecked());
+        QCOMPARE(field->value(), 90);
+        shell.action("actionRedo")->trigger();
+        QCOMPARE(estimate(), std::chrono::minutes{0});
+        shell.action("actionRedo")->trigger();
+        QCOMPARE(estimate(), std::nullopt);
+        settle();
+        QVERIFY(!hasEstimate->isChecked());
+
+        // The formats: minutes, hours and minutes, whole hours.
+        hasEstimate->click();
+        settle();
+        type(45);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 45 min"_s);
+        type(120);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 2 h"_s);
+        type(90);
+
+        // All four lists, after their own detail; a task without an estimate shows none.
+        panel->showView(ui::PlannerPanel::View::Today);
+        settle();
+        QCOMPARE(detail("plannerAgenda", u"Read"_s), u"Today · 1 h 30 min"_s);
+        QCOMPARE(detail("plannerAgenda", u"Plain"_s), QString());
+        panel->showView(ui::PlannerPanel::View::Week);
+        settle();
+        QCOMPARE(detail("plannerWeek", u"Read"_s), u"due · 1 h 30 min"_s);
+        panel->showView(ui::PlannerPanel::View::Page);
+        settle();
+        QCOMPARE(detail("plannerBacklinks", u"Read"_s), u"Today · 1 h 30 min"_s);
+        QCOMPARE(detail("plannerBacklinks", u"Plain"_s), QString());
+
+        // An estimate above the field's maximum (the model has none) is shown as the maximum
+        // in the field; leaving the field unchanged, or editing another field, keeps it.
+        study::Task large = *shell.ws().findTask(task);
+        large.estimate = std::chrono::minutes{20000};
+        QVERIFY(planner.updateTask(large).has_value());
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        settle();
+        QCOMPARE(detail("plannerTasks", u"Read"_s), u"Today · 333 h 20 min"_s);
+        QCOMPARE(field->value(), 9999);
+        const auto unchanged = steps();
+        auto* title = panel->findChild<QLineEdit*>(QStringLiteral("plannerTaskTitle"));
+        field->setFocus();
+        QTRY_VERIFY(field->hasFocus());
+        title->setFocus(); // the field emits editingFinished
+        QTRY_VERIFY(title->hasFocus());
+        QTest::keyClick(field, Qt::Key_Return); // and on Enter
+        QCOMPARE(steps(), unchanged);
+        QCOMPARE(estimate(), std::chrono::minutes{20000});
+        auto* priority = panel->findChild<QComboBox*>(QStringLiteral("plannerTaskPriority"));
+        priority->setCurrentIndex(3);
+        Q_EMIT priority->activated(3);
+        QCOMPARE(steps(), unchanged + 1);
+        QCOMPARE(shell.ws().findTask(task)->priority, study::Priority::High);
+        QCOMPARE(estimate(), std::chrono::minutes{20000});
+        settle();
+        type(90); // a real change is stored
+        QCOMPARE(steps(), unchanged + 2);
+        QCOMPARE(estimate(), std::chrono::minutes{90});
+
+        // Stored: the editor shows it after reopening.
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(shell.window->openWorkspace(path));
+        QCOMPARE(estimate(), std::chrono::minutes{90});
+        QCOMPARE(shell.ws().findTask(plain)->estimate, std::nullopt);
+        panel->selectTask(task);
+        settle();
+        QVERIFY(hasEstimate->isChecked());
+        QCOMPARE(field->value(), 90);
+
+        // Read-only (the workspace is in use): shown, disabled, nothing recorded.
+        Shell other(settings(QStringLiteral("estimateReadOnly")));
+        QVERIFY(other.window->openWorkspace(path));
+        QVERIFY(other.window->session()->isReadOnly());
+        other.window->setTimeZone(&zone);
+        auto* readOnly = other.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        other.action("actionPlanner")->trigger();
+        readOnly->showView(ui::PlannerPanel::View::Tasks);
+        readOnly->selectTask(task);
+        QCoreApplication::processEvents();
+        readOnly->refreshNow();
+        auto* roCheck = readOnly->findChild<QCheckBox*>(QStringLiteral("plannerTaskHasEstimate"));
+        auto* roField = readOnly->findChild<QSpinBox*>(QStringLiteral("plannerTaskEstimate"));
+        QVERIFY(roCheck->isChecked());
+        QVERIFY(!roCheck->isEnabled());
+        QVERIFY(!roField->isEnabled());
+        const auto roRows = readOnly->findChild<QTreeWidget*>(QStringLiteral("plannerTasks"))
+                                ->findItems(u"Read"_s, Qt::MatchExactly | Qt::MatchRecursive);
+        QCOMPARE(roRows.size(), 1);
+        QCOMPARE(roRows.front()->text(1), u"Today · 1 h 30 min"_s);
+        roCheck->click(); // a disabled button ignores it
+        roField->setValue(30);
+        Q_EMIT roField->editingFinished(); // the panel refuses it too
+        QCOMPARE(other.window->session()->history().undoCount(), std::size_t{0});
+        QCOMPARE(other.ws().findTask(task)->estimate, std::chrono::minutes{90});
+        QCOMPARE(other.dialogs->errors.size(), 0);
+    }
+
+    // 2.0-PLAN-02: in a project's scope the Tasks view shows the project's dates and its
+    // estimates per due date, without a due date and in total, under the progress line:
+    // top-level tasks only, done tasks counted, cancelled ones not. Both follow every patch;
+    // the task list itself is unchanged.
+    void plannerProjectTotalsThroughTheShell() {
+        using std::chrono::minutes;
+        // Declared before the shell: the window uses the zone until it is destroyed.
+        const study::FixedOffsetZone zone{minutes{120}};
+        Shell shell(settings(QStringLiteral("projectTotals")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("ProjectTotals"))));
+        shell.window->setTimeZone(&zone);
+        const auto& ws = shell.ws();
+        application::Planner planner(*shell.window->session(), shell.clock, shell.ids);
+        const study::CalendarDate today = study::localDate(shell.clock.now(), zone);
+        const auto day = [&](int offset) {
+            return study::CalendarDate(std::chrono::sys_days(today) + std::chrono::days{offset});
+        };
+        const auto dayText = [](study::CalendarDate date) {
+            const QDate qdate(static_cast<int>(date.year()),
+                              static_cast<int>(static_cast<unsigned>(date.month())),
+                              static_cast<int>(static_cast<unsigned>(date.day())));
+            return QLocale().toString(qdate, u"ddd d MMM"_s);
+        };
+        const auto fullText = [&](study::CalendarDate date) {
+            return QLocale().toString(QDate(static_cast<int>(date.year()),
+                                            static_cast<int>(static_cast<unsigned>(date.month())),
+                                            static_cast<int>(static_cast<unsigned>(date.day()))),
+                                      u"d MMM yyyy"_s);
+        };
+        const core::CourseId course = *planner.createCourse("Biology");
+        const core::ProjectId project = *planner.createProject(course, "Thesis");
+        const core::ProjectId other = *planner.createProject(std::nullopt, "Other");
+        const auto edit = [&](core::TaskId id, const std::function<void(study::Task&)>& change) {
+            study::Task task = *ws.findTask(id);
+            change(task);
+            QVERIFY(planner.updateTask(std::move(task)).has_value());
+        };
+        const auto add = [&](const char* title, std::optional<int> due, std::optional<int> estimate,
+                             std::optional<core::TaskId> parent = std::nullopt) {
+            const core::TaskId id =
+                *planner.createTask({.title = title,
+                                     .project = project,
+                                     .parent = parent,
+                                     .dueDate = due ? std::optional(day(*due)) : std::nullopt});
+            if (estimate) {
+                edit(id, [&](study::Task& t) { t.estimate = minutes{*estimate}; });
+            }
+            return id;
+        };
+        const core::TaskId a = add("a", 1, 30);
+        add("a.1", 3, 500, a); // a subtask: not added to its task
+        const core::TaskId b = add("b", 1, std::nullopt);
+        const core::TaskId c = add("c", 3, 60);
+        QVERIFY(planner.setTaskDone(c, true).has_value()); // done: counted
+        const core::TaskId d = add("d", std::nullopt, 45);
+        const core::TaskId e = add("e", std::nullopt, std::nullopt);
+        const core::TaskId f = add("f", 1, 120);
+        edit(f, [](study::Task& t) { t.status = study::TaskStatus::Cancelled; });
+        // Scheduled without a due date: counted under no date.
+        edit(d, [&](study::Task& t) {
+            t.scheduled = study::TimeBlock{shell.clock.now(), shell.clock.now() + minutes{30}};
+        });
+        const core::TaskId elsewhere = *planner.createTask({.title = "x", .project = other});
+        edit(elsewhere, [](study::Task& t) { t.estimate = minutes{999}; });
+
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(panel != nullptr);
+        shell.action("actionPlanner")->trigger();
+        panel->showView(ui::PlannerPanel::View::Tasks);
+        const auto settle = [&] {
+            QCoreApplication::processEvents(); // the planner's deferred refresh
+            panel->refreshNow();
+        };
+        auto* scope = panel->findChild<QComboBox*>(QStringLiteral("plannerScope"));
+        auto* tasks = panel->findChild<QTreeWidget*>(QStringLiteral("plannerTasks"));
+        auto* progress = panel->findChild<QLabel*>(QStringLiteral("plannerProgress"));
+        auto* dates = panel->findChild<QLabel*>(QStringLiteral("plannerProjectDates"));
+        auto* daysArea = panel->findChild<QScrollArea*>(QStringLiteral("plannerProjectDaysArea"));
+        auto* days = panel->findChild<QLabel*>(QStringLiteral("plannerProjectDays"));
+        auto* totals = panel->findChild<QLabel*>(QStringLiteral("plannerProjectTotals"));
+        QVERIFY(scope != nullptr && tasks != nullptr && progress != nullptr && dates != nullptr &&
+                daysArea != nullptr && days != nullptr && totals != nullptr);
+        QCOMPARE(daysArea->accessibleName(), u"Estimates by due date"_s);
+        const auto choose = [&](const QString& data) {
+            const int index = scope->findData(data);
+            QVERIFY(index >= 0);
+            scope->setCurrentIndex(index);
+            Q_EMIT scope->activated(index);
+        };
+        // The day lines (when shown), then the total.
+        const auto lines = [&] {
+            QStringList out;
+            if (!daysArea->isHidden()) {
+                out = days->text().split(QLatin1Char('\n'));
+            }
+            return out << totals->text();
+        };
+        const auto hidden = [&] {
+            return dates->isHidden() && daysArea->isHidden() && totals->isHidden();
+        };
+        const auto rows = [&] {
+            QStringList out;
+            for (QTreeWidgetItemIterator it(tasks); *it != nullptr; ++it) {
+                out << (*it)->text(0);
+            }
+            return out;
+        };
+        settle();
+        QVERIFY(hidden()); // all tasks: no project
+
+        choose(u"p:"_s + QString::fromStdString(project.toString()));
+        QVERIFY(!dates->isHidden() && !daysArea->isHidden() && !totals->isHidden());
+        QCOMPARE(dates->text(), u"No dates"_s);
+        QCOMPARE(lines(), (QStringList{dayText(day(1)) + u" · 30 min (1 without estimate)"_s,
+                                       dayText(day(3)) + u" · 1 h"_s,
+                                       u"No date · 45 min (1 without estimate)"_s,
+                                       u"Total · 2 h 15 min (2 without estimate)"_s}));
+        // Under the progress line, above the unchanged list.
+        auto* layout = progress->parentWidget()->layout();
+        QCOMPARE(layout->indexOf(dates), layout->indexOf(progress) + 1);
+        QCOMPARE(layout->indexOf(daysArea), layout->indexOf(dates) + 1);
+        QCOMPARE(layout->indexOf(totals), layout->indexOf(daysArea) + 1);
+        QCOMPARE(layout->indexOf(tasks), layout->indexOf(totals) + 1);
+        // Three lines: as tall as they are (plus the 1 px border that marks the focus),
+        // nothing to scroll, not a stop in the tab order.
+        QCOMPARE(daysArea->frameWidth(), 1);
+        QCOMPARE(daysArea->height(), days->sizeHint().height() + 2);
+        QCOMPARE(daysArea->focusPolicy(), Qt::NoFocus);
+        QCOMPARE(daysArea->verticalScrollBar()->maximum(), 0);
+        QCOMPARE(rows(), (QStringList{u"a"_s, u"a.1"_s, u"b"_s, u"c"_s, u"d"_s, u"e"_s, u"f"_s}));
+        QCOMPARE(progress->text(), u"1 of 5 done"_s);
+
+        // The course's scope shows no project summary.
+        choose(u"c:"_s + QString::fromStdString(course.toString()));
+        QVERIFY(hidden());
+        choose(u"p:"_s + QString::fromStdString(project.toString()));
+
+        // The dates follow updateProject: one side, the other, both.
+        const auto setDates = [&](std::optional<int> start, std::optional<int> due) {
+            study::Project edited = *ws.findProject(project);
+            edited.start = start ? std::optional(day(*start)) : std::nullopt;
+            edited.due = due ? std::optional(day(*due)) : std::nullopt;
+            QVERIFY(planner.updateProject(std::move(edited)).has_value());
+            settle();
+        };
+        setDates(-2, std::nullopt);
+        QCOMPARE(dates->text(), u"From "_s + fullText(day(-2)));
+        setDates(std::nullopt, 30);
+        QCOMPARE(dates->text(), u"Until "_s + fullText(day(30)));
+        setDates(-2, 30);
+        QCOMPARE(dates->text(), fullText(day(-2)) + u" – "_s + fullText(day(30)));
+        shell.action("actionUndo")->trigger();
+        settle();
+        QCOMPARE(dates->text(), u"Until "_s + fullText(day(30)));
+        shell.action("actionRedo")->trigger();
+        settle();
+        QCOMPARE(dates->text(), fullText(day(-2)) + u" – "_s + fullText(day(30)));
+
+        // The totals follow every patch that changes them.
+        const auto total = [&] {
+            return lines().last();
+        };
+        edit(b, [](study::Task& t) { t.estimate = minutes{15}; }); // an estimate
+        settle();
+        QCOMPARE(lines().first(), dayText(day(1)) + u" · 45 min"_s);
+        QCOMPARE(total(), u"Total · 2 h 30 min (1 without estimate)"_s);
+        shell.action("actionUndo")->trigger(); // undo, redo
+        settle();
+        QCOMPARE(total(), u"Total · 2 h 15 min (2 without estimate)"_s);
+        shell.action("actionRedo")->trigger();
+        settle();
+        QCOMPARE(total(), u"Total · 2 h 30 min (1 without estimate)"_s);
+        edit(d, [&](study::Task& t) { t.dueDate = day(3); }); // a due date
+        settle();
+        QCOMPARE(lines(), (QStringList{dayText(day(1)) + u" · 45 min"_s,
+                                       dayText(day(3)) + u" · 1 h 45 min"_s,
+                                       u"No date · 0 min (1 without estimate)"_s,
+                                       u"Total · 2 h 30 min (1 without estimate)"_s}));
+        const core::TaskId g = add("g", 1, 10); // a task added
+        settle();
+        QCOMPARE(total(), u"Total · 2 h 40 min (1 without estimate)"_s);
+        QVERIFY(planner.deleteTask(g).has_value()); // deleted
+        settle();
+        QCOMPARE(total(), u"Total · 2 h 30 min (1 without estimate)"_s);
+        edit(c, [&](study::Task& t) { t.project = other; }); // moved to another project
+        settle();
+        QCOMPARE(lines(),
+                 (QStringList{dayText(day(1)) + u" · 45 min"_s, dayText(day(3)) + u" · 45 min"_s,
+                              u"No date · 0 min (1 without estimate)"_s,
+                              u"Total · 1 h 30 min (1 without estimate)"_s}));
+        edit(a, [](study::Task& t) { t.status = study::TaskStatus::Cancelled; }); // a status
+        settle();
+        QCOMPARE(total(), u"Total · 1 h (1 without estimate)"_s);
+        edit(e, [](study::Task& t) { t.status = study::TaskStatus::Cancelled; });
+        settle();
+        QCOMPARE(lines(), (QStringList{dayText(day(1)) + u" · 15 min"_s,
+                                       dayText(day(3)) + u" · 45 min"_s, u"Total · 1 h"_s}));
+        shell.action("actionUndo")->trigger();
+        settle();
+        QCOMPARE(lines().size(), 4); // "No date" is back
+        QCOMPARE(rows(), (QStringList{u"a"_s, u"a.1"_s, u"b"_s, u"d"_s, u"e"_s, u"f"_s}));
+
+        // A canvas edit refreshes nothing.
+        const int refreshes = panel->refreshCount();
+        shell.draw(*shell.window->activePage());
+        QCoreApplication::processEvents();
+        QCOMPARE(panel->refreshCount(), refreshes);
+
+        // Many due dates: the day lines scroll after about five lines, the total stays
+        // shown, and the window is not made taller than it is without any.
+        const core::ProjectId longer = *planner.createProject(course, "Long");
+        settle();
+        choose(u"p:"_s + QString::fromStdString(longer.toString()));
+        QVERIFY(daysArea->isHidden()); // no tasks: no day lines
+        QCOMPARE(totals->text(), u"Total · 0 min"_s);
+        const int height = shell.window->height();
+        QVERIFY(shell.window->minimumSizeHint().height() <= height);
+        QStringList expected;
+        for (int i = 1; i <= 30; ++i) {
+            const core::TaskId id = *planner.createTask(
+                {.title = "Day " + std::to_string(i), .project = longer, .dueDate = day(i)});
+            edit(id, [](study::Task& t) { t.estimate = minutes{60}; });
+            expected << dayText(day(i)) + u" · 1 h"_s;
+        }
+        settle();
+        QCoreApplication::processEvents();                         // the layout
+        QCOMPARE(days->text().split(QLatin1Char('\n')), expected); // every day
+        // Lines scrolled out of view are still read out: the label is not a focus stop.
+        QAccessibleInterface* readOut = QAccessible::queryAccessibleInterface(days);
+        QVERIFY(readOut != nullptr);
+        QCOMPARE(readOut->text(QAccessible::Name).split(QLatin1Char('\n')), expected);
+        const int cap = 5 * days->fontMetrics().lineSpacing() + days->contentsMargins().top() +
+                        days->contentsMargins().bottom();
+        QVERIFY(daysArea->height() <= cap + 2);
+        QVERIFY(daysArea->height() - 2 < days->sizeHint().height());
+        QVERIFY(daysArea->verticalScrollBar()->maximum() > 0);
+        QVERIFY(totals->isVisible());
+        QVERIFY(totals->height() >= totals->sizeHint().height());
+        QCOMPARE(totals->text(), u"Total · 30 h"_s);
+        QVERIFY(shell.window->minimumSizeHint().height() <= height);
+        QCOMPARE(shell.window->height(), height);
+
+        // While it scrolls it is a tab stop, once, between the summary and the list; the
+        // arrow and page keys scroll it; its focus is drawn (in both themes).
+        shell.window->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(shell.window.get()));
+        QCOMPARE(daysArea->focusPolicy(), Qt::StrongFocus);
+        auto* more = panel->findChild<QToolButton*>(QStringLiteral("plannerScopeMore"));
+        more->setFocus();
+        QTRY_VERIFY(more->hasFocus());
+        QTest::keyClick(more, Qt::Key_Tab);
+        QCOMPARE(QApplication::focusWidget(), daysArea);
+        QTest::keyClick(daysArea, Qt::Key_Tab);
+        QCOMPARE(QApplication::focusWidget(), tasks);
+        QTest::keyClick(tasks, Qt::Key_Tab, Qt::ShiftModifier);
+        QCOMPARE(QApplication::focusWidget(), daysArea);
+        QScrollBar* bar = daysArea->verticalScrollBar();
+        QCOMPARE(bar->value(), 0);
+        QTest::keyClick(daysArea, Qt::Key_Down);
+        const int down = bar->value();
+        QVERIFY(down > 0);
+        QTest::keyClick(daysArea, Qt::Key_PageDown);
+        QVERIFY(bar->value() > down);
+        const auto focusMark = [&] {
+            daysArea->setFocus();
+            QCoreApplication::processEvents();
+            const QImage focused = daysArea->grab().toImage();
+            tasks->setFocus();
+            QCoreApplication::processEvents();
+            return focused != daysArea->grab().toImage();
+        };
+        QVERIFY(focusMark());
+        shell.action("actionToggleTheme")->trigger(); // to dark
+        settle();
+        QVERIFY(focusMark());
+        shell.action("actionToggleTheme")->trigger();
+        settle();
+
+        // A refresh keeps the focus; below the cap it moves to the list.
+        daysArea->setFocus();
+        QTRY_VERIFY(daysArea->hasFocus());
+        const auto longTasks = planner.tasksInScope(std::nullopt, longer);
+        edit(longTasks.front()->id, [](study::Task& t) { t.estimate = minutes{90}; });
+        settle();
+        QVERIFY(daysArea->hasFocus());
+        for (std::size_t i = 4; i < longTasks.size(); ++i) {
+            QVERIFY(planner.deleteTask(longTasks[i]->id).has_value());
+        }
+        settle();
+        QCOMPARE(lines().size(), 5); // four days and the total
+        QCOMPARE(daysArea->focusPolicy(), Qt::NoFocus);
+        QCOMPARE(QApplication::focusWidget(), tasks);
+        // Leaving project scope hides the area; the focus is not left on it.
+        daysArea->setFocusPolicy(Qt::StrongFocus); // as with many due dates
+        daysArea->setFocus();
+        QTRY_VERIFY(daysArea->hasFocus());
+        choose(u"c:"_s + QString::fromStdString(course.toString()));
+        QVERIFY(daysArea->isHidden());
+        QVERIFY(!daysArea->hasFocus());
     }
 
     // 2.0-PLAN-01: the selected task's linked pages are marked in the tree (and the sections

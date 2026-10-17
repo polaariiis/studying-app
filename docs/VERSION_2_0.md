@@ -1,8 +1,9 @@
 # StudyBoard 2.0 — Plan
 
 > Status: **plan; the M1 decisions (P1–P4, P8, O4) were approved in principle on
-> 2026-10-14; 2.0-PLAN-01 is implemented and was accepted on 2026-10-14 (D57); nothing else
-> in it is implemented.**
+> 2026-10-14; 2.0-PLAN-01 is implemented, was accepted on 2026-10-14 (D57) and is merged
+> into `dev/2.0`; 2.0-PLAN-02 is implemented on `feature/2.0-PLAN-02-task-estimates` and
+> awaits review and integration; nothing else in it is implemented.**
 > This is the canonical planning reference for StudyBoard 2.0. It consolidates and
 > replaces the two working drafts "StudyBoard 2.0 — AI-Assisted Study Plans" (v1.1,
 > 2026-10-12) and "StudyBoard — AI study plans (plan)" (§2.1). The short roadmap with
@@ -256,16 +257,18 @@ by value, not by dependency.
 
 Every task below carries a status line: **implemented** (with evidence), **investigate**
 (open technical questions before the task document), **proposed** (ready for a task
-document once approved), **blocked** (needs a decision, named). Today one task is
-implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57).
+document once approved), **blocked** (needs a decision, named). Today two tasks are
+implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57) and merged into `dev/2.0`; and
+2.0-PLAN-02, on its feature branch, awaiting review and integration.
 
 ## 5. Milestone M1 — study plans without AI
 
 ### 2.0-PLAN-01 — Highlight a task's linked pages in the tree
 
-* **Status:** implemented on `feature/2.0-PLAN-01-tree-highlight` (tree model, window
-  wiring and markers; tests in [TESTING.md §0](TESTING.md#0-test-suites-10-12-and-20), "2.0
-  additions"), accepted on 2026-10-14 as
+* **Status:** implemented on `feature/2.0-PLAN-01-tree-highlight` and merged into `dev/2.0`
+  as `9f3e2a1` (tree model, window wiring and markers; tests in
+  [TESTING.md §0](TESTING.md#0-test-suites-10-12-and-20), "2.0 additions"), accepted on
+  2026-10-14 as
   [D57](ARCHITECTURE.md#18-decision-log). The look (O4) costs every row 2 px of height
   and moves titles one marker width to the right, whether or not anything is marked
   (accepted by the user, 2026-10-14).
@@ -318,7 +321,15 @@ implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57).
 
 ### 2.0-PLAN-02 — Edit study blocks: estimate and plan totals
 
-* **Status:** proposed.
+* **Status:** implemented on `feature/2.0-PLAN-02-task-estimates`, awaiting review and
+  integration into `dev/2.0` (estimate editor, the estimate in every task list, a project's
+  dates and totals; tests in [TESTING.md §0](TESTING.md#0-test-suites-10-12-and-20), "2.0
+  additions"). The user's decisions during the task: an "Estimate" check box and minutes
+  field (0–9,999, step 5) beside "Length", unchecked meaning no estimate; the estimate in
+  all four lists; totals over a project's top-level tasks, Done counted, Cancelled not; the
+  project's dates shown, not edited; the day lines scroll after about five lines with the
+  Total line always shown, and while they scroll they are a Tab stop, marked by one
+  stylesheet rule scoped to that area.
 * **Goal:** a plan's blocks can be edited completely after saving. The `estimate` field
   exists in the model and the database but has no editor.
 * **Scope:** an "Estimate (minutes)" field in the task editor; the estimate shown in task

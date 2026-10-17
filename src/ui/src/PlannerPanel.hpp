@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <optional>
+#include <vector>
 
 class QCheckBox;
 class QComboBox;
@@ -96,7 +97,8 @@ private:
     void loadEditor();
     void updateEnabled();
 
-    /// Fills `tree` with task rows; returns the item of each task by id text.
+    /// Fills `tree` with task rows; returns the item of each task by id text. The task's
+    /// estimate, if any, follows `detail` in the second column.
     QTreeWidgetItem* addTaskItem(QTreeWidget* tree, QTreeWidgetItem* parent,
                                  const study::Task& task, const QString& detail);
     void onItemChanged(QTreeWidgetItem* item, int column);
@@ -120,6 +122,9 @@ private:
     void setScopeProjectDone(bool done);
     [[nodiscard]] study::CalendarDate today() const;
     [[nodiscard]] QString dueText(const study::Task& task) const;
+    /// The project's start and due dates and its estimates (project scope only).
+    void showProjectSummary(const study::Project& project,
+                            const std::vector<const study::Task*>& counted);
 
     ShellDialogs* dialogs_;
     application::Planner* planner_ = nullptr;
@@ -150,6 +155,10 @@ private:
     QToolButton* scopeNew_ = nullptr;
     QToolButton* scopeMore_ = nullptr;
     QLabel* progress_ = nullptr;
+    QLabel* projectDates_ = nullptr;
+    QScrollArea* projectDaysArea_ = nullptr; ///< the day lines, capped at a few lines
+    QLabel* projectDays_ = nullptr;
+    QLabel* projectTotals_ = nullptr; ///< the total, always shown
     QTreeWidget* tasks_ = nullptr;
     QLineEdit* taskAdd_ = nullptr;
     // Week
@@ -173,6 +182,8 @@ private:
     QCheckBox* scheduled_ = nullptr;
     QDateTimeEdit* blockStart_ = nullptr;
     QSpinBox* blockMinutes_ = nullptr;
+    QCheckBox* hasEstimate_ = nullptr;
+    QSpinBox* estimate_ = nullptr;
     QComboBox* course_ = nullptr;
     QComboBox* project_ = nullptr;
     QLineEdit* tags_ = nullptr;

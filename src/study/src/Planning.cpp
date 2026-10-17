@@ -1,6 +1,7 @@
 #include <studyapp/study/Planning.hpp>
 
 #include <algorithm>
+#include <map>
 #include <tuple>
 
 namespace studyapp::study {
@@ -229,6 +230,30 @@ Progress progressOf(std::span<const Task* const> tasks) noexcept {
         }
     }
     return progress;
+}
+
+EstimateTotals estimateTotals(std::span<const Task* const> tasks) {
+    const auto add = [](EstimateSum& sum, const Task& task) {
+        if (task.estimate) {
+            sum.minutes += *task.estimate;
+        } else {
+            ++sum.withoutEstimate;
+        }
+    };
+    EstimateTotals totals;
+    std::map<CalendarDate, EstimateSum> byDay;
+    for (const Task* task : tasks) {
+        if (task->status == TaskStatus::Cancelled) {
+            continue;
+        }
+        add(task->dueDate ? byDay[*task->dueDate] : totals.noDueDate, *task);
+        add(totals.total, *task);
+    }
+    totals.days.reserve(byDay.size());
+    for (const auto& [date, sum] : byDay) {
+        totals.days.push_back(DayEstimate{.date = date, .sum = sum});
+    }
+    return totals;
 }
 
 } // namespace studyapp::study

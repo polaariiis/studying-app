@@ -77,6 +77,17 @@ QString clockText(minutes time) {
         .arg(count % 60, 2, 10, QLatin1Char('0'));
 }
 
+/// A length of time for the narrow lists: "45 min", "1 h 30 min", "2 h".
+QString durationText(minutes length) {
+    const auto hours = length.count() / 60;
+    const auto rest = length.count() % 60;
+    if (hours == 0) {
+        return PlannerPanel::tr("%1 min").arg(rest);
+    }
+    return rest == 0 ? PlannerPanel::tr("%1 h").arg(hours)
+                     : PlannerPanel::tr("%1 h %2 min").arg(hours).arg(rest);
+}
+
 /// Whether a patch changes what the planner shows: study records or pages (titles, tags).
 bool concernsPlanner(const document::Patch& patch) {
     return std::any_of(patch.changes().begin(), patch.changes().end(), [](const auto& change) {
@@ -155,6 +166,7 @@ void PlannerPanel::applyAccessibleNames() {
         {"plannerBacklinks", tr("Tasks linked to this page")},
         {"plannerPageAdd", tr("New task for this page")},
         {"plannerEditorArea", tr("Task details")},
+        {"plannerProjectDaysArea", tr("Estimates by due date")},
         {"plannerTaskTitle", tr("Task title")},
         {"plannerTaskPriority", tr("Priority")},
         {"plannerTaskHasDue", tr("Has a due date")},
@@ -163,6 +175,8 @@ void PlannerPanel::applyAccessibleNames() {
         {"plannerTaskDueTime", tr("Due time")},
         {"plannerTaskScheduled", tr("Scheduled")},
         {"plannerTaskBlockStart", tr("Scheduled start")},
+        {"plannerTaskHasEstimate", tr("Has an estimate")},
+        {"plannerTaskEstimate", tr("Estimated minutes")},
         {"plannerTaskLinks", tr("Linked pages")},
         {"plannerTaskNotes", tr("Notes")},
     };
@@ -234,6 +248,30 @@ void PlannerPanel::buildLayout() {
     scopeMore_->setMenu(moreMenu);
     progress_ = new QLabel(list);
     progress_->setObjectName(QStringLiteral("plannerProgress"));
+    // Project scope only: shown, not edited.
+    projectDates_ = new QLabel(list);
+    projectDates_->setObjectName(QStringLiteral("plannerProjectDates"));
+    // The day lines scroll after a few lines (a project may have many due dates); the total
+    // stays below them. A tab stop only while it scrolls (showProjectSummary); the stylesheet
+    // marks its focus.
+    projectDaysArea_ = new QScrollArea(list);
+    projectDaysArea_->setObjectName(QStringLiteral("plannerProjectDaysArea"));
+    projectDaysArea_->setFrameShape(QFrame::NoFrame);
+    projectDaysArea_->setFocusPolicy(Qt::NoFocus);
+    projectDaysArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    projectDaysArea_->setWidgetResizable(true);
+    projectDays_ = new QLabel(projectDaysArea_);
+    projectDays_->setObjectName(QStringLiteral("plannerProjectDays"));
+    projectDays_->setContentsMargins(10, 0, 8, 0);
+    projectDays_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    projectDaysArea_->setWidget(projectDays_);
+    projectTotals_ = new QLabel(list);
+    projectTotals_->setObjectName(QStringLiteral("plannerProjectTotals"));
+    const QString counting =
+        tr("Estimates of the project's tasks by due date. Subtasks and cancelled tasks are not "
+           "counted; a task with only a scheduled time counts under No date.");
+    projectDays_->setToolTip(counting);
+    projectTotals_->setToolTip(counting);
     tasks_ = makeTaskTree(list, QStringLiteral("plannerTasks"));
     taskAdd_ = makeQuickAdd(list, QStringLiteral("plannerTaskAdd"), tr("Add a task…"));
     auto* scopeRow = new QHBoxLayout;
@@ -246,8 +284,16 @@ void PlannerPanel::buildLayout() {
     listLayout->setContentsMargins(0, 0, 0, 0);
     listLayout->setSpacing(2);
     listLayout->addLayout(scopeRow);
-    progress_->setContentsMargins(10, 0, 8, 0);
-    listLayout->addWidget(progress_);
+    for (QLabel* label : {progress_, projectDates_}) {
+        label->setContentsMargins(10, 0, 8, 0);
+        listLayout->addWidget(label);
+    }
+    listLayout->addWidget(projectDaysArea_);
+    projectTotals_->setContentsMargins(10, 0, 8, 0);
+    listLayout->addWidget(projectTotals_);
+    projectDates_->hide();
+    projectDaysArea_->hide();
+    projectTotals_->hide();
     listLayout->addWidget(tasks_, 1);
     listLayout->addWidget(taskAdd_);
     views_->addWidget(list);
@@ -382,6 +428,14 @@ void PlannerPanel::buildEditor() {
     blockMinutes_->setRange(5, 24 * 60);
     blockMinutes_->setSingleStep(15);
     blockMinutes_->setSuffix(tr(" min"));
+    // The time the task needs, which is not the length of its time block.
+    hasEstimate_ = new QCheckBox(editor_);
+    hasEstimate_->setObjectName(QStringLiteral("plannerTaskHasEstimate"));
+    estimate_ = new QSpinBox(editor_);
+    estimate_->setObjectName(QStringLiteral("plannerTaskEstimate"));
+    estimate_->setRange(0, 9999);
+    estimate_->setSingleStep(5);
+    estimate_->setSuffix(tr(" min"));
     course_ = new QComboBox(editor_);
     course_->setObjectName(QStringLiteral("plannerTaskCourse"));
     project_ = new QComboBox(editor_);
@@ -417,7 +471,8 @@ void PlannerPanel::buildEditor() {
         row->addWidget(field, 1);
         return row;
     };
-    for (QWidget* field : std::initializer_list<QWidget*>{dueDate_, dueTime_, blockStart_}) {
+    for (QWidget* field :
+         std::initializer_list<QWidget*>{dueDate_, dueTime_, blockStart_, estimate_}) {
         field->setMinimumWidth(0);
         field->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     }
@@ -438,6 +493,7 @@ void PlannerPanel::buildEditor() {
     form->addRow(tr("Time"), checkedRow(hasDueTime_, dueTime_));
     form->addRow(tr("Scheduled"), checkedRow(scheduled_, blockStart_));
     form->addRow(tr("Length"), blockMinutes_);
+    form->addRow(tr("Estimate"), checkedRow(hasEstimate_, estimate_));
     form->addRow(tr("Course"), course_);
     form->addRow(tr("Project"), project_);
     form->addRow(tr("Tags"), tags_);
@@ -533,6 +589,28 @@ void PlannerPanel::buildEditor() {
         if (scheduled_->isChecked()) {
             saveBlock();
         }
+    });
+    // Unchecked is no estimate, which is not 0 minutes.
+    const auto saveEstimate = [this] {
+        editSelected([&](study::Task& t) {
+            t.estimate = hasEstimate_->isChecked() ? std::optional(minutes{estimate_->value()})
+                                                   : std::nullopt;
+        });
+    };
+    connect(hasEstimate_, &QCheckBox::clicked, this, saveEstimate);
+    connect(estimate_, &QSpinBox::editingFinished, this, [this, saveEstimate] {
+        const study::Task* task = selected();
+        if (task == nullptr || !hasEstimate_->isChecked()) {
+            return;
+        }
+        // Also emitted when the field is left unchanged: a stored estimate above the field's
+        // maximum is shown as the maximum and must not be replaced by it.
+        if (task->estimate &&
+            std::clamp(task->estimate->count(), minutes::rep{estimate_->minimum()},
+                       minutes::rep{estimate_->maximum()}) == estimate_->value()) {
+            return;
+        }
+        saveEstimate();
     });
     connect(course_, &QComboBox::activated, this, [this] {
         const auto course = idFrom<core::CourseId>(course_->currentData().toString());
@@ -791,7 +869,13 @@ QTreeWidgetItem* PlannerPanel::addTaskItem(QTreeWidget* tree, QTreeWidgetItem* p
                                            const study::Task& task, const QString& detail) {
     auto* item = parent != nullptr ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
     item->setText(0, toQString(task.title));
-    item->setText(1, detail);
+    // The estimate after the list's own detail, so that a task reads the same in every list.
+    if (task.estimate) {
+        const QString estimate = durationText(*task.estimate);
+        item->setText(1, detail.isEmpty() ? estimate : detail + QStringLiteral(" · ") + estimate);
+    } else {
+        item->setText(1, detail);
+    }
     item->setData(0, kIdRole, idText(task.id));
     item->setToolTip(0, toQString(task.title));
     Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
@@ -884,6 +968,7 @@ void PlannerPanel::refreshTasks() {
     const int scroll = tasks_->verticalScrollBar()->value();
     tasks_->clear();
     progress_->clear();
+    bool summary = false;
     if (planner_ != nullptr) {
         const auto course = scopeCourse();
         const auto project = scopeProject();
@@ -907,10 +992,84 @@ void PlannerPanel::refreshTasks() {
                                     ? tr(" · project done")
                                     : QString()));
         }
+        if (project) {
+            showProjectSummary(*planner_->workspace().findProject(*project), counted);
+            summary = true;
+        }
+    }
+    if (!summary) {
+        // Not hidden and shown again on every refresh: that would take the focus away.
+        projectDates_->hide();
+        projectDaysArea_->hide();
+        projectTotals_->hide();
     }
     restoreSelection(tasks_);
     tasks_->verticalScrollBar()->setValue(scroll);
     updating_ = false;
+}
+
+void PlannerPanel::showProjectSummary(const study::Project& project,
+                                      const std::vector<const study::Task*>& counted) {
+    const QLocale locale;
+    const auto date = [&](study::CalendarDate day, const QString& format) {
+        return locale.toString(toQDate(day), format);
+    };
+    const QString full = QStringLiteral("d MMM yyyy");
+    if (project.start && project.due) {
+        projectDates_->setText(date(*project.start, full) + QStringLiteral(" – ") +
+                               date(*project.due, full));
+    } else if (project.start) {
+        projectDates_->setText(tr("From %1").arg(date(*project.start, full)));
+    } else if (project.due) {
+        projectDates_->setText(tr("Until %1").arg(date(*project.due, full)));
+    } else {
+        projectDates_->setText(tr("No dates"));
+    }
+
+    // One line per due date, then the tasks without one; the total below them.
+    const study::EstimateTotals totals = study::estimateTotals(counted);
+    const auto sumText = [](const study::EstimateSum& sum) {
+        QString text = durationText(sum.minutes);
+        if (sum.withoutEstimate > 0) {
+            text += QLatin1Char(' ') +
+                    tr("(%n without estimate)", nullptr, static_cast<int>(sum.withoutEstimate));
+        }
+        return text;
+    };
+    QStringList lines;
+    for (const study::DayEstimate& day : totals.days) {
+        lines << date(day.date, QStringLiteral("ddd d MMM")) + QStringLiteral(" · ") +
+                     sumText(day.sum);
+    }
+    // Whenever a counted task has no due date: the sum alone cannot tell (an estimate of
+    // 0 minutes adds nothing).
+    if (std::any_of(counted.begin(), counted.end(), [](const study::Task* task) {
+            return task->status != study::TaskStatus::Cancelled && !task->dueDate;
+        })) {
+        lines << tr("No date") + QStringLiteral(" · ") + sumText(totals.noDueDate);
+    }
+    projectDays_->setText(lines.join(QLatin1Char('\n')));
+    projectTotals_->setText(tr("Total") + QStringLiteral(" · ") + sumText(totals.total));
+    // As tall as its lines, up to five of them; wide enough for them, as a label would be.
+    // Plus the frame: the stylesheet's border that marks the focus.
+    const QSize content = projectDays_->sizeHint();
+    const int cap = 5 * projectDays_->fontMetrics().lineSpacing() +
+                    projectDays_->contentsMargins().top() +
+                    projectDays_->contentsMargins().bottom();
+    const bool scrolls = content.height() > cap;
+    const int frame = 2 * projectDaysArea_->frameWidth();
+    projectDaysArea_->setFixedHeight(std::min(content.height(), cap) + frame);
+    projectDaysArea_->setMinimumWidth(
+        content.width() + frame +
+        (scrolls ? projectDaysArea_->verticalScrollBar()->sizeHint().width() : 0));
+    // A tab stop (arrow and page keys scroll it) only while there is something to scroll to.
+    projectDaysArea_->setFocusPolicy(scrolls ? Qt::StrongFocus : Qt::NoFocus);
+    if (!scrolls && projectDaysArea_->hasFocus()) {
+        tasks_->setFocus(Qt::OtherFocusReason);
+    }
+    projectDates_->show();
+    projectDaysArea_->setVisible(!lines.isEmpty()); // hidden, Qt moves its focus on
+    projectTotals_->show();
 }
 
 void PlannerPanel::refreshWeek() {
@@ -1044,6 +1203,9 @@ void PlannerPanel::loadEditor() {
     }
     blockStart_->setEnabled(task->scheduled.has_value());
     blockMinutes_->setEnabled(task->scheduled.has_value());
+    hasEstimate_->setChecked(task->estimate.has_value());
+    estimate_->setValue(static_cast<int>(task->estimate.value_or(minutes{60}).count()));
+    estimate_->setEnabled(task->estimate.has_value());
     course_->clear();
     course_->addItem(tr("No course"), QString());
     for (const core::CourseId id : ws.courses()) {
