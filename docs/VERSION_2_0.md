@@ -2,8 +2,8 @@
 
 > Status: **plan; the M1 decisions (P1–P4, P8, O4) were approved in principle on
 > 2026-10-14; 2.0-PLAN-01 is implemented, was accepted on 2026-10-14 (D57) and is merged
-> into `dev/2.0`; 2.0-PLAN-02 is implemented on `feature/2.0-PLAN-02-task-estimates` and
-> awaits review and integration; nothing else in it is implemented.**
+> into `dev/2.0`; 2.0-PLAN-02 is implemented and merged into `dev/2.0`; nothing else in it
+> is implemented.**
 > This is the canonical planning reference for StudyBoard 2.0. It consolidates and
 > replaces the two working drafts "StudyBoard 2.0 — AI-Assisted Study Plans" (v1.1,
 > 2026-10-12) and "StudyBoard — AI study plans (plan)" (§2.1). The short roadmap with
@@ -259,7 +259,7 @@ Every task below carries a status line: **implemented** (with evidence), **inves
 (open technical questions before the task document), **proposed** (ready for a task
 document once approved), **blocked** (needs a decision, named). Today two tasks are
 implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57) and merged into `dev/2.0`; and
-2.0-PLAN-02, on its feature branch, awaiting review and integration.
+2.0-PLAN-02, merged into `dev/2.0`.
 
 ## 5. Milestone M1 — study plans without AI
 
@@ -321,8 +321,8 @@ implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57) and merged into `dev/2.0`
 
 ### 2.0-PLAN-02 — Edit study blocks: estimate and plan totals
 
-* **Status:** implemented on `feature/2.0-PLAN-02-task-estimates`, awaiting review and
-  integration into `dev/2.0` (estimate editor, the estimate in every task list, a project's
+* **Status:** implemented on `feature/2.0-PLAN-02-task-estimates` and merged into `dev/2.0`
+  as `0a34bb6` (estimate editor, the estimate in every task list, a project's
   dates and totals; tests in [TESTING.md §0](TESTING.md#0-test-suites-10-12-and-20), "2.0
   additions"). The user's decisions during the task: an "Estimate" check box and minutes
   field (0–9,999, step 5) beside "Length", unchecked meaning no estimate; the estimate in
