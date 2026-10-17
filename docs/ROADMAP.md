@@ -672,8 +672,8 @@ Tasks before 1.2-CMD-01 are recorded in their documents and merge commits (1.2-C
 
 2.0 work is in progress: 2.0-PLAN-01 is implemented, was accepted on 2026-10-14 (D57) and
 is merged into `dev/2.0` (`9f3e2a1`). 2.0-PLAN-02 (task estimates, project dates and totals)
-is implemented on `feature/2.0-PLAN-02-task-estimates` and awaits review and integration into
-`dev/2.0`. No other 2.0 feature is implemented. The heading keeps its name so that existing
+is implemented and merged into `dev/2.0` (`0a34bb6`). No other 2.0 feature is implemented.
+The heading keeps its name so that existing
 links to it stay valid.
 `dev/2.0`, the next development line, was
 created at the tip of `dev/1.2` (branch model: [RELEASE.md](RELEASE.md#branches-and-tags));
@@ -688,7 +688,7 @@ decisions needed from the user (O1–O10; O4 decided). Task IDs are `2.0-<AREA>-
 
 | Milestone | Tasks | Priority | Depends on | Status |
 |---|---|---|---|---|
-| M1 — Study plans without AI | 2.0-PLAN-01 highlight a task's pages in the tree · 2.0-PLAN-02 edit estimates and plan totals · 2.0-PLAN-03 make a plan from chosen sections (one undoable edit) | First | — (PLAN-03 after PLAN-02) | Approved in principle; 2.0-PLAN-01 accepted (D57) and merged into `dev/2.0` (`9f3e2a1`); 2.0-PLAN-02 implemented on `feature/2.0-PLAN-02-task-estimates`, awaiting review and integration; PLAN-03 not started |
+| M1 — Study plans without AI | 2.0-PLAN-01 highlight a task's pages in the tree · 2.0-PLAN-02 edit estimates and plan totals · 2.0-PLAN-03 make a plan from chosen sections (one undoable edit) | First | — (PLAN-03 after PLAN-02) | Approved in principle; 2.0-PLAN-01 accepted (D57) and merged into `dev/2.0` (`9f3e2a1`); 2.0-PLAN-02 implemented and merged into `dev/2.0` (`0a34bb6`); PLAN-03 not started |
 | M2 — AI foundation (development builds, `STUDYAPP_ENABLE_AI` off by default) | 2.0-AI-01 provider port and fake provider · 2.0-AI-02 network adapter, settings, key | Second | P5–P7 | Proposed |
 | M3 — AI study plans | 2.0-AI-03 the AI proposes the plan M1 previews and saves | Third | M1, M2 | Proposed |
 | M4 — Later study tools | 2.0-AI-04 revise a plan · 2.0-AI-05 summarize/explain · 2.0-RES-01 find real resources · 2.0-AI-06 relevance notes | Later | M2/M3; O7, O8 | Proposed |
