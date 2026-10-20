@@ -12,6 +12,7 @@ studyapp_add_module(application
         include/studyapp/application/WorkspaceLock.hpp
         include/studyapp/application/WorkspaceSession.hpp
         include/studyapp/application/StartPage.hpp
+        include/studyapp/application/StudyPlan.hpp
         include/studyapp/application/WorkspaceStructure.hpp
         src/BatchExport.cpp
         src/CommandConsole.cpp
@@ -21,6 +22,7 @@ studyapp_add_module(application
         src/Planner.cpp
         src/Search.cpp
         src/StartPage.cpp
+        src/StudyPlan.cpp
         src/WorkspaceSession.cpp
         src/WorkspaceStructure.cpp
     PUBLIC_DEPS
