@@ -1,15 +1,19 @@
-// 2.0-PLAN-03 M1: a study plan from a chosen scope, without AI (docs/VERSION_2_0.md §5,
+// 2.0-PLAN-03: a study plan from a chosen scope, without AI (docs/VERSION_2_0.md §5,
 // §7.5). draftByTreeOrder against an in-memory workspace: the scope in tree order, the
 // minutes per page, whole and split sections, unused time, the 12-blocks-a-day limit,
 // overflow after the last day, the 100-block limit; every page of the scope is in exactly
 // one block, in tree order. validatePlanDraft: each rule with a passing and a failing case.
+// PlanPreview: the overflow summary and resolutions, block edits, "Excluded pages", and
+// the review against a workspace that changes after the build (rules 4, 6, 7).
 
 #include <studyapp/application/StudyPlan.hpp>
 
+#include <studyapp/testing/ResultMacros.hpp>
 #include <studyapp/testing/TestWorkspace.hpp>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <string>
@@ -648,6 +652,495 @@ TEST_F(StudyPlanValidationTest, ADayOverItsMinutesIsAWarning) {
     EXPECT_EQ(checked.warnings[0].day, 1);
     EXPECT_TRUE(checked.canSave());
     EXPECT_EQ(checked.draft.blocks[0].minutes, minutes{65}); // kept as entered
+}
+
+// ---------------------------------------------------------------------- PlanPreview
+
+/// The error code of a refused edit; Internal if it was not refused.
+core::ErrorCode refused(const core::Result<void>& result) {
+    return result ? core::ErrorCode::Internal : result.error().code;
+}
+
+struct StudyPlanPreviewTest : StudyPlanTest {
+    PlanPreview preview(const PlanRequest& planRequest) const {
+        return {planRequest, draft(planRequest)};
+    }
+
+    /// Acceptance 5 while the workspace is unchanged: every page of the scope is in exactly
+    /// one block or under "Excluded pages".
+    void expectEveryPageOnce(const PlanPreview& plan) const {
+        std::vector<core::PageId> pages = plan.excludedPages();
+        for (const auto* blocks : {&plan.draft().blocks, &plan.removedBlocks()}) {
+            for (const PlanBlock& block : *blocks) {
+                pages.insert(pages.end(), block.pages.begin(), block.pages.end());
+            }
+        }
+        std::vector<core::PageId> scope = pagesInScope(t.workspace, plan.request().scope);
+        std::ranges::sort(pages);
+        std::ranges::sort(scope);
+        EXPECT_EQ(pages, scope);
+    }
+
+    std::vector<PlanHold> holds(const PlanPreview& plan) const {
+        return plan.review(t.workspace).holds;
+    }
+
+    core::PageId page(core::SectionId section, std::size_t index) const {
+        return t.workspace.pagesOf(section)[index];
+    }
+};
+
+using Holds = std::vector<PlanHold>;
+using References = std::vector<PlanReference>;
+using Pages = std::vector<core::PageId>;
+
+TEST_F(StudyPlanPreviewTest, OverflowIsSummarised) {
+    addSection("A", 4);
+    // One 5-minute page a day on days 1 … 4 of a 1-day plan (OverflowBySeveralDays).
+    PlanPreview plan = preview(request(1, 5));
+    EXPECT_EQ(
+        plan.overflow(),
+        (PlanOverflow{
+            .blocks = {1, 2, 3}, .daysNeeded = 4, .minutesOver = minutes{15}, .canExtend = true}));
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(review.holds, Holds{PlanHold::Overflow});
+    EXPECT_FALSE(review.canAccept());
+    // The overflow blocks keep the days they need; nothing is moved onto day 1.
+    EXPECT_EQ(layout(plan.draft()), layout(draft(request(1, 5))));
+
+    PlanPreview fits = preview(request(4, 5));
+    EXPECT_FALSE(fits.overflow().has_value());
+    EXPECT_TRUE(fits.review(t.workspace).canAccept());
+}
+
+TEST_F(StudyPlanPreviewTest, ExtendToNeededDays) {
+    addSection("A", 2);
+    addSection("B", 2);
+    addSection("C", 2);
+    // C needs day 3 of a 2-day plan (OverflowByOneBlock). (a) keeps the placement.
+    PlanPreview plan = preview(request(2, 60));
+    const std::vector<Placed> placed = layout(plan.draft());
+    ASSERT_OK(plan.extendToNeededDays());
+    EXPECT_EQ(plan.draft().days, 3);
+    EXPECT_EQ(plan.request().days, 3);
+    EXPECT_EQ(planDate(plan.draft().start, plan.draft().days), date(2026, 10, 21));
+    EXPECT_EQ(layout(plan.draft()), placed);
+    EXPECT_FALSE(plan.overflow().has_value());
+    EXPECT_EQ(holds(plan), Holds{});
+    expectEveryPageOnce(plan);
+
+    const auto again = plan.extendToNeededDays();
+    ASSERT_FALSE(again.has_value());
+    EXPECT_EQ(again.error().code, core::ErrorCode::Conflict);
+    EXPECT_EQ(plan.draft().days, 3);
+}
+
+TEST_F(StudyPlanPreviewTest, ExtendNotOfferedBeyond60) {
+    for (int i = 1; i <= 61; ++i) {
+        addSection("S" + std::to_string(i), 1);
+    }
+    // e = 5: one section a day. 60 days requested, 61 needed: (a) is not offered.
+    PlanPreview plan = preview(request(60, 5));
+    ASSERT_TRUE(plan.overflow().has_value());
+    EXPECT_EQ(plan.overflow()->daysNeeded, 61);
+    EXPECT_FALSE(plan.overflow()->canExtend);
+    const PlanDraft before = plan.draft();
+    const auto outcome = plan.extendToNeededDays();
+    ASSERT_FALSE(outcome.has_value());
+    EXPECT_EQ(outcome.error().code, core::ErrorCode::Conflict);
+    EXPECT_EQ(plan.draft(), before);
+    EXPECT_EQ(plan.request().days, 60);
+
+    // 59 days requested, 60 needed: offered.
+    PlanScope first60;
+    for (std::size_t i = 0; i < 60; ++i) {
+        first60.sections.push_back(t.workspace.sectionsOf(biology)[i]);
+    }
+    PlanPreview sixty = preview(request(59, 5, first60));
+    ASSERT_TRUE(sixty.overflow().has_value());
+    EXPECT_TRUE(sixty.overflow()->canExtend);
+    ASSERT_OK(sixty.extendToNeededDays());
+    EXPECT_EQ(sixty.draft().days, 60);
+}
+
+TEST_F(StudyPlanPreviewTest, ExtendNotOfferedPastTheLastStorableDate) {
+    addSection("A", 2);
+    addSection("B", 2);
+    addSection("C", 2);
+    PlanRequest planRequest = request(2, 60);
+    planRequest.start = date(9999, 12, 30);
+    // Day 3 would be 10000-01-01.
+    PlanPreview plan = preview(planRequest);
+    ASSERT_TRUE(plan.overflow().has_value());
+    EXPECT_EQ(plan.overflow()->daysNeeded, 3);
+    EXPECT_FALSE(plan.overflow()->canExtend);
+    EXPECT_FALSE(plan.extendToNeededDays().has_value());
+    EXPECT_EQ(plan.draft().days, 2);
+}
+
+TEST_F(StudyPlanPreviewTest, KeepOverflowUnscheduled) {
+    addSection("A", 2);
+    addSection("B", 2);
+    addSection("C", 2);
+    PlanPreview plan = preview(request(2, 60));
+    ASSERT_OK(plan.keepOverflowUnscheduled());
+    // (c): C has no day; A and B keep theirs, and the plan keeps its 2 days.
+    EXPECT_EQ(layout(plan.draft()),
+              (std::vector<Placed>{{1, 40, 2, "A"}, {2, 40, 2, "B"}, {0, 40, 2, "C"}}));
+    EXPECT_EQ(plan.draft().days, 2);
+    EXPECT_FALSE(plan.overflow().has_value());
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_TRUE(review.canAccept());
+    EXPECT_TRUE(review.validation.errors.empty());
+    expectEveryPageOnce(plan);
+    EXPECT_FALSE(plan.keepOverflowUnscheduled().has_value());
+
+    // Undone by giving the block a day: an ordinary block, here over day 1's minutes.
+    ASSERT_OK(plan.moveBlock(2, 1));
+    EXPECT_EQ(layout(plan.draft()),
+              (std::vector<Placed>{{1, 40, 2, "A"}, {1, 40, 2, "C"}, {2, 40, 2, "B"}}));
+    EXPECT_EQ(kinds(plan.review(t.workspace).validation.warnings),
+              std::vector{PlanIssueKind::DayOverMinutes});
+    EXPECT_EQ(holds(plan), Holds{});
+}
+
+TEST_F(StudyPlanPreviewTest, RemoveOverflowToExcluded) {
+    const core::SectionId a = addSection("A", 4);
+    PlanPreview plan = preview(request(1, 5));
+    ASSERT_OK(plan.removeOverflow());
+    // (d): the overflow blocks are removed, in placement order; their pages are excluded.
+    EXPECT_EQ(layout(plan.draft()), (std::vector<Placed>{{1, 5, 1, "A (part 1 of 4)"}}));
+    ASSERT_EQ(plan.removedBlocks().size(), 3U);
+    EXPECT_EQ(plan.removedBlocks()[0].title, "A (part 2 of 4)");
+    EXPECT_EQ(plan.removedBlocks()[2].title, "A (part 4 of 4)");
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(review.excluded, (Pages{page(a, 1), page(a, 2), page(a, 3)}));
+    EXPECT_TRUE(review.notInPlan.empty());
+    EXPECT_TRUE(review.canAccept());
+    expectEveryPageOnce(plan);
+    EXPECT_FALSE(plan.removeOverflow().has_value());
+
+    // Restoring one brings the overflow back.
+    ASSERT_OK(plan.restoreBlock(0));
+    EXPECT_EQ(layout(plan.draft())[1], (Placed{2, 5, 1, "A (part 2 of 4)"}));
+    EXPECT_EQ(holds(plan), Holds{PlanHold::Overflow});
+}
+
+TEST_F(StudyPlanPreviewTest, RemoveAndRestoreBlock) {
+    const core::SectionId a = addSection("A", 1);
+    const core::SectionId b = addSection("B", 2);
+    addSection("C", 3);
+    // {1, 20, A}, {1, 40, B}, {2, 60, C} (SectionExactlyFillsTheRest).
+    PlanPreview plan = preview(request(2, 60));
+    const PlanDraft built = plan.draft();
+
+    ASSERT_OK(plan.removeBlock(1));
+    EXPECT_EQ(layout(plan.draft()), (std::vector<Placed>{{1, 20, 1, "A"}, {2, 60, 3, "C"}}));
+    ASSERT_EQ(plan.removedBlocks().size(), 1U);
+    EXPECT_EQ(plan.review(t.workspace).excluded, (Pages{page(b, 0), page(b, 1)}));
+    EXPECT_EQ(holds(plan), Holds{});
+    expectEveryPageOnce(plan);
+
+    // Restored in its old place, also when removed blocks come back in another order.
+    ASSERT_OK(plan.restoreBlock(0));
+    EXPECT_EQ(plan.draft(), built);
+    ASSERT_OK(plan.removeBlock(0));
+    ASSERT_OK(plan.removeBlock(0));
+    EXPECT_EQ(plan.review(t.workspace).excluded, (Pages{page(a, 0), page(b, 0), page(b, 1)}));
+    ASSERT_OK(plan.restoreBlock(1));
+    ASSERT_OK(plan.restoreBlock(0));
+    EXPECT_EQ(plan.draft(), built);
+    EXPECT_TRUE(plan.removedBlocks().empty());
+    EXPECT_TRUE(plan.review(t.workspace).excluded.empty());
+
+    EXPECT_EQ(refused(plan.removeBlock(3)), core::ErrorCode::NotFound);
+    EXPECT_EQ(refused(plan.restoreBlock(0)), core::ErrorCode::NotFound);
+    EXPECT_EQ(plan.draft(), built);
+}
+
+TEST_F(StudyPlanPreviewTest, DayOverMinutesIsAWarning) {
+    addSection("A", 1);
+    addSection("B", 2);
+    addSection("C", 3);
+    PlanPreview plan = preview(request(2, 60));
+    ASSERT_OK(plan.moveBlock(2, 1));
+    // Day 1: 20 + 40 + 60 minutes of 60. A warning; Accept may save it as entered.
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(kinds(review.validation.warnings), std::vector{PlanIssueKind::DayOverMinutes});
+    EXPECT_EQ(review.validation.warnings.front().day, 1);
+    EXPECT_TRUE(review.canAccept());
+    EXPECT_EQ(review.validation.draft.blocks[2].minutes, minutes{60});
+}
+
+TEST_F(StudyPlanPreviewTest, MoveOntoAFullDayIsRefused) {
+    for (int i = 1; i <= 13; ++i) {
+        addSection("S" + std::to_string(i), 1);
+    }
+    addSection("Z", 12);
+    // Day 1 holds S1 … S12; S13 and Z are on day 2 (ThirteenthWholeBlockGoesToTheNextDay).
+    PlanPreview plan = preview(request(2, 480));
+    const PlanDraft built = plan.draft();
+    const auto outcome = plan.moveBlock(12, 1);
+    ASSERT_FALSE(outcome.has_value());
+    EXPECT_EQ(outcome.error().code, core::ErrorCode::Conflict);
+    EXPECT_EQ(outcome.error().message, "Day 1 already has 12 blocks.");
+    EXPECT_EQ(plan.draft(), built);
+    for (const int day : {0, 3}) {
+        EXPECT_EQ(refused(plan.moveBlock(12, day)), core::ErrorCode::InvalidArgument) << day;
+    }
+    EXPECT_EQ(refused(plan.moveBlock(14, 2)), core::ErrorCode::NotFound);
+    ASSERT_OK(plan.moveBlock(0, 1)); // its own day: nothing changes
+    EXPECT_EQ(plan.draft(), built);
+
+    // A block moved to a day goes after that day's blocks (Q15).
+    ASSERT_OK(plan.moveBlock(0, 2));
+    EXPECT_EQ(layout(plan.draft()).back(), (Placed{2, 35, 1, "S1"}));
+    // Restoring onto a full day is refused too.
+    ASSERT_OK(plan.removeBlock(0)); // S2, day 1: 10 blocks left there
+    ASSERT_OK(plan.moveBlock(plan.draft().blocks.size() - 1, 1));
+    ASSERT_OK(plan.moveBlock(plan.draft().blocks.size() - 2, 1)); // S13
+    EXPECT_EQ(refused(plan.restoreBlock(0)), core::ErrorCode::Conflict);
+    EXPECT_EQ(plan.removedBlocks().size(), 1U);
+    expectEveryPageOnce(plan);
+}
+
+TEST_F(StudyPlanPreviewTest, BlocksAreInSavingOrder) {
+    addSection("A", 4);
+    // Days 1 … 4 of 1; (c) keeps parts 2 … 4 unscheduled, after the scheduled blocks.
+    PlanPreview plan = preview(request(1, 5));
+    ASSERT_OK(plan.keepOverflowUnscheduled());
+    ASSERT_OK(plan.moveBlock(2, 1)); // part 3
+    EXPECT_EQ(layout(plan.draft()), (std::vector<Placed>{{1, 5, 1, "A (part 1 of 4)"},
+                                                         {1, 5, 1, "A (part 3 of 4)"},
+                                                         {0, 5, 1, "A (part 2 of 4)"},
+                                                         {0, 5, 1, "A (part 4 of 4)"}}));
+
+    // A draft given in any order is put in saving order.
+    PlanDraft unordered = plan.draft();
+    std::ranges::reverse(unordered.blocks);
+    EXPECT_EQ(layout(PlanPreview(plan.request(), unordered).draft()),
+              (std::vector<Placed>{{1, 5, 1, "A (part 3 of 4)"},
+                                   {1, 5, 1, "A (part 1 of 4)"},
+                                   {0, 5, 1, "A (part 4 of 4)"},
+                                   {0, 5, 1, "A (part 2 of 4)"}}));
+}
+
+TEST_F(StudyPlanPreviewTest, BlockMinutesAndTitles) {
+    addSection("A", 1);
+    addSection("B", 2);
+    addSection("C", 3);
+    PlanPreview plan = preview(request(2, 60));
+    for (const int value : {5, 480, 45}) {
+        ASSERT_OK(plan.setBlockMinutes(0, minutes{value}));
+        EXPECT_EQ(plan.draft().blocks[0].minutes, minutes{value});
+    }
+    for (const int value : {0, 4, 47, 485}) {
+        EXPECT_EQ(refused(plan.setBlockMinutes(0, minutes{value})),
+                  core::ErrorCode::InvalidArgument)
+            << value;
+    }
+    EXPECT_EQ(plan.draft().blocks[0].minutes, minutes{45});
+
+    ASSERT_OK(plan.setBlockTitle(1, " "));
+    const PlanReview blank = plan.review(t.workspace);
+    EXPECT_EQ(kinds(blank.validation.errors), std::vector{PlanIssueKind::BlankBlockTitle});
+    EXPECT_EQ(blank.holds, Holds{PlanHold::InvalidDraft});
+    ASSERT_OK(plan.setBlockTitle(1, "Genes"));
+    EXPECT_EQ(plan.draft().blocks[1].title, "Genes");
+    EXPECT_EQ(holds(plan), Holds{});
+
+    EXPECT_EQ(refused(plan.setBlockMinutes(3, minutes{30})), core::ErrorCode::NotFound);
+    EXPECT_EQ(refused(plan.setBlockTitle(3, "X")), core::ErrorCode::NotFound);
+}
+
+TEST_F(StudyPlanPreviewTest, PagesComeOnlyFromExcludedPages) {
+    const core::SectionId a = addSection("A", 1);
+    const core::SectionId b = addSection("B", 2);
+    const core::SectionId c = addSection("C", 3);
+    PlanPreview plan = preview(request(2, 60));
+
+    // Taken out of B, minutes unchanged; then added to C, at the end.
+    ASSERT_OK(plan.excludePage(t.workspace, page(b, 0)));
+    EXPECT_EQ(plan.draft().blocks[1].pages, Pages{page(b, 1)});
+    EXPECT_EQ(plan.draft().blocks[1].minutes, minutes{40});
+    EXPECT_EQ(plan.excludedPages(), Pages{page(b, 0)});
+    expectEveryPageOnce(plan);
+    EXPECT_EQ(refused(plan.excludePage(t.workspace, page(b, 0))), core::ErrorCode::Conflict);
+    ASSERT_OK(plan.addPage(2, page(b, 0)));
+    EXPECT_EQ(plan.draft().blocks[2].pages,
+              (Pages{page(c, 0), page(c, 1), page(c, 2), page(b, 0)}));
+    EXPECT_TRUE(plan.excludedPages().empty());
+    EXPECT_EQ(refused(plan.addPage(0, page(b, 0))), core::ErrorCode::NotFound);
+
+    // A page of a removed block can be added to another block.
+    ASSERT_OK(plan.removeBlock(0)); // A
+    ASSERT_OK(plan.addPage(0, page(a, 0)));
+    EXPECT_EQ(plan.draft().blocks[0].pages, (Pages{page(b, 1), page(a, 0)}));
+    EXPECT_TRUE(plan.removedBlocks()[0].pages.empty());
+    expectEveryPageOnce(plan);
+
+    // A block without pages is allowed.
+    ASSERT_OK(plan.excludePage(t.workspace, page(b, 1)));
+    ASSERT_OK(plan.excludePage(t.workspace, page(a, 0)));
+    EXPECT_TRUE(plan.draft().blocks[0].pages.empty());
+    EXPECT_EQ(holds(plan), Holds{});
+    expectEveryPageOnce(plan);
+
+    // Nothing from outside the scope.
+    const core::SectionId other = addPages(t, t.addNotebook("Chemistry"), "Atoms", 1);
+    EXPECT_EQ(refused(plan.excludePage(t.workspace, page(other, 0))), core::ErrorCode::NotFound);
+    EXPECT_EQ(refused(plan.addPage(0, page(other, 0))), core::ErrorCode::NotFound);
+    EXPECT_EQ(refused(plan.addPage(5, page(b, 1))), core::ErrorCode::NotFound);
+}
+
+TEST_F(StudyPlanPreviewTest, GoalAndStartChangeTitlesAndDates) {
+    addSection("A", 2);
+    PlanPreview plan = preview(request(2, 60));
+    const std::vector<Placed> placed = layout(plan.draft());
+    plan.setGoal(" Physics\t");
+    EXPECT_EQ(plan.draft().title, "Physics");
+    EXPECT_EQ(plan.request().goal, " Physics\t");
+    ASSERT_OK(plan.setStart(date(2026, 12, 31)));
+    EXPECT_EQ(plan.draft().start, date(2026, 12, 31));
+    EXPECT_EQ(plan.request().start, date(2026, 12, 31));
+    EXPECT_EQ(planDate(plan.draft().start, 2), date(2027, 1, 1));
+    // The last day, 10000-01-01, would not be storable.
+    EXPECT_EQ(refused(plan.setStart(date(9999, 12, 31))), core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(plan.draft().start, date(2026, 12, 31));
+    EXPECT_EQ(layout(plan.draft()), placed);
+
+    plan.setGoal("  ");
+    EXPECT_EQ(holds(plan), Holds{PlanHold::InvalidDraft});
+}
+
+// ---- the workspace changes after the build (rule 7)
+
+TEST_F(StudyPlanPreviewTest, DeletedPageIsInvalid) {
+    addSection("A", 1);
+    const core::SectionId b = addSection("B", 2);
+    addSection("C", 3);
+    PlanPreview plan = preview(request(2, 60));
+    const core::PageId deleted = page(b, 0);
+    t.run(commands::deletePage(t.workspace, deleted));
+
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(review.invalid, (References{{1, deleted}}));
+    EXPECT_EQ(review.holds, Holds{PlanHold::InvalidReferences});
+    EXPECT_EQ(kinds(review.validation.errors), std::vector{PlanIssueKind::MissingPage});
+
+    // Removing the reference drops the page: it no longer exists to be excluded.
+    ASSERT_OK(plan.excludePage(t.workspace, deleted));
+    EXPECT_EQ(plan.draft().blocks[1].pages, Pages{page(b, 0)});
+    EXPECT_TRUE(plan.excludedPages().empty());
+    EXPECT_EQ(holds(plan), Holds{});
+
+    // Undo brings the page back, in the scope but not in the plan (Q17).
+    ASSERT_OK(t.editor.undo());
+    const PlanReview back = plan.review(t.workspace);
+    EXPECT_EQ(back.notInPlan, Pages{deleted});
+    EXPECT_TRUE(back.canAccept());
+    ASSERT_OK(plan.excludePage(t.workspace, deleted));
+    EXPECT_EQ(plan.excludedPages(), Pages{deleted});
+    EXPECT_TRUE(plan.review(t.workspace).notInPlan.empty());
+    expectEveryPageOnce(plan);
+}
+
+TEST_F(StudyPlanPreviewTest, RestoredPageIsValidAgain) {
+    const core::SectionId a = addSection("A", 1);
+    PlanPreview plan = preview(request(2, 60));
+    const PlanDraft built = plan.draft();
+    t.run(commands::deletePage(t.workspace, page(a, 0)));
+    EXPECT_EQ(holds(plan), Holds{PlanHold::InvalidReferences});
+    ASSERT_OK(t.editor.undo());
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_TRUE(review.invalid.empty());
+    EXPECT_TRUE(review.notInPlan.empty());
+    EXPECT_TRUE(review.canAccept());
+    EXPECT_EQ(plan.draft(), built);
+}
+
+TEST_F(StudyPlanPreviewTest, MovedOutOfScopeIsChanged) {
+    addSection("A", 1);
+    const core::SectionId b = addSection("B", 2);
+    addSection("C", 3);
+    const core::SectionId atoms = addPages(t, t.addNotebook("Chemistry"), "Atoms", 0);
+    PlanPreview plan = preview(request(2, 60));
+    const core::PageId moved = page(b, 1);
+    t.run(commands::movePage(t.workspace, moved, atoms, 0, t.clock));
+
+    PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(review.changed, (References{{1, moved}}));
+    EXPECT_TRUE(review.invalid.empty());
+    EXPECT_EQ(review.holds, Holds{PlanHold::ChangedReferences});
+
+    // Kept by the user's choice: named as kept, no longer a hold (Q16).
+    ASSERT_OK(plan.keepPage(t.workspace, moved));
+    review = plan.review(t.workspace);
+    EXPECT_TRUE(review.changed.empty());
+    EXPECT_EQ(review.kept, (References{{1, moved}}));
+    EXPECT_TRUE(review.canAccept());
+
+    // Back in the scope, it is an ordinary reference again.
+    ASSERT_OK(t.editor.undo());
+    review = plan.review(t.workspace);
+    EXPECT_TRUE(review.changed.empty());
+    EXPECT_TRUE(review.kept.empty());
+
+    EXPECT_EQ(refused(plan.keepPage(t.workspace, moved)), core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(refused(plan.keepPage(t.workspace, core::PageId{t.ids.next()})),
+              core::ErrorCode::NotFound);
+}
+
+TEST_F(StudyPlanPreviewTest, ResolutionsChangeOnlyNamedReferences) {
+    addSection("A", 1);
+    const core::SectionId b = addSection("B", 2);
+    const core::SectionId c = addSection("C", 3);
+    const core::SectionId atoms = addPages(t, t.addNotebook("Chemistry"), "Atoms", 0);
+    PlanPreview plan = preview(request(2, 60));
+    const core::PageId keep = page(b, 0);
+    const core::PageId exclude = page(c, 0);
+    const core::PageId deleted = page(c, 1);
+    t.run(commands::movePage(t.workspace, keep, atoms, 0, t.clock));
+    t.run(commands::movePage(t.workspace, exclude, atoms, 1, t.clock));
+    t.run(commands::deletePage(t.workspace, deleted));
+
+    PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(review.changed, (References{{1, keep}, {2, exclude}}));
+    EXPECT_EQ(review.invalid, (References{{2, deleted}}));
+    EXPECT_EQ(review.holds, (Holds{PlanHold::InvalidReferences, PlanHold::ChangedReferences}));
+
+    ASSERT_OK(plan.keepPage(t.workspace, keep));
+    review = plan.review(t.workspace);
+    EXPECT_EQ(review.kept, (References{{1, keep}}));
+    EXPECT_EQ(review.changed, (References{{2, exclude}}));
+    EXPECT_EQ(review.invalid, (References{{2, deleted}}));
+    EXPECT_EQ(plan.draft().blocks[2].pages, (Pages{exclude, deleted, page(c, 0)}));
+
+    ASSERT_OK(plan.excludePage(t.workspace, exclude));
+    review = plan.review(t.workspace);
+    EXPECT_EQ(review.excluded, Pages{exclude}); // it still exists, outside the scope
+    EXPECT_EQ(review.kept, (References{{1, keep}}));
+    EXPECT_EQ(review.invalid, (References{{2, deleted}}));
+    EXPECT_EQ(review.holds, Holds{PlanHold::InvalidReferences});
+
+    ASSERT_OK(plan.excludePage(t.workspace, deleted));
+    review = plan.review(t.workspace);
+    EXPECT_TRUE(review.canAccept());
+    EXPECT_EQ(plan.draft().blocks[0].pages.size(), 1U);
+    EXPECT_EQ(plan.draft().blocks[1].pages, (Pages{keep, page(b, 0)}));
+    EXPECT_EQ(plan.draft().blocks[2].pages, Pages{page(c, 0)});
+}
+
+TEST_F(StudyPlanPreviewTest, NewPagesInScopeDoNotHoldAccept) {
+    const core::SectionId a = addSection("A", 1);
+    PlanPreview plan = preview(request(2, 60));
+    const core::PageId added = t.addPage(a, "A 2");
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(review.notInPlan, Pages{added});
+    EXPECT_TRUE(review.canAccept());
+    ASSERT_OK(plan.excludePage(t.workspace, added));
+    EXPECT_TRUE(plan.review(t.workspace).notInPlan.empty());
+    EXPECT_EQ(plan.review(t.workspace).excluded, Pages{added});
 }
 
 } // namespace

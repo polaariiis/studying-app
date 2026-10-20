@@ -167,4 +167,135 @@ struct PlanValidation {
 [[nodiscard]] PlanValidation validatePlanDraft(const document::Workspace& workspace,
                                                PlanDraft draft);
 
+/// Blocks after the plan's last day (rule 4).
+struct PlanOverflow {
+    std::vector<std::size_t> blocks;     ///< indices into the preview's blocks
+    int daysNeeded = 0;                  ///< the last day used
+    std::chrono::minutes minutesOver{0}; ///< the overflow blocks' minutes
+    /// Resolution (a) is offered: daysNeeded ≤ kMaxPlanDays and its date is storable.
+    bool canExtend = false;
+
+    [[nodiscard]] friend bool operator==(const PlanOverflow&, const PlanOverflow&) = default;
+};
+
+/// A page linked by a block of the preview.
+struct PlanReference {
+    std::size_t block = 0;
+    core::PageId page;
+
+    [[nodiscard]] friend bool operator==(const PlanReference&, const PlanReference&) = default;
+};
+
+/// Why a preview cannot be accepted.
+enum class PlanHold : std::uint8_t {
+    Overflow,          ///< blocks after the last day (rule 4)
+    InvalidReferences, ///< linked pages that no longer exist (rule 7)
+    ChangedReferences, ///< linked pages moved out of the scope and not kept (rule 7)
+    InvalidDraft       ///< any other validation error
+};
+
+/// The preview checked against the workspace as it is now (rule 7).
+struct PlanReview {
+    PlanValidation validation;
+    std::vector<PlanReference> invalid; ///< by block, in page order
+    std::vector<PlanReference> changed;
+    std::vector<PlanReference> kept; ///< outside the scope, kept by the user
+    /// "Excluded pages" that still exist: those of removed blocks, then the others.
+    std::vector<core::PageId> excluded;
+    /// In the scope now but in no block and not excluded (pages added to a chosen section,
+    /// or brought back by undo), in tree order. Shown; they do not hold Accept.
+    std::vector<core::PageId> notInPlan;
+    std::vector<PlanHold> holds; ///< in PlanHold order; empty when Accept may save
+
+    [[nodiscard]] bool canAccept() const noexcept { return holds.empty(); }
+};
+
+/// The editable preview of a plan (rules 4, 6 and 7): the draft, the request it was built
+/// from, and the pages the user took out of it ("Excluded pages"). Every page of the
+/// draft as built is, after any edits, in exactly one block or under "Excluded pages";
+/// only a page that no longer exists is dropped when its reference is removed. Rebuilding
+/// (resolution (b)) is a new preview from draftByTreeOrder.
+///
+/// The blocks are kept in saving order: by day, unscheduled blocks last; within a day in
+/// placement order, a block moved to a day after that day's blocks, a restored block in
+/// its old place. Block indices change when a block is moved, removed or restored.
+///
+/// Holds ids only, like PlanDraft; operations that look at pages take the workspace as it
+/// is now. Edits refused with an error change nothing.
+class PlanPreview {
+public:
+    PlanPreview(PlanRequest request, PlanDraft draft);
+
+    /// The request, with the goal, start date and days as edited in the preview.
+    [[nodiscard]] const PlanRequest& request() const noexcept { return request_; }
+    [[nodiscard]] const PlanDraft& draft() const noexcept { return draft_; }
+    /// Removed blocks, in the order they were removed; restoreBlock takes an index.
+    [[nodiscard]] const std::vector<PlanBlock>& removedBlocks() const noexcept { return removed_; }
+    /// Pages excluded one at a time, not with their block.
+    [[nodiscard]] const std::vector<core::PageId>& excludedPages() const noexcept {
+        return excluded_;
+    }
+
+    /// nullopt when no block is after the last day.
+    [[nodiscard]] std::optional<PlanOverflow> overflow() const;
+    /// O(blocks + pages + pages in scope).
+    [[nodiscard]] PlanReview review(const document::Workspace& workspace) const;
+
+    // ---- the plan: the goal and start date change titles and dates only.
+    /// The goal becomes the description; trimmed, the title.
+    void setGoal(std::string goal);
+    /// Errors: InvalidArgument if the start or the last day is not storable.
+    [[nodiscard]] core::Result<void> setStart(study::CalendarDate start);
+
+    // ---- overflow resolutions (a), (c), (d) of rule 4, each for every overflow block.
+    // Errors: Conflict if there is no overflow, or for (a) if it is not offered.
+    /// (a) The plan's days become the days needed; the placement is kept.
+    [[nodiscard]] core::Result<void> extendToNeededDays();
+    /// (c) The overflow blocks become unscheduled.
+    [[nodiscard]] core::Result<void> keepOverflowUnscheduled();
+    /// (d) The overflow blocks are removed, as by removeBlock.
+    [[nodiscard]] core::Result<void> removeOverflow();
+
+    // ---- block edits (rule 6). Errors: NotFound for an index out of range.
+    /// Errors: InvalidArgument unless 5 … 480 in steps of 5.
+    [[nodiscard]] core::Result<void> setBlockMinutes(std::size_t block, std::chrono::minutes value);
+    /// Stored as entered; review reports a blank title, validation cuts a long one.
+    [[nodiscard]] core::Result<void> setBlockTitle(std::size_t block, std::string title);
+    /// Puts the block on `day` (1 … days); an unscheduled block becomes scheduled.
+    /// Errors: InvalidArgument for a day outside the plan; Conflict if that day already
+    /// has kMaxBlocksPerDay blocks.
+    [[nodiscard]] core::Result<void> moveBlock(std::size_t block, int day);
+    /// Its pages go to "Excluded pages", where restoreBlock brings the block back.
+    [[nodiscard]] core::Result<void> removeBlock(std::size_t block);
+    /// Errors: NotFound for an index out of range; Conflict if its day has
+    /// kMaxBlocksPerDay blocks.
+    [[nodiscard]] core::Result<void> restoreBlock(std::size_t removed);
+    /// Adds an excluded page (of a removed block or excluded alone) at the end of the
+    /// block's pages; minutes are unchanged. Errors: NotFound if `page` is not excluded.
+    [[nodiscard]] core::Result<void> addPage(std::size_t block, core::PageId page);
+    /// Puts `page` under "Excluded pages": taken out of its block (minutes unchanged), or a
+    /// page in the scope but not in the plan. A page that no longer exists is taken out of
+    /// its block and dropped. Errors: Conflict if it is excluded already; NotFound if no
+    /// block links it and it is not in the scope.
+    [[nodiscard]] core::Result<void> excludePage(const document::Workspace& workspace,
+                                                 core::PageId page);
+    /// Keeps a linked page that moved out of the scope (rule 7). Errors: NotFound if no
+    /// block links it; InvalidArgument if it no longer exists or is in the scope.
+    [[nodiscard]] core::Result<void> keepPage(const document::Workspace& workspace,
+                                              core::PageId page);
+
+private:
+    void sortBlocks();
+    [[nodiscard]] std::size_t blocksOnDay(int day) const;
+
+    PlanRequest request_;
+    PlanDraft draft_;
+    std::vector<std::size_t> sequence_; ///< per block: its place in placement order
+    std::vector<PlanBlock> removed_;
+    std::vector<std::size_t> removedSequence_;
+    std::vector<core::PageId> excluded_;
+    std::vector<core::PageId> kept_;
+    std::size_t nextSequence_ = 0;
+};
+
 } // namespace studyapp::application

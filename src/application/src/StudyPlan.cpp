@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <map>
+#include <numeric>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -309,6 +312,316 @@ PlanValidation validatePlanDraft(const document::Workspace& workspace, PlanDraft
     }
     result.draft = std::move(draft);
     return result;
+}
+
+// ---------------------------------------------------------------------------- PlanPreview
+
+namespace {
+
+bool contains(const std::vector<core::PageId>& pages, core::PageId page) {
+    return std::ranges::find(pages, page) != pages.end();
+}
+
+/// Removes `page` from `pages`; whether it was there.
+bool erase(std::vector<core::PageId>& pages, core::PageId page) {
+    return std::erase(pages, page) > 0;
+}
+
+Result<void> noBlock() {
+    return makeError(ErrorCode::NotFound, "no such block");
+}
+
+} // namespace
+
+PlanPreview::PlanPreview(PlanRequest request, PlanDraft draft)
+    : request_(std::move(request)), draft_(std::move(draft)), sequence_(draft_.blocks.size()),
+      nextSequence_(draft_.blocks.size()) {
+    std::iota(sequence_.begin(), sequence_.end(), std::size_t{0});
+    sortBlocks();
+}
+
+void PlanPreview::sortBlocks() {
+    // Scheduled blocks by day (overflow days included), then unscheduled; ties in
+    // placement order.
+    const auto key = [&](std::size_t i) {
+        const auto& day = draft_.blocks[i].day;
+        return std::tuple(!day.has_value(), day.value_or(0), sequence_[i]);
+    };
+    std::vector<std::size_t> order(draft_.blocks.size());
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    std::ranges::sort(order, [&](std::size_t a, std::size_t b) { return key(a) < key(b); });
+    std::vector<PlanBlock> blocks;
+    std::vector<std::size_t> sequence;
+    blocks.reserve(order.size());
+    sequence.reserve(order.size());
+    for (const std::size_t i : order) {
+        blocks.push_back(std::move(draft_.blocks[i]));
+        sequence.push_back(sequence_[i]);
+    }
+    draft_.blocks = std::move(blocks);
+    sequence_ = std::move(sequence);
+}
+
+std::size_t PlanPreview::blocksOnDay(int day) const {
+    return static_cast<std::size_t>(std::ranges::count_if(
+        draft_.blocks, [day](const PlanBlock& block) { return block.day == day; }));
+}
+
+std::optional<PlanOverflow> PlanPreview::overflow() const {
+    PlanOverflow overflow;
+    for (std::size_t i = 0; i < draft_.blocks.size(); ++i) {
+        const PlanBlock& block = draft_.blocks[i];
+        if (block.day && *block.day > draft_.days) {
+            overflow.blocks.push_back(i);
+            overflow.daysNeeded = std::max(overflow.daysNeeded, *block.day);
+            overflow.minutesOver += block.minutes;
+        }
+    }
+    if (overflow.blocks.empty()) {
+        return std::nullopt;
+    }
+    overflow.canExtend =
+        overflow.daysNeeded <= kMaxPlanDays && datesStorable(draft_.start, overflow.daysNeeded);
+    return overflow;
+}
+
+PlanReview PlanPreview::review(const document::Workspace& workspace) const {
+    PlanReview review;
+    review.validation = validatePlanDraft(workspace, draft_);
+
+    const std::vector<core::PageId> scope = pagesInScope(workspace, request_.scope);
+    const std::unordered_set<core::PageId> inScope(scope.begin(), scope.end());
+    std::unordered_set<core::PageId> inPlan;
+    for (std::size_t i = 0; i < draft_.blocks.size(); ++i) {
+        for (const core::PageId page : draft_.blocks[i].pages) {
+            inPlan.insert(page);
+            if (workspace.findPage(page) == nullptr) {
+                review.invalid.push_back({i, page});
+            } else if (!inScope.contains(page)) {
+                (contains(kept_, page) ? review.kept : review.changed).push_back({i, page});
+            }
+        }
+    }
+    const auto exclude = [&](core::PageId page) {
+        inPlan.insert(page);
+        if (workspace.findPage(page) != nullptr) {
+            review.excluded.push_back(page);
+        }
+    };
+    for (const PlanBlock& block : removed_) {
+        std::ranges::for_each(block.pages, exclude);
+    }
+    std::ranges::for_each(excluded_, exclude);
+    for (const core::PageId page : scope) {
+        if (!inPlan.contains(page)) {
+            review.notInPlan.push_back(page);
+        }
+    }
+
+    if (overflow()) {
+        review.holds.push_back(PlanHold::Overflow);
+    }
+    if (!review.invalid.empty()) {
+        review.holds.push_back(PlanHold::InvalidReferences);
+    }
+    if (!review.changed.empty()) {
+        review.holds.push_back(PlanHold::ChangedReferences);
+    }
+    // Overflow and deleted pages are holds of their own.
+    if (std::ranges::any_of(review.validation.errors, [](const PlanIssue& error) {
+            return error.kind != PlanIssueKind::BlockAfterLastDay &&
+                   error.kind != PlanIssueKind::MissingPage;
+        })) {
+        review.holds.push_back(PlanHold::InvalidDraft);
+    }
+    return review;
+}
+
+void PlanPreview::setGoal(std::string goal) {
+    draft_.title = std::string(trim(goal));
+    request_.goal = std::move(goal);
+}
+
+Result<void> PlanPreview::setStart(study::CalendarDate start) {
+    if (!datesStorable(start, draft_.days)) {
+        return makeError(ErrorCode::InvalidArgument,
+                         "the plan's dates must lie within the years 1 to 9999");
+    }
+    draft_.start = start;
+    request_.start = start;
+    return {};
+}
+
+Result<void> PlanPreview::extendToNeededDays() {
+    const std::optional<PlanOverflow> over = overflow();
+    if (!over) {
+        return makeError(ErrorCode::Conflict, "every block fits in the plan's days");
+    }
+    if (!over->canExtend) {
+        return makeError(ErrorCode::Conflict, "the plan would need " +
+                                                  std::to_string(over->daysNeeded) +
+                                                  " days; the limit is 60");
+    }
+    draft_.days = over->daysNeeded;
+    request_.days = over->daysNeeded;
+    return {};
+}
+
+Result<void> PlanPreview::keepOverflowUnscheduled() {
+    const std::optional<PlanOverflow> over = overflow();
+    if (!over) {
+        return makeError(ErrorCode::Conflict, "every block fits in the plan's days");
+    }
+    for (const std::size_t i : over->blocks) {
+        draft_.blocks[i].day.reset();
+    }
+    sortBlocks();
+    return {};
+}
+
+Result<void> PlanPreview::removeOverflow() {
+    const std::optional<PlanOverflow> over = overflow();
+    if (!over) {
+        return makeError(ErrorCode::Conflict, "every block fits in the plan's days");
+    }
+    // From the last, so that the indices before it stay valid; removed in placement order.
+    const std::size_t first = removed_.size();
+    for (auto i = over->blocks.rbegin(); i != over->blocks.rend(); ++i) {
+        (void)removeBlock(*i);
+    }
+    std::reverse(removed_.begin() + static_cast<std::ptrdiff_t>(first), removed_.end());
+    std::reverse(removedSequence_.begin() + static_cast<std::ptrdiff_t>(first),
+                 removedSequence_.end());
+    return {};
+}
+
+Result<void> PlanPreview::setBlockMinutes(std::size_t block, minutes value) {
+    if (block >= draft_.blocks.size()) {
+        return noBlock();
+    }
+    if (value < kMinPlanMinutes || value > kMaxPlanMinutes ||
+        value % kPlanMinuteStep != minutes{0}) {
+        return makeError(ErrorCode::InvalidArgument, "a block has 5 to 480 minutes, in steps of 5");
+    }
+    draft_.blocks[block].minutes = value;
+    return {};
+}
+
+Result<void> PlanPreview::setBlockTitle(std::size_t block, std::string title) {
+    if (block >= draft_.blocks.size()) {
+        return noBlock();
+    }
+    draft_.blocks[block].title = std::move(title);
+    return {};
+}
+
+Result<void> PlanPreview::moveBlock(std::size_t block, int day) {
+    if (block >= draft_.blocks.size()) {
+        return noBlock();
+    }
+    if (day < 1 || day > draft_.days) {
+        return makeError(ErrorCode::InvalidArgument,
+                         "a block's day is 1 to " + std::to_string(draft_.days));
+    }
+    if (draft_.blocks[block].day == day) {
+        return {};
+    }
+    if (blocksOnDay(day) >= kMaxBlocksPerDay) {
+        return makeError(ErrorCode::Conflict,
+                         "Day " + std::to_string(day) + " already has 12 blocks.");
+    }
+    draft_.blocks[block].day = day;
+    sequence_[block] = nextSequence_++;
+    sortBlocks();
+    return {};
+}
+
+Result<void> PlanPreview::removeBlock(std::size_t block) {
+    if (block >= draft_.blocks.size()) {
+        return noBlock();
+    }
+    const auto at = static_cast<std::ptrdiff_t>(block);
+    removed_.push_back(std::move(draft_.blocks[block]));
+    removedSequence_.push_back(sequence_[block]);
+    draft_.blocks.erase(draft_.blocks.begin() + at);
+    sequence_.erase(sequence_.begin() + at);
+    return {};
+}
+
+Result<void> PlanPreview::restoreBlock(std::size_t removed) {
+    if (removed >= removed_.size()) {
+        return makeError(ErrorCode::NotFound, "no such removed block");
+    }
+    const std::optional<int> day = removed_[removed].day;
+    if (day && blocksOnDay(*day) >= kMaxBlocksPerDay) {
+        return makeError(ErrorCode::Conflict,
+                         "Day " + std::to_string(*day) + " already has 12 blocks.");
+    }
+    const auto at = static_cast<std::ptrdiff_t>(removed);
+    draft_.blocks.push_back(std::move(removed_[removed]));
+    sequence_.push_back(removedSequence_[removed]);
+    removed_.erase(removed_.begin() + at);
+    removedSequence_.erase(removedSequence_.begin() + at);
+    sortBlocks();
+    return {};
+}
+
+Result<void> PlanPreview::addPage(std::size_t block, core::PageId page) {
+    if (block >= draft_.blocks.size()) {
+        return noBlock();
+    }
+    bool found = erase(excluded_, page);
+    for (PlanBlock& removed : removed_) {
+        found = found || erase(removed.pages, page);
+    }
+    if (!found) {
+        return makeError(ErrorCode::NotFound, "the page is not excluded");
+    }
+    draft_.blocks[block].pages.push_back(page);
+    return {};
+}
+
+Result<void> PlanPreview::excludePage(const document::Workspace& workspace, core::PageId page) {
+    const bool exists = workspace.findPage(page) != nullptr;
+    for (PlanBlock& block : draft_.blocks) {
+        if (erase(block.pages, page)) {
+            erase(kept_, page);
+            if (exists) {
+                excluded_.push_back(page);
+            }
+            return {};
+        }
+    }
+    const bool excluded =
+        contains(excluded_, page) || std::ranges::any_of(removed_, [page](const PlanBlock& block) {
+            return contains(block.pages, page);
+        });
+    if (excluded) {
+        return makeError(ErrorCode::Conflict, "the page is excluded already");
+    }
+    if (!exists || !contains(pagesInScope(workspace, request_.scope), page)) {
+        return makeError(ErrorCode::NotFound, "the page is not in the plan or its scope");
+    }
+    excluded_.push_back(page);
+    return {};
+}
+
+Result<void> PlanPreview::keepPage(const document::Workspace& workspace, core::PageId page) {
+    if (std::ranges::none_of(draft_.blocks, [page](const PlanBlock& block) {
+            return contains(block.pages, page);
+        })) {
+        return makeError(ErrorCode::NotFound, "no block links the page");
+    }
+    if (workspace.findPage(page) == nullptr) {
+        return makeError(ErrorCode::InvalidArgument, "the page was deleted");
+    }
+    if (contains(pagesInScope(workspace, request_.scope), page)) {
+        return makeError(ErrorCode::InvalidArgument, "the page is in the plan's scope");
+    }
+    if (!contains(kept_, page)) {
+        kept_.push_back(page);
+    }
+    return {};
 }
 
 } // namespace studyapp::application
