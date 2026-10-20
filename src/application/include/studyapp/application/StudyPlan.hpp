@@ -191,7 +191,8 @@ enum class PlanHold : std::uint8_t {
     Overflow,          ///< blocks after the last day (rule 4)
     InvalidReferences, ///< linked pages that no longer exist (rule 7)
     ChangedReferences, ///< linked pages moved out of the scope and not kept (rule 7)
-    InvalidDraft       ///< any other validation error
+    InvalidDraft,      ///< any other validation error
+    NoBlocks           ///< "The plan has no study blocks" (every block removed)
 };
 
 /// The preview checked against the workspace as it is now (rule 7).

@@ -434,6 +434,9 @@ PlanReview PlanPreview::review(const document::Workspace& workspace) const {
         })) {
         review.holds.push_back(PlanHold::InvalidDraft);
     }
+    if (draft_.blocks.empty()) {
+        review.holds.push_back(PlanHold::NoBlocks);
+    }
     return review;
 }
 

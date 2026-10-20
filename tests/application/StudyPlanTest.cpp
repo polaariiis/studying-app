@@ -1143,5 +1143,23 @@ TEST_F(StudyPlanPreviewTest, NewPagesInScopeDoNotHoldAccept) {
     EXPECT_EQ(plan.review(t.workspace).excluded, Pages{added});
 }
 
+TEST_F(StudyPlanPreviewTest, NoBlocksHoldsAccept) {
+    addSection("A", 1);
+    addSection("B", 1);
+    PlanPreview plan = preview(request(2, 60)); // A on day 1, B on day 2
+    ASSERT_OK(plan.removeBlock(0));
+    EXPECT_EQ(holds(plan), Holds{});
+    ASSERT_OK(plan.removeBlock(0));
+    // Every block removed: "The plan has no study blocks" (the user's decision, 2026-10-20).
+    EXPECT_TRUE(plan.draft().blocks.empty());
+    const PlanReview review = plan.review(t.workspace);
+    EXPECT_EQ(review.holds, Holds{PlanHold::NoBlocks});
+    EXPECT_FALSE(review.canAccept());
+    expectEveryPageOnce(plan);
+
+    ASSERT_OK(plan.restoreBlock(1));
+    EXPECT_EQ(holds(plan), Holds{});
+}
+
 } // namespace
 } // namespace studyapp::application
