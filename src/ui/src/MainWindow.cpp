@@ -1420,6 +1420,9 @@ void MainWindow::onPatchApplied(const document::Patch& patch) {
     treeModel_->onPatch(patch);
     updateLinkHighlight(); // links, deleted pages and tasks, undo: after the rows follow
     planner_->onPatch(patch);
+    if (studyPlan_) {
+        studyPlan_->onPatch(patch); // its preview follows the workspace (rule 7)
+    }
     if (navigation_->isShowingSearchResults() && affectsSearch(patch)) {
         searchDelay_->start(); // results follow the workspace (never stale or dangling)
     }

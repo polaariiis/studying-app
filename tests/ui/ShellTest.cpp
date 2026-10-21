@@ -41,8 +41,10 @@
 #include <QDateEdit>
 #include <QDir>
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFont>
+#include <QGroupBox>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
@@ -243,6 +245,13 @@ public:
         ++questions;
         ++deleteQuestions;
         return confirmDeletes;
+    }
+    bool confirmDiscards = true;
+    int discardQuestions = 0;
+    bool confirmDiscardPlanEdits(QWidget*) override {
+        ++questions;
+        ++discardQuestions;
+        return confirmDiscards;
     }
     /// Answers for askText, first to last; cancelled when none is left.
     QStringList texts;
@@ -3931,6 +3940,33 @@ private:
         qFatal("no scope row %s", qPrintable(title));
     }
 
+    static const study::TimeZone& utcZone() {
+        static const study::FixedOffsetZone utc{std::chrono::minutes{0}};
+        return utc;
+    }
+
+    /// Makes the first row of `tree` whose text starts with `text` current.
+    static void selectRow(QTreeWidget* tree, const QString& text) {
+        for (QTreeWidgetItemIterator it(tree); *it != nullptr; ++it) {
+            if ((*it)->text(0).startsWith(text)) {
+                tree->setCurrentItem(*it);
+                return;
+            }
+        }
+        qFatal("no row %s", qPrintable(text));
+    }
+
+    /// Notebook `title` with `sections` one-page sections "S1", "S2", …
+    static void addOnePageSections(Shell& shell, const std::string& title, int sections) {
+        application::WorkspaceStructure structure(*shell.window->session(), shell.clock, shell.ids);
+        auto notebook = structure.createNotebook(title); // "Section 1" with a page
+        QVERIFY(notebook.has_value());
+        QVERIFY(structure.rename(HierarchyItem{notebook->section}, "S1").has_value());
+        for (int i = 2; i <= sections; ++i) {
+            QVERIFY(structure.createSection(notebook->notebook, "S" + std::to_string(i)));
+        }
+    }
+
     /// The preview's rows as "row: child, child" lines.
     static QStringList previewRows(ui::StudyPlanDialog* dialog) {
         auto* table = inPlan<QTreeWidget>(dialog, "studyPlanPreview");
@@ -4184,6 +4220,414 @@ private Q_SLOTS:
         start->setDate(QDate(9999, 12, 31));
         QCOMPARE(start->date(), QDate(9999, 11, 2));
         QCOMPARE(shell.window->session()->history().nextUndo()->label, "Create section");
+    }
+
+    // Rule 6 in the dialog: a block's title, minutes and day; a day over its minutes is a
+    // warning the plan is saved with; a move onto a day with 12 blocks is refused with a
+    // message; pages and blocks go to "Excluded pages" and come back; Rebuild asks before
+    // it discards the edits.
+    void studyPlanEditPreview() {
+        Shell shell(settings(QStringLiteral("studyPlanEdit")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("StudyPlanEdit"))));
+        addBiology(shell);
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        auto* table = inPlan<QTreeWidget>(dialog, "studyPlanPreview");
+        auto* title = inPlan<QLineEdit>(dialog, "studyPlanBlockTitle");
+        auto* blockMinutes = inPlan<QSpinBox>(dialog, "studyPlanBlockMinutes");
+        auto* blockDay = inPlan<QSpinBox>(dialog, "studyPlanBlockDay");
+        auto* pages = inPlan<QListWidget>(dialog, "studyPlanBlockPages");
+        auto* excluded = inPlan<QTreeWidget>(dialog, "studyPlanExcluded");
+        auto* messages = inPlan<QLabel>(dialog, "studyPlanMessages");
+        auto* accept = inPlan<QPushButton>(dialog, "studyPlanAccept");
+        auto* build = inPlan<QPushButton>(dialog, "studyPlanBuild");
+        inPlan<QLineEdit>(dialog, "studyPlanGoal")->setText(QStringLiteral("Biology exam"));
+        inPlan<QSpinBox>(dialog, "studyPlanDays")->setValue(2);
+        checkScope(dialog, QStringLiteral("Biology"));
+        build->click();
+        QCOMPARE(build->text(), QStringLiteral("Re&build"));
+        QVERIFY(!dialog->isEdited());
+
+        // The selected block's fields.
+        selectRow(table, QStringLiteral("Genes"));
+        QCOMPARE(title->text(), QStringLiteral("Genes"));
+        QCOMPARE(blockMinutes->value(), 40);
+        QCOMPARE(blockDay->value(), 2);
+        QCOMPARE(blockDay->maximum(), 2);
+        QCOMPARE(pages->count(), 2);
+        title->setText(QStringLiteral("Genetics"));
+        Q_EMIT title->editingFinished();
+        blockMinutes->setValue(45);
+        QCOMPARE(previewRows(dialog),
+                 (QStringList{QStringLiteral("Day 1: Cells"), QStringLiteral("Day 2: Genetics")}));
+        QCOMPARE(table->topLevelItem(1)->text(1), QStringLiteral("45 of 60 min"));
+        QVERIFY(dialog->isEdited());
+
+        // A moved block stays selected, although its index changes (Cells: 0 → 1).
+        selectRow(table, QStringLiteral("Cells"));
+        blockDay->setValue(2);
+        inPlan<QPushButton>(dialog, "studyPlanMoveBlock")->click();
+        QCOMPARE(previewRows(dialog), (QStringList{QStringLiteral("Day 1: "),
+                                                   QStringLiteral("Day 2: Genetics, Cells")}));
+        QCOMPARE(dialog->preview()->draft().blocks[1].title, std::string("Cells"));
+        QCOMPARE(title->text(), QStringLiteral("Cells"));
+        QCOMPARE(blockDay->value(), 2);
+        blockDay->setValue(1); // and moves back without being selected again
+        inPlan<QPushButton>(dialog, "studyPlanMoveBlock")->click();
+        QCOMPARE(previewRows(dialog),
+                 (QStringList{QStringLiteral("Day 1: Cells"), QStringLiteral("Day 2: Genetics")}));
+        QCOMPARE(title->text(), QStringLiteral("Cells"));
+
+        // Onto day 1: 105 minutes of 60 is a warning, not a refusal.
+        selectRow(table, QStringLiteral("Genetics"));
+        blockDay->setValue(1);
+        inPlan<QPushButton>(dialog, "studyPlanMoveBlock")->click();
+        QCOMPARE(previewRows(dialog), (QStringList{QStringLiteral("Day 1: Cells, Genetics"),
+                                                   QStringLiteral("Day 2: ")}));
+        QVERIFY(messages->isVisible());
+        QVERIFY(messages->text().contains(u"Day 1 has 105 minutes, more than 60."_s));
+        QVERIFY(accept->isEnabled());
+        // "Moving" the first of day 1's two blocks to day 1 changes nothing: it stays shown.
+        selectRow(table, QStringLiteral("Cells"));
+        blockDay->setValue(1);
+        inPlan<QPushButton>(dialog, "studyPlanMoveBlock")->click();
+        QCOMPARE(title->text(), QStringLiteral("Cells"));
+        QCOMPARE(previewRows(dialog).first(), QStringLiteral("Day 1: Cells, Genetics"));
+
+        // A page out of Cells into "Excluded pages", then into Genetics.
+        selectRow(table, QStringLiteral("Cells"));
+        pages->setCurrentRow(0);
+        inPlan<QPushButton>(dialog, "studyPlanExcludePage")->click();
+        QVERIFY(excluded->isVisible());
+        QCOMPARE(excluded->topLevelItemCount(), 1); // the section "Cells"
+        QCOMPARE(excluded->topLevelItem(0)->text(0), QStringLiteral("Cells"));
+        QCOMPARE(excluded->topLevelItem(0)->child(0)->text(0), QStringLiteral("Page 1"));
+        QVERIFY(excluded->topLevelItem(0)->isExpanded());
+        QVERIFY(!excluded->itemsExpandable()); // shown in full while there is any
+        QVERIFY(
+            inPlan<QLabel>(dialog, "studyPlanSummary")->text().contains(u"1 page(s) excluded."_s));
+        QCOMPARE(dialog->preview()->draft().blocks[0].pages.size(), std::size_t{2});
+        selectRow(table, QStringLiteral("Genetics"));
+        excluded->setCurrentItem(excluded->topLevelItem(0)->child(0));
+        inPlan<QPushButton>(dialog, "studyPlanAddPage")->click();
+        QVERIFY(!excluded->isVisible());
+        QCOMPARE(dialog->preview()->draft().blocks[1].pages.size(), std::size_t{3});
+
+        // Remove a block and restore it.
+        selectRow(table, QStringLiteral("Genetics"));
+        inPlan<QPushButton>(dialog, "studyPlanRemoveBlock")->click();
+        QCOMPARE(previewRows(dialog),
+                 (QStringList{QStringLiteral("Day 1: Cells"), QStringLiteral("Day 2: ")}));
+        QCOMPARE(excluded->topLevelItem(0)->text(0), QStringLiteral("Genetics (removed block)"));
+        QCOMPARE(excluded->topLevelItem(0)->childCount(), 3);
+        excluded->setCurrentItem(excluded->topLevelItem(0));
+        inPlan<QPushButton>(dialog, "studyPlanRestore")->click();
+        QCOMPARE(previewRows(dialog), (QStringList{QStringLiteral("Day 1: Cells, Genetics"),
+                                                   QStringLiteral("Day 2: ")}));
+
+        // Rebuild over edits asks first; declined, nothing changes.
+        shell.dialogs->confirmDiscards = false;
+        build->click();
+        QCOMPARE(shell.dialogs->discardQuestions, 1);
+        QVERIFY(dialog->isEdited());
+        QCOMPARE(previewRows(dialog).first(), QStringLiteral("Day 1: Cells, Genetics"));
+        shell.dialogs->confirmDiscards = true;
+        build->click();
+        QCOMPARE(shell.dialogs->discardQuestions, 2);
+        QVERIFY(!dialog->isEdited());
+        QCOMPARE(previewRows(dialog),
+                 (QStringList{QStringLiteral("Day 1: Cells"), QStringLiteral("Day 2: Genes")}));
+        build->click(); // not edited: no question
+        QCOMPARE(shell.dialogs->discardQuestions, 2);
+
+        // Kept over the day's minutes, the plan is saved as entered (AC 3).
+        selectRow(table, QStringLiteral("Genes"));
+        blockDay->setValue(1);
+        inPlan<QPushButton>(dialog, "studyPlanMoveBlock")->click();
+        QVERIFY(messages->text().contains(u"Day 1 has 100 minutes, more than 60."_s));
+        const QPointer<ui::StudyPlanDialog> watched(dialog);
+        accept->click();
+        QTRY_VERIFY(watched.isNull());
+        const auto& ws = shell.ws();
+        const auto tasks = ws.tasksOfProject(ws.projects()[0]);
+        QCOMPARE(tasks.size(), std::size_t{2});
+        for (const core::TaskId task : tasks) {
+            QCOMPARE(ws.findTask(task)->dueDate, study::localDate(shell.clock.now(), utcZone()));
+        }
+        std::vector<std::int64_t> estimates;
+        for (const core::TaskId task : tasks) {
+            estimates.push_back(ws.findTask(task)->estimate->count());
+        }
+        std::ranges::sort(estimates);
+        QCOMPARE(estimates, (std::vector<std::int64_t>{40, 60}));
+
+        // A 13th block is refused on a day with 12, with a message.
+        addOnePageSections(shell, "Many", 13);
+        shell.action("actionNewStudyPlan")->trigger();
+        dialog = studyPlan(shell);
+        inPlan<QLineEdit>(dialog, "studyPlanGoal")->setText(QStringLiteral("Many"));
+        inPlan<QSpinBox>(dialog, "studyPlanDays")->setValue(2);
+        inPlan<QSpinBox>(dialog, "studyPlanMinutes")->setValue(480);
+        checkScope(dialog, QStringLiteral("Many"));
+        inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+        // e = 960 / 13 = 73 → 70: 6 sections a day by minutes (420 of 480).
+        auto* manyTable = inPlan<QTreeWidget>(dialog, "studyPlanPreview");
+        // Days 1 and 2 hold 6 each, the 13th needs day 3.
+        for (int i = 0; i < 6; ++i) {
+            manyTable->setCurrentItem(manyTable->topLevelItem(1)->child(0));
+            inPlan<QSpinBox>(dialog, "studyPlanBlockDay")->setValue(1);
+            inPlan<QPushButton>(dialog, "studyPlanMoveBlock")->click();
+        }
+        QCOMPARE(manyTable->topLevelItem(0)->childCount(), 12);
+        manyTable->setCurrentItem(manyTable->topLevelItem(2)->child(0)); // the overflow block
+        inPlan<QSpinBox>(dialog, "studyPlanBlockDay")->setValue(1);
+        inPlan<QPushButton>(dialog, "studyPlanMoveBlock")->click();
+        QCOMPARE(manyTable->topLevelItem(0)->childCount(), 12);
+        QVERIFY(inPlan<QLabel>(dialog, "studyPlanMessages")
+                    ->text()
+                    .startsWith(u"Day 1 already has 12 blocks."_s));
+    }
+
+    // Rule 4 in the dialog: (a) extends to the days needed (the form follows); (d) removes
+    // the overflow to "Excluded pages", Restore brings one back; (c) keeps it unscheduled.
+    // Saved, the plan is in the Planner panel: its tasks in block order, the agenda by date
+    // and under "No date", and a selected task marks its pages in the tree (AC 6, 9, 10).
+    void studyPlanOverflow() {
+        Shell shell(settings(QStringLiteral("studyPlanOverflow")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("StudyPlanOverflow"))));
+        addBiology(shell);
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        auto* days = inPlan<QSpinBox>(dialog, "studyPlanDays");
+        auto* accept = inPlan<QPushButton>(dialog, "studyPlanAccept");
+        auto* overflow = inPlan<QGroupBox>(dialog, "studyPlanOverflow");
+        auto* extend = inPlan<QPushButton>(dialog, "studyPlanExtend");
+        auto* excluded = inPlan<QTreeWidget>(dialog, "studyPlanExcluded");
+        auto* build = inPlan<QPushButton>(dialog, "studyPlanBuild");
+        inPlan<QLineEdit>(dialog, "studyPlanGoal")->setText(QStringLiteral("Biology exam"));
+        days->setValue(1);
+        inPlan<QSpinBox>(dialog, "studyPlanMinutes")->setValue(5);
+        checkScope(dialog, QStringLiteral("Biology"));
+        build->click();
+        // One 5-minute page a day on days 1 … 5 of 1.
+        QVERIFY(overflow->isVisible());
+        QVERIFY(!accept->isEnabled());
+        QCOMPARE(extend->text(), QStringLiteral("&Extend to 5 days"));
+        QVERIFY(extend->isEnabled());
+
+        // (a): the placement stays; the plan and the form have 5 days.
+        extend->click();
+        QVERIFY(!overflow->isVisible());
+        QCOMPARE(days->value(), 5);
+        QVERIFY(!dialog->isStale());
+        QCOMPARE(previewRows(dialog).size(), 5);
+        QVERIFY(accept->isEnabled());
+
+        // (d) after a rebuild over 1 day: the 4 overflow blocks go to "Excluded pages".
+        days->setValue(1);
+        QVERIFY(dialog->isStale());
+        QVERIFY(!accept->isEnabled());
+        build->click(); // edited by (a): confirmed
+        QCOMPARE(shell.dialogs->discardQuestions, 1);
+        inPlan<QPushButton>(dialog, "studyPlanRemoveOverflow")->click();
+        QVERIFY(!overflow->isVisible());
+        QCOMPARE(excluded->topLevelItemCount(), 4);
+        QVERIFY(accept->isEnabled());
+        excluded->setCurrentItem(excluded->topLevelItem(0));
+        inPlan<QPushButton>(dialog, "studyPlanRestore")->click();
+        QVERIFY(overflow->isVisible()); // the restored block needs day 2 again
+        QVERIFY(!accept->isEnabled());
+
+        // (c) on a fresh build: unscheduled, under "No date"; saved without due dates.
+        build->click();
+        inPlan<QPushButton>(dialog, "studyPlanKeepUnscheduled")->click();
+        QCOMPARE(previewRows(dialog).last(),
+                 QStringLiteral("No date: Cells (part 2 of 3), Cells (part 3 of 3), Genes (part 1 "
+                                "of 2), Genes (part 2 of 2)"));
+        QVERIFY(accept->isEnabled());
+        accept->click();
+        QTRY_VERIFY(studyPlan(shell) == nullptr);
+        const auto& ws = shell.ws();
+        const study::Project& project = *ws.findProject(ws.projects()[0]);
+        const study::CalendarDate today = study::localDate(shell.clock.now(), utcZone());
+        QCOMPARE(project.due, today); // start + D − 1, D = 1
+        int dated = 0;
+        for (const core::TaskId task : ws.tasksOfProject(project.id)) {
+            dated += ws.findTask(task)->dueDate.has_value() ? 1 : 0;
+        }
+        QCOMPARE(dated, 1);
+
+        // The panel: the project's tasks in block order; the agenda by date and "No date".
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        auto* tasks = panel->findChild<QTreeWidget*>(QStringLiteral("plannerTasks"));
+        QStringList titles;
+        for (int i = 0; i < tasks->topLevelItemCount(); ++i) {
+            titles << tasks->topLevelItem(i)->text(0);
+        }
+        QCOMPARE(titles, (QStringList{QStringLiteral("Cells (part 1 of 3)"),
+                                      QStringLiteral("Cells (part 2 of 3)"),
+                                      QStringLiteral("Cells (part 3 of 3)"),
+                                      QStringLiteral("Genes (part 1 of 2)"),
+                                      QStringLiteral("Genes (part 2 of 2)")}));
+        panel->showView(ui::PlannerPanel::View::Today);
+        QCoreApplication::processEvents();
+        panel->refreshNow();
+        auto* agenda = panel->findChild<QTreeWidget*>(QStringLiteral("plannerAgenda"));
+        QStringList groups;
+        for (int i = 0; i < agenda->topLevelItemCount(); ++i) {
+            groups << agenda->topLevelItem(i)->text(0) + QStringLiteral(": ") +
+                          QString::number(agenda->topLevelItem(i)->childCount());
+        }
+        QCOMPARE(groups, (QStringList{QStringLiteral("Today: 1"), QStringLiteral("No date: 4")}));
+
+        // A selected plan task marks its linked page in the tree (2.0-PLAN-01).
+        panel->selectTask(ws.topLevelTasks()[0]);
+        QCoreApplication::processEvents();
+        const std::vector<QString> marked =
+            rowsWith(*shell.model(), WorkspaceTreeModel::LinkedRole);
+        QCOMPARE(marked.size(), std::size_t{1});
+    }
+
+    // Rule 7 with the dialog open: a deleted linked page disables Accept until undone or
+    // removed from the plan; a page moved out of the scope disables it until kept; a page
+    // added to a chosen section is reported without disabling it; the final check runs
+    // even before the dialog has caught up. Nothing is saved meanwhile.
+    void studyPlanFollowsWorkspaceChanges() {
+        Shell shell(settings(QStringLiteral("studyPlanFollows")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("StudyPlanFollows"))));
+        addBiology(shell);
+        const auto& ws = shell.ws();
+        application::WorkspaceStructure structure(*shell.window->session(), shell.clock, shell.ids);
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        auto* accept = inPlan<QPushButton>(dialog, "studyPlanAccept");
+        auto* references = inPlan<QTreeWidget>(dialog, "studyPlanReferences");
+        auto* scope = inPlan<QTreeWidget>(dialog, "studyPlanScope");
+        inPlan<QLineEdit>(dialog, "studyPlanGoal")->setText(QStringLiteral("Biology exam"));
+        inPlan<QSpinBox>(dialog, "studyPlanDays")->setValue(2);
+        checkScope(dialog, QStringLiteral("Biology"));
+        inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+        QVERIFY(accept->isEnabled());
+        const auto settle = [] {
+            QCoreApplication::processEvents(); // the window's patch → the deferred refresh
+        };
+        const core::NotebookId biology = ws.notebooks()[1];
+        const core::SectionId cells = ws.sectionsOf(biology)[0];
+        const core::SectionId genes = ws.sectionsOf(biology)[1];
+        const core::PageId cellsPage = ws.pagesOf(cells)[0];
+        const core::PageId genesPage = ws.pagesOf(genes)[0];
+        const auto steps = shell.window->session()->history().undoCount();
+
+        // Deleted: reported by block, Accept disabled; Undo makes it valid again.
+        QVERIFY(structure.remove(HierarchyItem{cellsPage}).has_value());
+        settle();
+        QVERIFY(!accept->isEnabled());
+        QCOMPARE(references->topLevelItemCount(), 1);
+        QCOMPARE(references->topLevelItem(0)->text(0),
+                 QStringLiteral("A page linked by “Cells” was deleted."));
+        QCOMPARE(scope->topLevelItem(1)->child(0)->text(0), QStringLiteral("Cells (2 page(s))"));
+        shell.action("actionUndo")->trigger();
+        settle();
+        QVERIFY(accept->isEnabled());
+        QVERIFY(!references->isVisible());
+
+        // Moved out of the scope: changed; "Keep in the plan" resolves only that reference.
+        const core::SectionId notes = ws.sectionsOf(ws.notebooks()[0])[0];
+        QVERIFY(structure.movePage(genesPage, notes, 0).has_value());
+        settle();
+        QVERIFY(!accept->isEnabled());
+        QVERIFY(
+            references->topLevelItem(0)->text(0).endsWith(u"was moved out of the chosen scope."_s));
+        references->setCurrentItem(references->topLevelItem(0));
+        inPlan<QPushButton>(dialog, "studyPlanKeepReference")->click();
+        QVERIFY(accept->isEnabled());
+        QVERIFY(
+            references->topLevelItem(0)->text(0).endsWith(u"is kept, outside the chosen scope."_s));
+
+        // Deleted again and removed from the plan: dropped (it no longer exists).
+        QVERIFY(structure.remove(HierarchyItem{cellsPage}).has_value());
+        settle();
+        QVERIFY(!accept->isEnabled());
+        selectRow(references, QStringLiteral("A page linked by"));
+        inPlan<QPushButton>(dialog, "studyPlanExcludeReference")->click();
+        QVERIFY(accept->isEnabled());
+        QCOMPARE(dialog->preview()->draft().blocks[0].pages.size(), std::size_t{2});
+
+        // A page added to a chosen section: in the scope but not in the plan, not a hold.
+        QVERIFY(structure.createPage(cells).has_value());
+        settle();
+        QVERIFY(accept->isEnabled());
+        QVERIFY(references->findItems(u"is in the scope but not in the plan"_s, Qt::MatchContains)
+                    .size() == 1);
+
+        // The final check does not wait for the refresh: a page moved out of the scope
+        // while it is pending (which only the preview's check can see) saves nothing.
+        QVERIFY(structure.movePage(ws.pagesOf(cells)[0], notes, 0).has_value());
+        QVERIFY(accept->isEnabled()); // not refreshed yet
+        accept->click();
+        QVERIFY(studyPlan(shell) != nullptr);
+        QVERIFY(ws.projects().empty());
+        QVERIFY(!accept->isEnabled()); // the check showed why
+        // Only the user's own edits are in the history.
+        QCOMPARE(shell.window->session()->history().undoCount(), steps + 4);
+        QCOMPARE(shell.window->session()->history().nextUndo()->label, "Move page");
+
+        // A deleted chosen section drops out of the scope tree.
+        QVERIFY(structure.remove(HierarchyItem{genes}).has_value());
+        settle();
+        QCOMPARE(scope->topLevelItem(1)->childCount(), 1);
+    }
+
+    // R5 (Q21): 500 pages in 10 sections. The build with the preview filled, a refresh and
+    // one re-validation are timed and reported (qInfo), not checked against a bound.
+    void studyPlanFiveHundredPages() {
+        Shell shell(settings(QStringLiteral("studyPlanLarge")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("StudyPlanLarge"))));
+        {
+            application::WorkspaceStructure structure(*shell.window->session(), shell.clock,
+                                                      shell.ids);
+            auto notebook = structure.createNotebook("Large"); // "Section 1" with a page
+            QVERIFY(notebook.has_value());
+            std::vector<core::SectionId> sections{notebook->section};
+            for (int i = 2; i <= 10; ++i) {
+                auto section =
+                    structure.createSection(notebook->notebook, "Chapter " + std::to_string(i));
+                QVERIFY(section.has_value());
+                sections.push_back(section->section);
+            }
+            for (const core::SectionId section : sections) {
+                for (int page = 2; page <= 50; ++page) {
+                    QVERIFY(structure.createPage(section).has_value());
+                }
+            }
+        }
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        inPlan<QLineEdit>(dialog, "studyPlanGoal")->setText(QStringLiteral("Everything"));
+        inPlan<QSpinBox>(dialog, "studyPlanDays")->setValue(60);
+        inPlan<QSpinBox>(dialog, "studyPlanMinutes")->setValue(480);
+        checkScope(dialog, QStringLiteral("Large"));
+        QElapsedTimer timer;
+        timer.start();
+        inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+        const qint64 build = timer.nsecsElapsed();
+        QVERIFY(dialog->preview() != nullptr);
+        timer.restart();
+        dialog->refreshNow();
+        const qint64 refresh = timer.nsecsElapsed();
+        timer.restart();
+        const application::PlanReview review = dialog->preview()->review(shell.ws());
+        const qint64 check = timer.nsecsElapsed();
+        std::size_t pages = 0;
+        for (const application::PlanBlock& block : dialog->preview()->draft().blocks) {
+            pages += block.pages.size();
+        }
+        QCOMPARE(pages, std::size_t{500});
+        QVERIFY(review.invalid.empty() && review.changed.empty());
+        qInfo("study plan, 500 pages in 10 sections: %zu blocks; build + preview %.1f ms; "
+              "refresh %.1f ms; re-validation %.3f ms",
+              dialog->preview()->draft().blocks.size(), static_cast<double>(build) / 1e6,
+              static_cast<double>(refresh) / 1e6, static_cast<double>(check) / 1e6);
     }
 
     // Phase 9 accessibility: every control a keyboard or screen-reader user can reach has a
