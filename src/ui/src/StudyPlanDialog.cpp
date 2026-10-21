@@ -369,21 +369,30 @@ void StudyPlanDialog::connectControls() {
         }
     });
     connect(blockTitle_, &QLineEdit::editingFinished, this, [this] {
-        const auto block = preview_ && !stale_ ? selectedBlock() : std::nullopt;
+        if (!preview_ || stale_) {
+            return;
+        }
+        const auto block = selectedBlock();
         const std::string title = blockTitle_->text().toStdString();
         if (block && preview_->draft().blocks[*block].title != title) {
             apply(preview_->setBlockTitle(*block, title));
         }
     });
     connect(blockMinutes_, &QSpinBox::valueChanged, this, [this] {
-        const auto block = !rendering_ && preview_ && !stale_ ? selectedBlock() : std::nullopt;
+        if (rendering_ || !preview_ || stale_) {
+            return;
+        }
+        const auto block = selectedBlock();
         const std::chrono::minutes value{roundToStep(blockMinutes_->value())};
         if (block && preview_->draft().blocks[*block].minutes != value) {
             apply(preview_->setBlockMinutes(*block, value));
         }
     });
     connect(moveBlock_, &QPushButton::clicked, this, [this] {
-        const auto block = preview_ && !stale_ ? selectedBlock() : std::nullopt;
+        if (!preview_ || stale_) {
+            return;
+        }
+        const auto block = selectedBlock();
         if (!block) {
             return;
         }
@@ -398,42 +407,47 @@ void StudyPlanDialog::connectControls() {
                 index = i;
             }
         }
-        const std::optional<std::size_t> select = moved && !sameDay ? index : block;
+        std::optional<std::size_t> select = block;
+        if (moved && !sameDay) {
+            select = index;
+        }
         apply(std::move(moved), select);
     });
     connect(removeBlock_, &QPushButton::clicked, this,
             withBlock([this](std::size_t block) { return preview_->removeBlock(block); }));
     connect(excludePage_, &QPushButton::clicked, this, [this] {
         const QListWidgetItem* item = blockPages_->currentItem();
-        const auto page =
-            item != nullptr ? idFrom<core::PageId>(item->data(kIdRole).toString()) : std::nullopt;
-        if (preview_ && !stale_ && page) {
+        if (!preview_ || stale_ || item == nullptr) {
+            return;
+        }
+        if (const auto page = idFrom<core::PageId>(item->data(kIdRole).toString())) {
             apply(preview_->excludePage(planner_->workspace(), *page));
         }
     });
     connect(addPage_, &QPushButton::clicked, this, [this] {
         const QTreeWidgetItem* item = excluded_->currentItem();
         const QString chosen = item != nullptr ? item->data(0, kIdRole).toString() : QString();
-        const auto page = chosen.startsWith(QStringLiteral("p:"))
-                              ? idFrom<core::PageId>(chosen.mid(2))
-                              : std::nullopt;
-        const auto block = preview_ && !stale_ ? selectedBlock() : std::nullopt;
+        if (!preview_ || stale_ || !chosen.startsWith(QStringLiteral("p:"))) {
+            return;
+        }
+        const auto page = idFrom<core::PageId>(chosen.mid(2));
+        const auto block = selectedBlock();
         if (block && page) {
             apply(preview_->addPage(*block, *page));
         }
     });
     connect(restore_, &QPushButton::clicked, this, [this] {
         const QTreeWidgetItem* item = excluded_->currentItem();
-        const QString data = item != nullptr ? item->data(0, kIdRole).toString() : QString();
-        if (preview_ && !stale_ && data.startsWith(QStringLiteral("r:"))) {
-            apply(preview_->restoreBlock(data.mid(2).toULongLong()));
+        const QString chosen = item != nullptr ? item->data(0, kIdRole).toString() : QString();
+        if (preview_ && !stale_ && chosen.startsWith(QStringLiteral("r:"))) {
+            apply(preview_->restoreBlock(chosen.mid(2).toULongLong()));
         }
     });
     const auto withReference = [this](bool keep) {
         return [this, keep] {
             const QTreeWidgetItem* item = references_->currentItem();
-            const QString data = item != nullptr ? item->data(0, kIdRole).toString() : QString();
-            const auto page = idFrom<core::PageId>(data.mid(2));
+            const QString chosen = item != nullptr ? item->data(0, kIdRole).toString() : QString();
+            const auto page = idFrom<core::PageId>(chosen.mid(2));
             if (!preview_ || stale_ || !page) {
                 return;
             }
@@ -616,8 +630,10 @@ QString StudyPlanDialog::pageTitle(core::PageId page) const {
 void StudyPlanDialog::render() {
     const document::Workspace& ws = planner_->workspace();
     rendering_ = true;
-    const std::optional<std::size_t> selected =
-        select_ ? std::exchange(select_, std::nullopt) : selectedBlock();
+    std::optional<std::size_t> selected = std::exchange(select_, std::nullopt);
+    if (!selected) {
+        selected = selectedBlock();
+    }
     table_->clear();
     QStringList messages;
     bool canAccept = false;
@@ -877,7 +893,10 @@ void StudyPlanDialog::renderReferences(const PlanReview& review) {
 
 void StudyPlanDialog::updateControls() {
     const bool editable = preview_.has_value() && !stale_;
-    const std::optional<std::size_t> block = editable ? selectedBlock() : std::nullopt;
+    std::optional<std::size_t> block;
+    if (editable) {
+        block = selectedBlock();
+    }
     for (QWidget* widget : std::initializer_list<QWidget*>{blockTitle_, blockMinutes_, blockDay_,
                                                            moveBlock_, removeBlock_}) {
         widget->setEnabled(block.has_value());
