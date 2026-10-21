@@ -384,6 +384,59 @@ void appendTaskUnlinks(const Workspace& workspace, std::span<const core::PageId>
     tasks.appendTo(out);
 }
 
+// ---------------------------------------------------------------------------- study plans
+
+Result<Created<core::ProjectId>> createPlan(const Workspace& workspace, NewPlan plan,
+                                            const core::Clock& clock, core::IdGenerator& ids) {
+    const auto now = clock.now();
+    study::Project project{
+        .id = core::ProjectId::generate(ids),
+        .title = std::move(plan.title),
+        .description = std::move(plan.description),
+        .start = plan.start,
+        .due = plan.due,
+        .order = appendKey(workspace.projects(),
+                           [&](core::ProjectId id) { return workspace.findProject(id)->order; }),
+        .created = now,
+        .modified = now,
+    };
+    if (auto check = study::checkValues(project); !check) {
+        return tl::unexpected(check.error());
+    }
+    std::vector<AnyChange> changes;
+    changes.reserve(plan.tasks.size() + 1);
+    const auto id = project.id;
+    changes.push_back(created(std::move(project)));
+
+    // Chained keys: composing createTask would give every task the same key.
+    const auto topLevel = workspace.topLevelTasks();
+    std::optional<core::FractionalIndex> last;
+    if (!topLevel.empty()) {
+        last = workspace.findTask(topLevel.back())->order;
+    }
+    for (NewPlanTask& task : plan.tasks) {
+        normalise(task.linkedPages);
+        study::Task record{
+            .id = core::TaskId::generate(ids),
+            .title = std::move(task.title),
+            .notes = std::move(task.notes),
+            .project = id,
+            .dueDate = task.dueDate,
+            .estimate = task.estimate,
+            .linkedPages = std::move(task.linkedPages),
+            .order = last ? core::FractionalIndex::after(*last) : core::FractionalIndex::first(),
+            .created = now,
+            .modified = now,
+        };
+        if (auto check = study::checkValues(record); !check) {
+            return tl::unexpected(check.error());
+        }
+        last = record.order;
+        changes.push_back(created(std::move(record)));
+    }
+    return Created<core::ProjectId>{id, makeCommand("Create study plan", std::move(changes))};
+}
+
 // ---------------------------------------------------------------------------- tags
 
 Result<Created<core::TagId>> createTag(const Workspace& workspace, std::string name,
