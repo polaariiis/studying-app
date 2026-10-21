@@ -257,6 +257,43 @@ Down and PageDown scroll it, its focus mark differs from the unfocused look in t
 the dark theme, a refresh keeps the focus, and below the cap or outside a project the focus
 moves on; with three lines it is as tall as its lines and not a Tab stop.
 
+**2.0 additions (study plans from a chosen scope, 2.0-PLAN-03).** `application_tests`:
+- **`StudyPlanTest`**: the distribution rules over an in-memory workspace.
+  - The scope: tree order, a page chosen twice counted once, empty sections skipped, PDF pages counted like any page, no pages.
+  - The minutes per page, whole and split sections, and unused time.
+  - The 12-blocks-a-day limit, for a whole and for a split section.
+  - Overflow by one block and by several days, the 5-minute minimum, the 100-block limit (the blocks needed and the sections kept), 100 blocks still a draft.
+  - Determinism. Every page of the scope in exactly one block.
+  - Plan days as dates, with no time zone: month end, year end, Feb 29, the last storable date. Requests out of range are refused.
+- **`StudyPlanValidationTest`**: every §7.5 rule with a passing and a failing case (`docs/VERSION_2_0.md`). Titles and objectives are cut at a character boundary with a warning, and a day over its minutes is a warning.
+- **`StudyPlanPreviewTest`**:
+  - The overflow summary.
+  - The resolutions: extend, only up to 60 days and a storable last day; keep unscheduled; remove.
+  - Block edits, remove and restore, a move onto a full day refused, saving order kept.
+  - Pages only from "Excluded pages", and every page still accounted for after edits.
+  - Deleted, moved-out, kept and new pages, each resolution changing only what it names, and no blocks holding Accept.
+- **`PlannerPlanTest`**:
+  - One undoable, persisted "Create study plan" edit (undo, redo with the same ids, reopening).
+  - Unscheduled blocks saved without a due date after undo, redo and reopening, and listed by the agenda under "No date".
+  - Search finds the tasks.
+  - A read-only workspace refuses, and the final check refuses an empty plan, unresolved overflow and a deleted page.
+
+`document_tests` (`StudyCommandsTest.CreatePlan*`):
+- The project and its tasks in one patch, with all fields and defaults.
+- 100 order keys strictly increasing after the existing tasks.
+- Equal commands from equal ids.
+- Invalid values refused; an unknown page refuses the whole patch.
+
+`ui.ShellTest` (`studyPlan*`):
+- **Opening and saving**: Planner ▸ New Study Plan… opens one modeless dialog with the panel; the form's defaults, steps of 5 and latest start date; Build and the preview rows. Accept saves one step, the panel shows the project, and Undo removes it.
+- **Saving nothing**: Cancel, the close button, Escape and closing the workspace. A read-only workspace previews but cannot accept.
+- **Limits**: more than 100 blocks keeps every input and says how to reduce the scope. Overflow is listed with the days it needs and blocks Accept.
+- **Editing**: block title, minutes and day, and a moved block stays selected. A day over its minutes is saved as entered, and a 13th block is refused. Exclude, add, remove and restore. Rebuild asks only after edits.
+- **Overflow resolutions**: (a), (c) and (d) with Restore; after saving, the agenda by date and "No date", and the plan task's pages marked in the tree.
+- **Workspace changes with the dialog open**: a deleted page, Undo, a moved page kept, a new page reported. The final check runs before a pending refresh, and only the user's edits are in the history.
+- **Measurement**: 500 pages in 10 sections give 70 blocks. Build with the preview filled took 7–10 ms, and one re-validation about 0.1 ms, against the task's 200 ms and 5 ms. Reported with `qInfo`, not a test bound.
+- **Accessibility**: the audit also covers the dialog's controls.
+
 ## 1. Principles
 
 * **Most logic is testable without a GUI, a GPU or a display.** That is the payoff of the
