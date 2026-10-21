@@ -8,6 +8,7 @@
 #include "PlannerPanel.hpp"
 #include "SessionDocumentRasterizer.hpp"
 #include "SessionImageSource.hpp"
+#include "StudyPlanDialog.hpp"
 #include "WorkspaceTreeModel.hpp"
 
 #include <studyapp/application/BatchExport.hpp>
@@ -37,6 +38,7 @@
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QCursor>
+#include <QDateEdit>
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
@@ -3885,6 +3887,305 @@ private Q_SLOTS:
             shell.dialogs->information.last().contains(QString::fromStdString(asset.toString())));
     }
 
+    // ---------------------------------------------------------------- study plans
+
+private:
+    /// A notebook "Biology" with "Cells" (3 pages) and "Genes" (2 pages), next to the
+    /// workspace's start notebook. Three undoable edits.
+    static void addBiology(Shell& shell) {
+        application::WorkspaceStructure structure(*shell.window->session(), shell.clock, shell.ids);
+        auto notebook = structure.createNotebook("Biology"); // "Section 1" with a page
+        QVERIFY(notebook.has_value());
+        QVERIFY(structure.rename(HierarchyItem{notebook->section}, "Cells").has_value());
+        QVERIFY(structure.createPage(notebook->section).has_value());
+        QVERIFY(structure.createPage(notebook->section).has_value());
+        auto genes = structure.createSection(notebook->notebook, "Genes");
+        QVERIFY(genes.has_value());
+        QVERIFY(structure.createPage(genes->section).has_value());
+    }
+
+    /// The open "New Study Plan" dialog, if any.
+    static ui::StudyPlanDialog* studyPlan(const Shell& shell) {
+        return shell.window->findChild<ui::StudyPlanDialog*>(QStringLiteral("studyPlanDialog"));
+    }
+
+    template <class T>
+    static T* inPlan(ui::StudyPlanDialog* dialog, const char* name) {
+        auto* found = dialog->findChild<T*>(QString::fromLatin1(name));
+        if (found == nullptr) {
+            qFatal("no study plan widget %s", name);
+        }
+        return found;
+    }
+
+    /// Checks the scope row whose text starts with `title`.
+    static void checkScope(ui::StudyPlanDialog* dialog, const QString& title,
+                           Qt::CheckState state = Qt::Checked) {
+        auto* scope = inPlan<QTreeWidget>(dialog, "studyPlanScope");
+        for (QTreeWidgetItemIterator it(scope); *it != nullptr; ++it) {
+            if ((*it)->text(0).startsWith(title)) {
+                (*it)->setCheckState(0, state);
+                return;
+            }
+        }
+        qFatal("no scope row %s", qPrintable(title));
+    }
+
+    /// The preview's rows as "row: child, child" lines.
+    static QStringList previewRows(ui::StudyPlanDialog* dialog) {
+        auto* table = inPlan<QTreeWidget>(dialog, "studyPlanPreview");
+        QStringList rows;
+        for (int i = 0; i < table->topLevelItemCount(); ++i) {
+            const QTreeWidgetItem* item = table->topLevelItem(i);
+            QStringList children;
+            for (int c = 0; c < item->childCount(); ++c) {
+                children << item->child(c)->text(0);
+            }
+            rows << item->text(0).section(QStringLiteral(" · "), 0, 0) + QStringLiteral(": ") +
+                        children.join(QStringLiteral(", "));
+        }
+        return rows;
+    }
+
+private Q_SLOTS:
+    // 2.0-PLAN-03: Planner ▸ New Study Plan opens the plan dialog (one at a time, with the
+    // Planner panel); Build shows the preview; Accept saves the project and its tasks as one
+    // undoable edit and shows the project in the panel; Undo removes all of it.
+    void studyPlanAccept() {
+        const study::FixedOffsetZone zone{std::chrono::minutes{0}};
+        Shell shell(settings(QStringLiteral("studyPlanAccept")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("StudyPlan"))));
+        shell.window->setTimeZone(&zone);
+        addBiology(shell);
+        auto* menu = shell.window->findChild<QMenu*>(QStringLiteral("menuPlanner"));
+        QVERIFY(menu != nullptr);
+        QVERIFY(menu->actions().contains(shell.action("actionNewStudyPlan")));
+        auto* panel = shell.window->findChild<ui::PlannerPanel*>(QStringLiteral("plannerPanel"));
+        QVERIFY(!panel->isVisible());
+
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        QVERIFY(dialog != nullptr);
+        QVERIFY(dialog->isVisible());
+        QVERIFY(!dialog->isModal());
+        QVERIFY(panel->isVisible());                   // the Planner panel is shown too
+        shell.action("actionNewStudyPlan")->trigger(); // the open one comes to the front
+        QCOMPARE(shell.window->findChildren<ui::StudyPlanDialog*>().size(), 1);
+
+        // The form's defaults (Q3).
+        auto* goal = inPlan<QLineEdit>(dialog, "studyPlanGoal");
+        auto* start = inPlan<QDateEdit>(dialog, "studyPlanStart");
+        auto* days = inPlan<QSpinBox>(dialog, "studyPlanDays");
+        auto* minutes = inPlan<QSpinBox>(dialog, "studyPlanMinutes");
+        auto* accept = inPlan<QPushButton>(dialog, "studyPlanAccept");
+        QVERIFY(goal->text().isEmpty());
+        QCOMPARE(start->date(), QDate(2026, 9, 21)); // the manual clock's today, in UTC
+        QCOMPARE(days->value(), 7);
+        QCOMPARE(minutes->value(), 60);
+        QCOMPARE(minutes->singleStep(), 5);
+        QVERIFY(!accept->isEnabled()); // nothing built yet
+
+        // 5 pages over 2 days of 60 minutes: e = 120 / 5 = 24 → 20; Cells (60) on day 1,
+        // Genes (40) on day 2.
+        goal->setText(QStringLiteral("Biology exam"));
+        days->setValue(2);
+        checkScope(dialog, QStringLiteral("Biology"));
+        inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+        QCOMPARE(previewRows(dialog),
+                 (QStringList{QStringLiteral("Day 1: Cells"), QStringLiteral("Day 2: Genes")}));
+        auto* table = inPlan<QTreeWidget>(dialog, "studyPlanPreview");
+        QCOMPARE(table->topLevelItem(0)->text(1), QStringLiteral("60 of 60 min"));
+        QCOMPARE(table->topLevelItem(1)->text(1), QStringLiteral("40 of 60 min"));
+        QCOMPARE(table->topLevelItem(1)->child(0)->text(2), QStringLiteral("Page 1, Page 2"));
+        QVERIFY(accept->isEnabled());
+
+        // Changing the days makes the preview stale until Build; the goal does not (Q14).
+        days->setValue(3);
+        QVERIFY(dialog->isStale());
+        QVERIFY(!accept->isEnabled());
+        days->setValue(2);
+        inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+        goal->setText(QStringLiteral("  Biology exam "));
+        QCOMPARE(dialog->preview()->draft().title, std::string("Biology exam"));
+        QVERIFY(accept->isEnabled());
+
+        const auto steps = shell.window->session()->history().undoCount();
+        const QPointer<ui::StudyPlanDialog> watched(dialog);
+        accept->click();
+        QTRY_VERIFY(watched.isNull()); // closed and deleted
+        QCOMPARE(shell.window->session()->history().undoCount(), steps + 1);
+        QCOMPARE(shell.window->session()->history().nextUndo()->label, "Create study plan");
+        const auto& ws = shell.ws();
+        QCOMPARE(ws.projects().size(), std::size_t{1});
+        const study::Project& project = *ws.findProject(ws.projects()[0]);
+        QCOMPARE(project.title, std::string("Biology exam"));
+        QCOMPARE(ws.tasksOfProject(project.id).size(), std::size_t{2});
+
+        // The panel shows the new project in the Tasks view, with no task selected (Q20).
+        QCoreApplication::processEvents();
+        QVERIFY(panel->isVisible());
+        QCOMPARE(panel->findChild<QComboBox*>(QStringLiteral("plannerScope"))->currentText(),
+                 QStringLiteral("Biology exam"));
+        QCOMPARE(
+            panel->findChild<QTreeWidget*>(QStringLiteral("plannerTasks"))->topLevelItemCount(), 2);
+        QCOMPARE(panel->selectedTask(), std::nullopt);
+
+        // One undo removes the project and every task.
+        shell.action("actionUndo")->trigger();
+        QVERIFY(ws.projects().empty());
+        QCOMPARE(ws.taskCount(), std::size_t{0});
+        QCOMPARE(shell.window->session()->history().undoCount(), steps);
+    }
+
+    // Cancel, the close button, Escape and closing the workspace each close the dialog
+    // and save nothing.
+    void studyPlanCancelSavesNothing() {
+        Shell shell(settings(QStringLiteral("studyPlanCancel")));
+        const auto path = freshPath(QStringLiteral("StudyPlanCancel"));
+        QVERIFY(shell.window->createWorkspace(path));
+        addBiology(shell);
+        const document::Workspace before = shell.ws();
+        const auto steps = shell.window->session()->history().undoCount();
+        const auto openBuilt = [&] {
+            shell.action("actionNewStudyPlan")->trigger();
+            ui::StudyPlanDialog* dialog = studyPlan(shell);
+            inPlan<QLineEdit>(dialog, "studyPlanGoal")->setText(QStringLiteral("Exam"));
+            checkScope(dialog, QStringLiteral("Biology"));
+            inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+            if (!inPlan<QPushButton>(dialog, "studyPlanAccept")->isEnabled()) {
+                qFatal("the plan cannot be accepted");
+            }
+            return QPointer<ui::StudyPlanDialog>(dialog);
+        };
+        const auto unchanged = [&] {
+            QCOMPARE(shell.window->session()->history().undoCount(), steps);
+            QVERIFY(shell.ws() == before);
+        };
+
+        auto dialog = openBuilt();
+        inPlan<QPushButton>(dialog, "studyPlanCancel")->click();
+        QTRY_VERIFY(dialog.isNull());
+        unchanged();
+
+        dialog = openBuilt();
+        dialog->close(); // the window's close button
+        QTRY_VERIFY(dialog.isNull());
+        unchanged();
+
+        dialog = openBuilt();
+        QTest::keyClick(dialog, Qt::Key_Escape);
+        QTRY_VERIFY(dialog.isNull());
+        unchanged();
+
+        // Closing the workspace closes the dialog first (it refers to that workspace).
+        dialog = openBuilt();
+        QVERIFY(shell.window->closeWorkspace());
+        QVERIFY(dialog.isNull());
+        QVERIFY(!shell.action("actionNewStudyPlan")->isEnabled());
+        QVERIFY(shell.window->openWorkspace(path));
+        QVERIFY(shell.ws() == before);
+        QVERIFY(shell.ws().projects().empty());
+    }
+
+    // A read-only workspace: the preview works, Accept is disabled and says why.
+    void studyPlanReadOnly() {
+        Shell first(settings(QStringLiteral("studyPlanOwner")));
+        const auto path = freshPath(QStringLiteral("StudyPlanShared"));
+        QVERIFY(first.window->createWorkspace(path));
+        addBiology(first);
+        Shell shell(settings(QStringLiteral("studyPlanReadOnly")));
+        QVERIFY(shell.window->openWorkspace(path)); // in use: opened read-only
+        QVERIFY(shell.window->session()->isReadOnly());
+        QVERIFY(shell.action("actionNewStudyPlan")->isEnabled());
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        inPlan<QLineEdit>(dialog, "studyPlanGoal")->setText(QStringLiteral("Exam"));
+        checkScope(dialog, QStringLiteral("Biology"));
+        inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+        QVERIFY(dialog->preview() != nullptr);
+        QCOMPARE(previewRows(dialog).size(), 7); // the default 7 days
+        auto* accept = inPlan<QPushButton>(dialog, "studyPlanAccept");
+        QVERIFY(!accept->isEnabled());
+        QVERIFY(inPlan<QLabel>(dialog, "studyPlanMessages")->text().contains(u"read-only"_s));
+        accept->click(); // disabled: nothing happens
+        QCOMPARE(shell.window->session()->history().undoCount(), std::size_t{0});
+        QVERIFY(shell.ws().projects().empty());
+    }
+
+    // Over the limits: a scope needing more than 100 blocks keeps every input and says how
+    // to reduce it; overflow is listed with the days it needs and blocks Accept; a start
+    // whose last day would not be storable cannot be chosen.
+    void studyPlanOverLimit() {
+        Shell shell(settings(QStringLiteral("studyPlanOverLimit")));
+        QVERIFY(shell.window->createWorkspace(freshPath(QStringLiteral("StudyPlanBig"))));
+        addBiology(shell);
+        {
+            application::WorkspaceStructure structure(*shell.window->session(), shell.clock,
+                                                      shell.ids);
+            auto big = structure.createNotebook("Big"); // "Section 1" with a page
+            QVERIFY(big.has_value());
+            for (int i = 2; i <= 101; ++i) {
+                QVERIFY(structure.createSection(big->notebook, "S" + std::to_string(i)));
+            }
+        }
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        auto* goal = inPlan<QLineEdit>(dialog, "studyPlanGoal");
+        auto* start = inPlan<QDateEdit>(dialog, "studyPlanStart");
+        auto* days = inPlan<QSpinBox>(dialog, "studyPlanDays");
+        auto* minutes = inPlan<QSpinBox>(dialog, "studyPlanMinutes");
+        auto* summary = inPlan<QLabel>(dialog, "studyPlanSummary");
+        auto* accept = inPlan<QPushButton>(dialog, "studyPlanAccept");
+        auto* build = inPlan<QPushButton>(dialog, "studyPlanBuild");
+
+        // 101 one-page sections over 60 days of 480 minutes: one a day, 101 blocks.
+        goal->setText(QStringLiteral("Everything"));
+        days->setValue(60);
+        minutes->setValue(480);
+        checkScope(dialog, QStringLiteral("Big"));
+        build->click();
+        QVERIFY(dialog->preview() == nullptr);
+        QVERIFY(summary->text().startsWith(u"The scope needs 101 blocks; the limit is 100."_s));
+        QCOMPARE(inPlan<QTreeWidget>(dialog, "studyPlanPreview")->topLevelItemCount(), 101);
+        QVERIFY(!accept->isEnabled());
+        QCOMPARE(goal->text(), QStringLiteral("Everything")); // every input is kept
+        QCOMPARE(days->value(), 60);
+        QCOMPARE(minutes->value(), 480);
+        QCOMPARE(start->date(), QDate(2026, 9, 21));
+        const auto* bigRow = inPlan<QTreeWidget>(dialog, "studyPlanScope")
+                                 ->findItems(QStringLiteral("Big"), Qt::MatchExactly)
+                                 .value(0);
+        QVERIFY(bigRow != nullptr && bigRow->checkState(0) == Qt::Checked); // the scope too
+        QVERIFY(summary->isVisible());
+
+        // Overflow: 5 pages of 5 minutes, one a day, in a 1-day plan.
+        checkScope(dialog, QStringLiteral("Big"), Qt::Unchecked);
+        checkScope(dialog, QStringLiteral("Biology"));
+        days->setValue(1);
+        minutes->setValue(5);
+        build->click();
+        QVERIFY(dialog->preview() != nullptr);
+        QVERIFY(summary->text().endsWith(u"Needs 5 days, 1 requested; 20 minutes over."_s));
+        QCOMPARE(previewRows(dialog),
+                 (QStringList{QStringLiteral("Day 1: Cells (part 1 of 3)"),
+                              QStringLiteral("Does not fit in 1 day(s): Cells (part 2 of 3) (needs "
+                                             "day 2), Cells (part 3 of 3) (needs day 3), Genes "
+                                             "(part 1 of 2) (needs day 4), Genes (part 2 of 2) "
+                                             "(needs day 5)")}));
+        QVERIFY(!accept->isEnabled());
+        QVERIFY(inPlan<QLabel>(dialog, "studyPlanMessages")->text().contains(u"do not fit"_s));
+
+        // Minutes per day are in steps of 5; the latest start keeps the last day storable.
+        minutes->setValue(62);
+        Q_EMIT minutes->editingFinished();
+        QCOMPARE(minutes->value(), 60);
+        days->setValue(60);
+        QCOMPARE(start->maximumDate(), QDate(9999, 12, 31).addDays(-59));
+        start->setDate(QDate(9999, 12, 31));
+        QCOMPARE(start->date(), QDate(9999, 11, 2));
+        QCOMPARE(shell.window->session()->history().nextUndo()->label, "Create section");
+    }
+
     // Phase 9 accessibility: every control a keyboard or screen-reader user can reach has a
     // name assistive technology can read (QAccessible), in the shell and in the planner.
     void everyControlHasAnAccessibleName() {
@@ -3931,6 +4232,17 @@ private Q_SLOTS:
             QApplication::processEvents();
             audit();
         }
+        // The study plan dialog, a separate window: its controls are the window's children
+        // and are audited with them (2.0-PLAN-03, R9).
+        shell.action("actionNewStudyPlan")->trigger();
+        ui::StudyPlanDialog* dialog = studyPlan(shell);
+        checkScope(dialog, QStringLiteral("Notebook"));
+        inPlan<QPushButton>(dialog, "studyPlanBuild")->click();
+        QApplication::processEvents();
+        auto* goal = inPlan<QLineEdit>(dialog, "studyPlanGoal");
+        QVERIFY(shell.window->findChildren<QWidget*>().contains(goal));
+        QVERIFY(goal->isVisibleTo(shell.window.get()));
+        audit();
         QVERIFY2(unnamed.isEmpty(), qPrintable(unnamed.join(QStringLiteral(", "))));
     }
 
