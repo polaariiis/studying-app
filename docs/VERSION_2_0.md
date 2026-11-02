@@ -2,8 +2,9 @@
 
 > Status: **plan; the M1 decisions (P1–P4, P8, O4) were approved in principle on
 > 2026-10-14; 2.0-PLAN-01 is implemented, was accepted on 2026-10-14 (D57) and is merged
-> into `dev/2.0`; 2.0-PLAN-02 is implemented and merged into `dev/2.0`; nothing else in it
-> is implemented.**
+> into `dev/2.0`; 2.0-PLAN-02 is implemented and merged into `dev/2.0`; 2.0-PLAN-03 is
+> implemented on `feature/2.0-PLAN-03-plan-from-scope` and awaits review and integration;
+> nothing else in it is implemented.**
 > This is the canonical planning reference for StudyBoard 2.0. It consolidates and
 > replaces the two working drafts "StudyBoard 2.0 — AI-Assisted Study Plans" (v1.1,
 > 2026-10-12) and "StudyBoard — AI study plans (plan)" (§2.1). The short roadmap with
@@ -257,9 +258,10 @@ by value, not by dependency.
 
 Every task below carries a status line: **implemented** (with evidence), **investigate**
 (open technical questions before the task document), **proposed** (ready for a task
-document once approved), **blocked** (needs a decision, named). Today two tasks are
-implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57) and merged into `dev/2.0`; and
-2.0-PLAN-02, merged into `dev/2.0`.
+document once approved), **blocked** (needs a decision, named). Today three tasks are
+implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57) and merged into `dev/2.0`;
+2.0-PLAN-02, merged into `dev/2.0`; and 2.0-PLAN-03, on its feature branch, awaiting review
+and integration.
 
 ## 5. Milestone M1 — study plans without AI
 
@@ -352,7 +354,33 @@ implemented: 2.0-PLAN-01, accepted on 2026-10-14 (D57) and merged into `dev/2.0`
 
 ### 2.0-PLAN-03 — Make a study plan from a chosen scope (no AI)
 
-* **Status:** approved in principle (P2, P3, P4); not started; follows 2.0-PLAN-02.
+* **Status:** implemented on `feature/2.0-PLAN-03-plan-from-scope`, awaiting review and
+  integration into `dev/2.0`. It covers the draft, the editable preview with its checks
+  (`application/StudyPlan.hpp`), the one-patch save (`createPlan`, `Planner::createPlan`) and
+  the dialog; the tests are in [TESTING.md §0](TESTING.md#0-test-suites-10-12-and-20), "2.0
+  additions", and the record mapping is in [DATA_MODEL.md §5](DATA_MODEL.md#5-study-model-study-implemented-in-phase-7).
+  P2–P4 are approved and implemented, with no D-number until the implementation is accepted.
+  The user's decisions during the task:
+  * **Menu and dialog:** a top-level **Planner** menu with "New Study Plan…" opens a modeless
+    dialog, one at a time, that closes, saving nothing, with its workspace (Q1, Q2).
+  * **Form:** start today, 7 days, 60 minutes per day in steps of 5, and the goal required
+    (Q3, Q5). The goal, trimmed and cut at 120 characters with a warning, is the project's
+    title, and the full goal is its description (Q4).
+  * **Totals:** "minutes over" is the overflow blocks' minutes, and "needs X days" is the last
+    day used (Q8). Extending keeps the placement (Q9). Each resolution applies to the whole
+    overflow group, and single blocks can also be moved or removed (Q10).
+  * **Preview edits:**
+    * Pages are added only from "Excluded pages" (Q11).
+    * Block minutes are 5–480 in steps of 5, and a block may have no pages (Q12).
+    * "Excluded pages" is always shown while it is not empty (Q13).
+  * **Rebuild:** a change to the days, the minutes or the scope makes the preview stale until
+    Rebuild, which asks first only after edits; the goal and the start update it at once (Q14).
+  * **Saving order:** tasks are saved by day, with unscheduled blocks last (Q15).
+  * **Changed pages:** kept moved pages are named as outside the scope (Q16). Pages in the
+    scope but not in the plan are reported without blocking Accept (Q17).
+  * **Scope tree:** independent check boxes (Q18). After Accept the panel shows the new
+    project, with no task selected (Q20). A preview with no blocks cannot be accepted
+    (Q25, "Block Accept").
 * **Goal:** Planner ▸ *New study plan…*: a goal, a start date, a number of days, minutes
   per day and the notebooks/sections to cover → StudyBoard spreads the chosen pages over
   the days in tree order by the distribution rules below → an **editable preview** →
@@ -797,9 +825,9 @@ the worker; D54 console rules.
 | # | Proposal | Alternatives considered | Reason | Status |
 |---|---|---|---|---|
 | P1 | Task IDs `2.0-<AREA>-NN` with areas PLAN, AI, SRC, WS, RES, REL; old IDs traced in §4.1 | Keep `1.3-…`; A's `AI-NN` | Matches `2.0-REL-01` and the guard's branch pattern | Approved 2026-10-14; not yet applied to a task |
-| P2 | A non-AI plan builder (2.0-PLAN-03) precedes AI generation and owns the preview and save | AI-only plan creation (both drafts) | Useful without AI; de-risks the AI step | Approved 2026-10-14; not implemented |
-| P3 | A study plan is an ordinary `Project` with one `Task` per block (`estimate`, `dueDate`, `notes` = objective, `linkedPages`); no plan record type, no migration; the daily limit is not stored | New `study_plan` / `study_task` / reference tables (A's sketch) | Same undo, persistence, search, Planner UI; verified in §3.2 | Approved 2026-10-14; not implemented |
-| P4 | `createPlan` is one new pure command assigning consecutive order keys, executed once (one undo step) | Composing N `createTask` commands (same order key); N separate edits | Correct ordering and one undo step | Approved 2026-10-14; not implemented |
+| P2 | A non-AI plan builder (2.0-PLAN-03) precedes AI generation and owns the preview and save | AI-only plan creation (both drafts) | Useful without AI; de-risks the AI step | Approved 2026-10-14; implemented on the 2.0-PLAN-03 feature branch, awaiting review and integration |
+| P3 | A study plan is an ordinary `Project` with one `Task` per block (`estimate`, `dueDate`, `notes` = objective, `linkedPages`); no plan record type, no migration; the daily limit is not stored | New `study_plan` / `study_task` / reference tables (A's sketch) | Same undo, persistence, search, Planner UI; verified in §3.2 | Approved 2026-10-14; implemented on the 2.0-PLAN-03 feature branch, awaiting review and integration |
+| P4 | `createPlan` is one new pure command assigning consecutive order keys, executed once (one undo step) | Composing N `createTask` commands (same order key); N separate edits | Correct ordering and one undo step | Approved 2026-10-14; implemented on the 2.0-PLAN-03 feature branch, awaiting review and integration |
 | P5 | AI compiled only with `STUDYAPP_ENABLE_AI` (default OFF) until the release gate | AI always compiled, disabled at run time | Packages gain no QtNetwork/TLS until the feature is worth shipping | Open until the AI milestone |
 | P6 | The AI port lives in `application` (Qt-free); one `platform` adapter for OpenAI-compatible chat completions; Gemini as the development preset | A new `ai` module (draft B); the native Gemini API; several adapters | Ports belong to their users (ARCHITECTURE.md §3); one adapter covers several services | Open until the AI milestone |
 | P7 | Key from an environment variable during development; OS credential store, or no AI in packages, before a public release | Key in `QSettings`; key in the workspace | No plain-text secret on disk; the workspace is bundled and shared | Open until the AI milestone |

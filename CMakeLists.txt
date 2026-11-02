@@ -11,7 +11,7 @@ project(studyapp
 # STUDYAPP_VERSION (2.0.0-dev with the label "dev"; 2.0.0 without it) is what the application
 # shows and what packages are named after; PROJECT_VERSION stays numeric where a platform
 # requires it (docs/RELEASE.md).
-set(STUDYAPP_VERSION_LABEL "dev")
+set(STUDYAPP_VERSION_LABEL "dev" CACHE STRING "Pre-release label of the version (e.g. dev.plan03)")
 if(STUDYAPP_VERSION_LABEL)
     set(STUDYAPP_VERSION "${PROJECT_VERSION}-${STUDYAPP_VERSION_LABEL}")
 else()

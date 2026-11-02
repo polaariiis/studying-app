@@ -755,6 +755,15 @@ void PlannerPanel::selectTask(std::optional<core::TaskId> task) {
     refreshNow();
 }
 
+void PlannerPanel::showProject(core::ProjectId project) {
+    ensureBuilt();
+    setSelected(std::nullopt);
+    refreshScopes();
+    scope_->setCurrentIndex(scope_->findData(QStringLiteral("p:") + idText(project)));
+    showView(View::Tasks);
+    refreshNow();
+}
+
 void PlannerPanel::setSelected(std::optional<core::TaskId> task) {
     if (task == selected_) {
         return;

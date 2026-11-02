@@ -1,5 +1,6 @@
 #pragma once
 
+#include <studyapp/application/StudyPlan.hpp>
 #include <studyapp/application/WorkspaceSession.hpp>
 #include <studyapp/core/Clock.hpp>
 #include <studyapp/core/Error.hpp>
@@ -53,6 +54,18 @@ public:
                                                      std::span<const std::string> names);
     [[nodiscard]] core::Result<void> setTaskTagNames(core::TaskId task,
                                                      std::span<const std::string> names);
+
+    // ---- study plans (2.0-PLAN-03)
+    /// Saves `draft` as a project with one task per block, in one undoable edit ("Create
+    /// study plan"). The final check: validatePlanDraft against the workspace as it is now;
+    /// titles are saved as it cuts them. The project's description is the request's goal,
+    /// trimmed; its dates are the plan's first and last day. A task's due date is its
+    /// block's day, none for an unscheduled block; its estimate is the block's minutes.
+    /// Errors: InvalidArgument (nothing saved) if the draft has no blocks or a validation
+    /// error, such as a deleted page or a block after the last day; Unsupported
+    /// (read-only).
+    [[nodiscard]] core::Result<core::ProjectId> createPlan(const PlanDraft& draft,
+                                                           const PlanRequest& request);
 
     // ---- queries
     [[nodiscard]] const document::Workspace& workspace() const noexcept;

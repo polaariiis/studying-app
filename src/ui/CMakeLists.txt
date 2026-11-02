@@ -39,6 +39,8 @@ studyapp_add_module(ui
         src/SessionDocumentRasterizer.hpp
         src/SessionImageSource.cpp
         src/SessionImageSource.hpp
+        src/StudyPlanDialog.cpp
+        src/StudyPlanDialog.hpp
         src/SelfTest.cpp
         src/ShellDialogs.cpp
         src/ThemeIcons.cpp

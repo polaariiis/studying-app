@@ -11,6 +11,7 @@ studyapp_add_gtest(application_tests
         PlannerTest.cpp
         SearchTest.cpp
         ShellWorkflowTest.cpp
+        StudyPlanTest.cpp
         WorkspaceSessionTest.cpp
     LIBS
         studyapp::application

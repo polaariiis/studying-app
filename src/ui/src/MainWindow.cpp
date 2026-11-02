@@ -10,6 +10,7 @@
 #include "SessionDocumentPort.hpp"
 #include "SessionDocumentRasterizer.hpp"
 #include "SessionImageSource.hpp"
+#include "StudyPlanDialog.hpp"
 #include "ThemeIcons.hpp"
 #include "WorkspaceTreeModel.hpp"
 
@@ -613,6 +614,12 @@ void MainWindow::createActions() {
     });
     createConsoleAction();
 
+    // ---- Planner
+    newStudyPlanAction_ = make(tr("New &Study Plan…"), QStringLiteral("actionNewStudyPlan"));
+    newStudyPlanAction_->setStatusTip(
+        tr("Spread chosen notebooks and sections over days as a project with tasks"));
+    connect(newStudyPlanAction_, &QAction::triggered, this, &MainWindow::newStudyPlan);
+
     themeGroup_ = new QActionGroup(this);
     themeGroup_->setExclusive(true);
     const auto makeThemeAction = [this](const QString& text, const QString& name, ThemeMode mode) {
@@ -789,6 +796,10 @@ void MainWindow::createMenus() {
     toolsMenu->addMenu(shape_.menu);
     toolsMenu->addMenu(textSizeMenu_);
     toolsMenu->addMenu(eraserMenu_);
+
+    QMenu* plannerMenu = menuBar()->addMenu(tr("&Planner"));
+    plannerMenu->setObjectName(QStringLiteral("menuPlanner"));
+    plannerMenu->addAction(newStudyPlanAction_);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->setObjectName(QStringLiteral("menuView"));
@@ -1346,6 +1357,7 @@ void MainWindow::detach(bool closeSession) {
     if (!open_) {
         return;
     }
+    delete studyPlan_; // it refers to this workspace's planner
     open_->session->setPatchListener({});
     clearSearch();
     treeModel_->setWorkspace(nullptr);
@@ -1408,6 +1420,9 @@ void MainWindow::onPatchApplied(const document::Patch& patch) {
     treeModel_->onPatch(patch);
     updateLinkHighlight(); // links, deleted pages and tasks, undo: after the rows follow
     planner_->onPatch(patch);
+    if (studyPlan_) {
+        studyPlan_->onPatch(patch); // its preview follows the workspace (rule 7)
+    }
     if (navigation_->isShowingSearchResults() && affectsSearch(patch)) {
         searchDelay_->start(); // results follow the workspace (never stale or dangling)
     }
@@ -1564,6 +1579,29 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         return true;
     }
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::newStudyPlan() {
+    if (!open_) {
+        return;
+    }
+    plannerAction_->setChecked(true); // the plan is saved into the planner
+    if (studyPlan_) {
+        studyPlan_->show();
+        studyPlan_->raise();
+        studyPlan_->activateWindow();
+        return;
+    }
+    const study::FixedOffsetZone utc{std::chrono::minutes{0}};
+    const study::TimeZone& zone = timeZone_ != nullptr ? *timeZone_ : utc;
+    studyPlan_ =
+        new StudyPlanDialog(open_->planner, *dialogs_, study::localDate(open_->clock->now(), zone),
+                            open_->session->isReadOnly(), this);
+    studyPlan_->setSavedHandler([this](core::ProjectId project) {
+        plannerAction_->setChecked(true);
+        planner_->showProject(project);
+    });
+    studyPlan_->show();
 }
 
 void MainWindow::updateLinkHighlight() {
@@ -2762,6 +2800,7 @@ void MainWindow::updateActions() {
     openBundleAction_->setEnabled(canOpen);
     backUpAction_->setEnabled(writable);
     checkWorkspaceAction_->setEnabled(open);
+    newStudyPlanAction_->setEnabled(open); // read-only too: the preview only reads
 
     const auto label = [](std::string_view text) {
         return toQString(text);

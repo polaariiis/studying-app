@@ -75,6 +75,8 @@ public:
     void showView(View view);
     [[nodiscard]] std::optional<core::TaskId> selectedTask() const noexcept { return selected_; }
     void selectTask(std::optional<core::TaskId> task);
+    /// The Tasks view scoped to `project`, with no task selected (a new study plan).
+    void showProject(core::ProjectId project);
     /// Runs a pending refresh now.
     void refreshNow();
     [[nodiscard]] int refreshCount() const noexcept { return refreshes_; }

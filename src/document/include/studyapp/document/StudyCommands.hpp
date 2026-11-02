@@ -3,6 +3,7 @@
 #include <studyapp/document/Commands.hpp>
 #include <studyapp/study/Records.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -70,6 +71,32 @@ struct NewTask {
 [[nodiscard]] core::Result<Command> setTaskPageLink(const Workspace& workspace, core::TaskId task,
                                                     core::PageId page, bool linked,
                                                     const core::Clock& clock);
+
+// ---- study plans (2.0-PLAN-03) ---------------------------------------------------------
+struct NewPlanTask {
+    std::string title;
+    std::string notes;
+    std::chrono::minutes estimate{0};
+    std::optional<study::CalendarDate> dueDate; ///< none: unscheduled
+    std::vector<core::PageId> linkedPages;
+};
+
+struct NewPlan {
+    std::string title;
+    std::string description;
+    study::CalendarDate start{};
+    study::CalendarDate due{};
+    std::vector<NewPlanTask> tasks; ///< in plan order
+};
+
+/// One project and its tasks in one patch ("Create study plan"): the project is appended to
+/// the projects, its tasks to the top-level tasks in plan order, with strictly increasing
+/// order keys. Other fields keep the records' defaults (no course, priority, tags, due time
+/// or time block). The Workspace validates the linked pages when the patch is applied.
+[[nodiscard]] core::Result<Created<core::ProjectId>> createPlan(const Workspace& workspace,
+                                                                NewPlan plan,
+                                                                const core::Clock& clock,
+                                                                core::IdGenerator& ids);
 
 // ---- tags -----------------------------------------------------------------------------
 /// Errors: AlreadyExists if a tag of that name (ignoring ASCII case) exists.

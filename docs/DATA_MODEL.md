@@ -313,6 +313,31 @@ pages and notes; a course's title; a project's title and status (done or active)
 project's start and due are shown in its scope but not edited, and the other course and
 project fields (course `archived` among them) are not edited.
 
+**Study plans (2.0-PLAN-03).** A plan made from chosen notebooks and sections is an ordinary
+project with one task per study block. There is no plan record and no migration. The
+mapping:
+
+| Plan | Record field |
+|---|---|
+| Goal, trimmed (cut at 120 characters) | `Project::title` |
+| Goal, trimmed, not cut | `Project::description` |
+| First day | `Project::start` |
+| Last day: start + days − 1 | `Project::due` |
+| Block title (a section's title, or "Section (part i of n)") | `Task::title` |
+| Block objective (empty without AI) | `Task::notes` |
+| Block minutes | `Task::estimate` |
+| Block day d: start + d − 1 | `Task::dueDate`; no due date for a block kept unscheduled |
+| Block pages | `Task::linkedPages` (sorted, unique) |
+| The project | `Task::project` |
+
+The other fields keep their defaults: the project is Active, with no course or colour; the
+tasks are To do, with priority None, no course, tags, due time or time block. Saving is one
+command, "Create study plan": one patch creates the project and then its tasks. The tasks
+follow the existing top-level tasks with strictly increasing order keys, in block order (by
+day, unscheduled last), and the project follows the existing projects. Undo removes all of
+it in one step. The draft, its edits and its checks against the workspace are application
+state (`application/StudyPlan.hpp`) and are never stored.
+
 Invariants (checked by `Workspace::apply`): titles are not blank; dates are real dates in
 years 1–9999; a due time needs a due date and lies within the day; a block does not end
 before it starts; references (course, project, parent, linked pages, tags; a page's tags)

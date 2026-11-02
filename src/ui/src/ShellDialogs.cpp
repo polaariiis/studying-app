@@ -183,6 +183,17 @@ public:
         return box.clickedButton() == remove;
     }
 
+    bool confirmDiscardPlanEdits(QWidget* parent) override {
+        QMessageBox box(QMessageBox::Question, tr("Rebuild"),
+                        tr("Rebuilding discards your changes to the preview."),
+                        QMessageBox::NoButton, parent);
+        QPushButton* rebuild = box.addButton(tr("Rebuild"), QMessageBox::DestructiveRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.exec();
+        return box.clickedButton() == rebuild;
+    }
+
     UnsavedChoice askUnsavedChanges(QWidget* parent, std::size_t pending,
                                     const QString& details) override {
         QMessageBox box(QMessageBox::Warning, tr("Changes not saved"),

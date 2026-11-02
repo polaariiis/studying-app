@@ -64,6 +64,8 @@ public:
 
     /// Deleting `what` (e.g. "the section “Lecture notes” and its 12 pages"); undoable.
     virtual bool confirmDelete(QWidget* parent, const QString& what) = 0;
+    /// Rebuilding a study plan preview discards the changes made in it (2.0-PLAN-03).
+    virtual bool confirmDiscardPlanEdits(QWidget* parent) = 0;
 
     enum class UnsavedChoice {
         Retry,    ///< try writing again

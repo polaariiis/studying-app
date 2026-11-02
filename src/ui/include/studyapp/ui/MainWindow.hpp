@@ -8,6 +8,7 @@
 #include <QColor>
 #include <QImage>
 #include <QMainWindow>
+#include <QPointer>
 #include <QStringList>
 
 #include <atomic>
@@ -67,6 +68,7 @@ enum class ExportFormat;
 struct ExportSources;
 class CanvasWidget;
 class PlannerPanel;
+class StudyPlanDialog;
 class NavigationPanel;
 class ThemeManager;
 class WorkspaceTreeModel;
@@ -230,6 +232,8 @@ private:
     /// Planner panel is shown; derived, never stored.
     void updateLinkHighlight();
     void showTreeContextMenu(const QPoint& position);
+    /// Planner ▸ New Study Plan: the plan dialog, one at a time (2.0-PLAN-03).
+    void newStudyPlan();
 
     // User actions.
     void newWorkspace();
@@ -348,6 +352,9 @@ private:
     NavigationPanel* navigation_ = nullptr;
     PlannerPanel* planner_ = nullptr;
     QAction* plannerAction_ = nullptr;
+    QAction* newStudyPlanAction_ = nullptr;
+    /// The open "New Study Plan" dialog; deleted before its workspace closes.
+    QPointer<StudyPlanDialog> studyPlan_;
     const study::TimeZone* timeZone_ = nullptr;
     WorkspaceTreeModel* treeModel_ = nullptr;
     QWidget* canvasArea_ = nullptr;

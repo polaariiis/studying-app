@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace studyapp::document {
@@ -299,6 +301,157 @@ TEST(StudyCommandsTest, InvalidReferencesAndValuesAreRejected) {
                   .code,
               ErrorCode::NotFound);
     t.ok();
+}
+
+// 2.0-PLAN-03: a study plan is one project and its tasks in one patch.
+
+commands::NewPlan plan(std::vector<commands::NewPlanTask> tasks) {
+    using std::chrono::year;
+    return {.title = "Biology exam",
+            .description = "Biology exam in November",
+            .start = year{2026} / 10 / 19,
+            .due = year{2026} / 10 / 25,
+            .tasks = std::move(tasks)};
+}
+
+TEST(StudyCommandsTest, CreatePlanIsOneProjectAndItsTasksInOnePatch) {
+    using std::chrono::minutes;
+    using std::chrono::year;
+    StudyWorkspace t;
+    const auto section = t.addSection(t.addNotebook("Biology"), "Cells");
+    const auto page = t.addPage(section, "Membrane");
+    const auto other = t.addPage(section, "Nucleus");
+    const auto old = t.addProject("Old project");
+    const auto earlier = t.addTask({.title = "Earlier"});
+    const Workspace before = t.workspace;
+
+    auto created = commands::createPlan(
+        t.workspace,
+        plan({{.title = "Cells",
+               .estimate = minutes{30},
+               .dueDate = year{2026} / 10 / 19,
+               .linkedPages = {other, page, other}},
+              {.title = "Genes", .notes = "Read twice", .estimate = minutes{45}}}),
+        t.clock, t.ids);
+    ASSERT_OK(created);
+    EXPECT_EQ(created->command.label, "Create study plan");
+    EXPECT_EQ(created->command.patch.size(), 3U); // the project, then its two tasks
+    ASSERT_OK(t.editor.execute(created->command));
+    t.ok();
+
+    const study::Project& project = *t.workspace.findProject(created->id);
+    EXPECT_EQ(project.title, "Biology exam");
+    EXPECT_EQ(project.description, "Biology exam in November");
+    EXPECT_EQ(project.start, year{2026} / 10 / 19);
+    EXPECT_EQ(project.due, year{2026} / 10 / 25);
+    EXPECT_EQ(project.status, study::ProjectStatus::Active);
+    EXPECT_EQ(project.course, std::nullopt);
+    EXPECT_EQ(project.color, std::nullopt);
+    EXPECT_EQ(std::vector(t.workspace.projects().begin(), t.workspace.projects().end()),
+              (std::vector{old, created->id}));
+
+    const std::vector top(t.workspace.topLevelTasks().begin(), t.workspace.topLevelTasks().end());
+    ASSERT_EQ(top.size(), 3U);
+    EXPECT_EQ(top[0], earlier);
+    const study::Task& cells = t.task(top[1]);
+    const study::Task& genes = t.task(top[2]);
+    EXPECT_EQ(cells.title, "Cells");
+    EXPECT_EQ(cells.project, created->id);
+    EXPECT_EQ(cells.estimate, minutes{30});
+    EXPECT_EQ(cells.dueDate, year{2026} / 10 / 19);
+    EXPECT_EQ(cells.linkedPages, sorted(std::vector{page, other})); // sorted, once each
+    EXPECT_EQ(genes.title, "Genes");
+    EXPECT_EQ(genes.notes, "Read twice");
+    EXPECT_EQ(genes.dueDate, std::nullopt); // unscheduled
+    for (const study::Task* task : {&cells, &genes}) {
+        EXPECT_EQ(task->status, study::TaskStatus::Todo);
+        EXPECT_EQ(task->priority, study::Priority::None);
+        EXPECT_EQ(task->course, std::nullopt);
+        EXPECT_EQ(task->parent, std::nullopt);
+        EXPECT_EQ(task->dueTime, std::nullopt);
+        EXPECT_EQ(task->scheduled, std::nullopt);
+        EXPECT_TRUE(task->tags.empty());
+    }
+    EXPECT_EQ(sorted(t.workspace.tasksOfProject(created->id)), sorted(std::vector{top[1], top[2]}));
+
+    const Workspace after = t.workspace;
+    ASSERT_OK(t.editor.undo()); // one step removes the project and every task
+    EXPECT_TRUE(t.workspace == before);
+    ASSERT_OK(t.editor.redo());
+    EXPECT_TRUE(t.workspace == after);
+}
+
+TEST(StudyCommandsTest, CreatePlanOrderKeysStrictlyIncrease) {
+    StudyWorkspace t;
+    const auto earlier = t.addTask({.title = "Earlier"});
+    std::vector<commands::NewPlanTask> tasks;
+    for (int i = 1; i <= 100; ++i) {
+        tasks.push_back({.title = "Block " + std::to_string(i)});
+    }
+    auto created = commands::createPlan(t.workspace, plan(std::move(tasks)), t.clock, t.ids);
+    ASSERT_OK(created);
+    ASSERT_OK(t.editor.execute(std::move(created->command)));
+    t.ok();
+    const auto top = t.workspace.topLevelTasks();
+    ASSERT_EQ(top.size(), 101U);
+    EXPECT_EQ(top.front(), earlier);
+    for (std::size_t i = 1; i < top.size(); ++i) {
+        EXPECT_LT(t.task(top[i - 1]).order, t.task(top[i]).order) << i;
+        EXPECT_EQ(t.task(top[i]).title, "Block " + std::to_string(i));
+    }
+
+    // In an empty workspace the first task starts the list.
+    StudyWorkspace empty;
+    auto first = commands::createPlan(empty.workspace, plan({{.title = "A"}, {.title = "B"}}),
+                                      empty.clock, empty.ids);
+    ASSERT_OK(first);
+    ASSERT_OK(empty.editor.execute(std::move(first->command)));
+    const auto two = empty.workspace.topLevelTasks();
+    ASSERT_EQ(two.size(), 2U);
+    EXPECT_EQ(empty.task(two[0]).title, "A");
+    EXPECT_LT(empty.task(two[0]).order, empty.task(two[1]).order);
+}
+
+TEST(StudyCommandsTest, CreatePlanIsDeterministic) {
+    const auto make = [] {
+        StudyWorkspace t;
+        t.addTask({.title = "Earlier"});
+        auto created = commands::createPlan(
+            t.workspace, plan({{.title = "Cells"}, {.title = "Genes"}}), t.clock, t.ids);
+        EXPECT_TRUE(created.has_value());
+        return created ? created->command : Command{};
+    };
+    const Command first = make();
+    EXPECT_FALSE(first.patch.empty());
+    EXPECT_TRUE(first == make());
+}
+
+TEST(StudyCommandsTest, CreatePlanRejectsInvalidValuesAndUnknownPages) {
+    using std::chrono::year;
+    StudyWorkspace t;
+    commands::NewPlan blank = plan({{.title = "Cells"}});
+    blank.title = " ";
+    EXPECT_FALSE(commands::createPlan(t.workspace, blank, t.clock, t.ids).has_value());
+    EXPECT_FALSE(
+        commands::createPlan(t.workspace, plan({{.title = ""}}), t.clock, t.ids).has_value());
+    commands::NewPlan late = plan({{.title = "Cells"}});
+    late.due = year{10000} / 1 / 1;
+    EXPECT_FALSE(commands::createPlan(t.workspace, late, t.clock, t.ids).has_value());
+    EXPECT_FALSE(commands::createPlan(t.workspace,
+                                      plan({{.title = "Cells", .dueDate = year{0} / 1 / 1}}),
+                                      t.clock, t.ids)
+                     .has_value());
+
+    // A page that does not exist: the Workspace refuses the whole patch.
+    const Workspace before = t.workspace;
+    auto ghost = commands::createPlan(
+        t.workspace,
+        plan({{.title = "Cells"}, {.title = "Genes", .linkedPages = {core::PageId{t.ids.next()}}}}),
+        t.clock, t.ids);
+    ASSERT_OK(ghost);
+    EXPECT_FALSE(t.editor.execute(std::move(ghost->command)).has_value());
+    EXPECT_TRUE(t.workspace == before);
+    EXPECT_EQ(t.editor.history().undoCount(), 0U);
 }
 
 } // namespace

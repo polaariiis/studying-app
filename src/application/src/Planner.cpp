@@ -277,6 +277,40 @@ Result<void> Planner::setTaskTagNames(core::TaskId task, std::span<const std::st
     return run(document::Command{"Change task tags", document::Patch(std::move(changes))});
 }
 
+// ---------------------------------------------------------------------------- study plans
+
+Result<core::ProjectId> Planner::createPlan(const PlanDraft& draft, const PlanRequest& request) {
+    if (draft.blocks.empty()) {
+        return makeError(ErrorCode::InvalidArgument, "the plan has no study blocks");
+    }
+    PlanValidation checked = validatePlanDraft(workspace(), draft);
+    if (!checked.canSave()) {
+        return makeError(ErrorCode::InvalidArgument, checked.errors.front().message);
+    }
+    PlanDraft& plan = checked.draft;
+    commands::NewPlan newPlan{.title = std::move(plan.title),
+                              .description = std::string(trim(request.goal)),
+                              .start = plan.start,
+                              .due = planDate(plan.start, plan.days)};
+    newPlan.tasks.reserve(plan.blocks.size());
+    for (PlanBlock& block : plan.blocks) {
+        newPlan.tasks.push_back(
+            {.title = std::string(trim(block.title)),
+             .notes = std::move(block.objective),
+             .estimate = block.minutes,
+             .dueDate = block.day ? std::optional(planDate(plan.start, *block.day)) : std::nullopt,
+             .linkedPages = std::move(block.pages)});
+    }
+    auto created = commands::createPlan(workspace(), std::move(newPlan), *clock_, *ids_);
+    if (!created) {
+        return failed<core::ProjectId>(created.error());
+    }
+    if (auto executed = session_->execute(std::move(created->command)); !executed) {
+        return failed<core::ProjectId>(executed.error());
+    }
+    return created->id;
+}
+
 // ---------------------------------------------------------------------------- queries
 
 std::vector<const study::Task*> Planner::allTasks() const {

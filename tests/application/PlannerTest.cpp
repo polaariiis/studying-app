@@ -2,10 +2,12 @@
 // operation is one undoable, persisted edit; tags by name reuse or create tags in the same
 // edit; scope queries; the full workflow survives close and reopen. 2.0-PLAN-02: a task's
 // estimate is set, changed and cleared through updateTask, and refused when read-only.
+// 2.0-PLAN-03: a study plan is saved as one undoable, persisted edit after a final check.
 
 #include <studyapp/application/Planner.hpp>
 
 #include <studyapp/application/WorkspaceStructure.hpp>
+#include <studyapp/study/Planning.hpp>
 #include <studyapp/testing/ManualClock.hpp>
 #include <studyapp/testing/ResultMacros.hpp>
 #include <studyapp/testing/SequentialIds.hpp>
@@ -13,9 +15,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -240,6 +244,190 @@ TEST_F(PlannerTest, AReadOnlyWorkspaceRefusesAnEstimate) {
     EXPECT_FALSE(planner().updateTask(edited).has_value()); // nor cleared
     EXPECT_EQ(steps(), before);
     EXPECT_EQ(ws().findTask(*task)->estimate, minutes{30});
+}
+
+// ---------------------------------------------------------------------- study plans
+
+struct PlannerPlanTest : PlannerTest {
+    PlanScope scope;
+    core::PageId firstPage;
+
+    void SetUp() override {
+        PlannerTest::SetUp();
+        WorkspaceStructure structure(*session, clock, ids);
+        auto notebook = structure.createNotebook("Biology"); // "Section 1" with one page
+        ASSERT_OK(notebook);
+        firstPage = notebook->page;
+        ASSERT_OK(structure.createPage(notebook->section));
+        ASSERT_OK(structure.createPage(notebook->section));
+        auto photosynthesis = structure.createSection(notebook->notebook, "Photosynthesis");
+        ASSERT_OK(photosynthesis);
+        ASSERT_OK(structure.createPage(photosynthesis->section));
+        scope = {.notebooks = {notebook->notebook}};
+    }
+
+    static constexpr study::CalendarDate kStart{std::chrono::year{2026} / 10 / 19};
+
+    PlanRequest request(int days, int minutesPerDay) const {
+        return {.goal = "  Biology exam ",
+                .start = kStart,
+                .days = days,
+                .minutesPerDay = std::chrono::minutes{minutesPerDay},
+                .scope = scope};
+    }
+
+    PlanDraft draft(const PlanRequest& planRequest) const {
+        auto built = draftByTreeOrder(ws(), planRequest);
+        EXPECT_TRUE(built && built->draft) << (built ? "no draft" : built.error().message);
+        return built && built->draft ? *built->draft : PlanDraft{};
+    }
+
+    std::vector<const study::Task*> planTasks(core::ProjectId project) {
+        return planner().tasksInScope(std::nullopt, project);
+    }
+};
+
+TEST_F(PlannerPlanTest, CreatePlanIsOneUndoableEdit) {
+    using std::chrono::minutes;
+    // 5 pages, e = 120 / 5 = 24 → 20: Section 1 (60) on day 1, Photosynthesis (40) on day 2.
+    const PlanRequest planRequest = request(2, 60);
+    const PlanDraft plan = draft(planRequest);
+    ASSERT_EQ(plan.blocks.size(), 2U);
+    const document::Workspace before = ws();
+    const auto stepsBefore = steps();
+
+    auto project = planner().createPlan(plan, planRequest);
+    ASSERT_OK(project);
+    EXPECT_EQ(steps(), stepsBefore + 1);
+    EXPECT_EQ(session->history().nextUndo()->label, "Create study plan");
+    const study::Project& saved = *ws().findProject(*project);
+    EXPECT_EQ(saved.title, "Biology exam");
+    EXPECT_EQ(saved.description, "Biology exam");
+    EXPECT_EQ(saved.start, kStart);
+    EXPECT_EQ(saved.due, std::chrono::year{2026} / 10 / 20);
+
+    const auto tasks = planTasks(*project);
+    ASSERT_EQ(tasks.size(), 2U);
+    EXPECT_EQ(titles(tasks), (std::vector<std::string>{"Section 1", "Photosynthesis"}));
+    EXPECT_EQ(tasks[0]->dueDate, kStart);
+    EXPECT_EQ(tasks[1]->dueDate, std::chrono::year{2026} / 10 / 20);
+    EXPECT_EQ(tasks[0]->estimate, minutes{60});
+    EXPECT_EQ(tasks[1]->estimate, minutes{40});
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        std::vector<core::PageId> pages = plan.blocks[i].pages;
+        std::sort(pages.begin(), pages.end());
+        EXPECT_EQ(tasks[i]->linkedPages, pages); // every link is a page of the scope
+        for (const core::PageId page : tasks[i]->linkedPages) {
+            EXPECT_NE(ws().findPage(page), nullptr);
+        }
+    }
+
+    const document::Workspace after = ws();
+    ASSERT_OK(session->undo()); // the project and every task, in one step
+    EXPECT_TRUE(ws() == before);
+    ASSERT_OK(session->redo()); // the same ids and fields
+    EXPECT_TRUE(ws() == after);
+    EXPECT_EQ(session->pendingWriteCount(), 0U);
+}
+
+TEST_F(PlannerPlanTest, CreatePlanSurvivesReopening) {
+    const PlanRequest planRequest = request(2, 60);
+    auto project = planner().createPlan(draft(planRequest), planRequest);
+    ASSERT_OK(project);
+    const document::Workspace saved = ws();
+    reopen();
+    EXPECT_TRUE(ws() == saved);
+    ASSERT_OK(ws().validate());
+    EXPECT_EQ(planTasks(*project).size(), 2U);
+}
+
+TEST_F(PlannerPlanTest, UnscheduledBlocksHaveNoDueDate) {
+    // e = 5: one page a day on days 1 … 5 of a 1-day plan; (c) keeps days 2 … 5 unscheduled.
+    PlanPreview preview(request(1, 5), draft(request(1, 5)));
+    ASSERT_OK(preview.keepOverflowUnscheduled());
+    ASSERT_TRUE(preview.review(ws()).canAccept());
+    auto project = planner().createPlan(preview.draft(), preview.request());
+    ASSERT_OK(project);
+
+    const auto check = [&] {
+        const study::Project* saved = ws().findProject(*project);
+        ASSERT_NE(saved, nullptr);
+        EXPECT_EQ(saved->due, kStart); // start + D − 1, D = 1
+        const auto tasks = planTasks(*project);
+        ASSERT_EQ(tasks.size(), 5U);
+        EXPECT_EQ(tasks[0]->dueDate, kStart);
+        for (std::size_t i = 1; i < tasks.size(); ++i) {
+            EXPECT_EQ(tasks[i]->dueDate, std::nullopt) << i;
+        }
+        // The agenda lists them under "No date".
+        const study::Agenda agenda =
+            study::buildAgenda(std::span<const study::Task* const>(tasks), clock.now(),
+                               study::FixedOffsetZone{std::chrono::minutes{0}});
+        EXPECT_EQ(agenda.unscheduled, (std::vector<std::size_t>{1, 2, 3, 4}));
+    };
+    check();
+    ASSERT_OK(session->undo());
+    EXPECT_EQ(ws().findProject(*project), nullptr);
+    ASSERT_OK(session->redo());
+    check();
+    reopen();
+    check();
+}
+
+TEST_F(PlannerPlanTest, SearchFindsPlanTasks) {
+    const PlanRequest planRequest = request(2, 60);
+    auto project = planner().createPlan(draft(planRequest), planRequest);
+    ASSERT_OK(project);
+    auto hits = session->search("Photosynthesis", 10);
+    ASSERT_OK(hits);
+    const auto tasks = planTasks(*project);
+    ASSERT_EQ(tasks.size(), 2U);
+    ASSERT_EQ(hits->size(), 1U); // sections are not indexed; the task is
+    EXPECT_EQ((*hits)[0].kind, SearchHit::Kind::Task);
+    EXPECT_EQ((*hits)[0].owner, tasks[1]->id.value());
+}
+
+TEST_F(PlannerPlanTest, AReadOnlyWorkspaceRefusesAPlan) {
+    const PlanRequest planRequest = request(2, 60);
+    reopen({.mode = AccessMode::ReadOnly});
+    ASSERT_TRUE(session->isReadOnly());
+    // The preview works read-only.
+    PlanPreview preview(planRequest, draft(planRequest));
+    EXPECT_TRUE(preview.review(ws()).canAccept());
+    const document::Workspace before = ws();
+    auto refused = planner().createPlan(preview.draft(), preview.request());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, core::ErrorCode::Unsupported);
+    EXPECT_EQ(steps(), 0U);
+    EXPECT_TRUE(ws() == before);
+}
+
+TEST_F(PlannerPlanTest, TheFinalCheckRefusesWhatCannotBeSaved) {
+    const PlanRequest planRequest = request(2, 60);
+    const PlanDraft plan = draft(planRequest);
+    const document::Workspace before = ws();
+    const auto stepsBefore = steps();
+    const auto refusedCode = [&](const PlanDraft& candidate) {
+        auto result = planner().createPlan(candidate, planRequest);
+        return result ? core::ErrorCode::Internal : result.error().code;
+    };
+
+    PlanDraft empty = plan;
+    empty.blocks.clear();
+    EXPECT_EQ(refusedCode(empty), core::ErrorCode::InvalidArgument);
+    // Overflow not resolved: e = 5, one page a day on days 1 … 5 of 1.
+    EXPECT_EQ(refusedCode(draft(request(1, 5))), core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(steps(), stepsBefore);
+    EXPECT_TRUE(ws() == before);
+
+    // A linked page deleted after the draft was built: nothing is saved.
+    WorkspaceStructure structure(*session, clock, ids);
+    ASSERT_OK(structure.remove(firstPage));
+    EXPECT_EQ(refusedCode(plan), core::ErrorCode::InvalidArgument);
+    EXPECT_EQ(steps(), stepsBefore + 1); // only the user's own edit
+    EXPECT_TRUE(ws().projects().empty());
+    ASSERT_OK(session->undo());
+    ASSERT_OK(planner().createPlan(plan, planRequest)); // valid again
 }
 
 } // namespace
